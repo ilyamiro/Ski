@@ -1,5 +1,6 @@
 mod app;
 mod fs;
+mod thumbs;
 mod ui;
 
 use std::env;
@@ -98,7 +99,7 @@ fn main() -> eframe::Result {
                 }
             });
 
-            Ok(Box::new(SkiApp::new(initial_path, theme)))
+            Ok(Box::new(SkiApp::new(initial_path, theme, &cc.egui_ctx)))
         }),
     )
 }

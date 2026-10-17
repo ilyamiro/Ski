@@ -1,14 +1,16 @@
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use eframe::egui;
 
 use crate::fs::{
     file_item::FileItem,
     places::Place,
     scanner::{read_directory, ListOptions, SortBy, SortOrder, TypeFilter},
+    search::Search,
 };
+use crate::thumbs::Thumbnails;
 use crate::ui::{
     icons,
-    material::{self, chip, file_row, file_tile, icon_button, nav_item, CONTROL_HEIGHT},
+    material::{self, chip, file_row, file_tile, icon_button, icon_button_tinted, nav_item, CONTROL_HEIGHT},
     theme::SerpantinumTheme,
 };
 
@@ -44,6 +46,9 @@ pub struct SkiApp {
     is_editing_path: bool,
     path_input: String,
 
+    thumbs: Thumbnails,
+    search: Search,
+
     // Places
     places: Vec<Place>,
 
@@ -61,7 +66,7 @@ pub struct SkiApp {
 }
 
 impl SkiApp {
-    pub fn new(initial_path: PathBuf, theme: SerpantinumTheme) -> Self {
+    pub fn new(initial_path: PathBuf, theme: SerpantinumTheme, ctx: &egui::Context) -> Self {
         let places = Place::default_places();
         let canonical_path = initial_path.canonicalize().unwrap_or(initial_path);
 
@@ -82,6 +87,8 @@ impl SkiApp {
             sort_order: SortOrder::Ascending,
             is_editing_path: false,
             path_input: canonical_path.to_string_lossy().to_string(),
+            thumbs: Thumbnails::new(ctx),
+            search: Search::new(),
             places,
             show_search: false,
             focus_search: false,
@@ -108,6 +115,7 @@ impl SkiApp {
             self.path_input = self.current_path.to_string_lossy().to_string();
             self.selected_index = None;
             self.search_query.clear();
+            self.search.cancel();
             self.show_search = false;
             self.is_editing_path = false;
             self.reload_items();
@@ -152,7 +160,6 @@ impl SkiApp {
     pub fn reload_items(&mut self) {
         let opts = ListOptions {
             show_hidden: self.show_hidden,
-            query: self.search_query.clone(),
             sort_by: self.sort_by,
             sort_order: self.sort_order,
             folders_first: self.folders_first,
@@ -162,6 +169,7 @@ impl SkiApp {
             Ok(items) => {
                 self.items = items;
                 self.error_message = None;
+                self.thumbs.preload(self.items.iter().map(|i| i.path.as_path()));
                 if self.items.is_empty() {
                     self.selected_index = None;
                 } else if let Some(idx) = self.selected_index {
@@ -192,7 +200,22 @@ impl SkiApp {
         self.show_search = false;
         if !self.search_query.is_empty() {
             self.search_query.clear();
+            self.search.cancel();
             self.reload_items();
+        }
+    }
+
+    /// Search the whole home folder; results replace the folder listing until the query is cleared.
+    fn on_query_changed(&mut self, ctx: &egui::Context) {
+        if self.search_query.trim().is_empty() {
+            self.search.cancel();
+            self.reload_items();
+        } else {
+            self.items.clear();
+            self.selected_index = None;
+            self.error_message = None;
+            let root = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
+            self.search.start(ctx, root, self.search_query.trim().to_owned(), self.show_hidden);
         }
     }
 
@@ -252,7 +275,7 @@ impl SkiApp {
                 self.show_settings = false;
                 return;
             }
-            if self.show_search {
+            if self.show_search || !self.search_query.is_empty() {
                 self.close_search();
                 return;
             }
@@ -339,14 +362,18 @@ impl SkiApp {
 }
 
 /// Content width below which the sidebar is hidden.
-const SIDEBAR_BREAKPOINT: f32 = 720.0;
-/// Content width below which secondary header controls are hidden.
-const COMPACT_BREAKPOINT: f32 = 520.0;
+const SIDEBAR_BREAKPOINT: f32 = 680.0;
 
 impl eframe::App for SkiApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         self.handle_keyboard_inputs(&ctx);
+        self.thumbs.poll(&ctx);
+
+        let found = self.search.poll();
+        if !found.is_empty() && !self.search_query.trim().is_empty() {
+            self.items.extend(found);
+        }
 
         if let Some((_, time)) = &self.status_toast {
             if time.elapsed().as_secs() > 3 {
@@ -355,15 +382,16 @@ impl eframe::App for SkiApp {
         }
 
         let window_width = ui.available_width();
+        let sidebar_visible = window_width >= SIDEBAR_BREAKPOINT;
 
-        if window_width >= SIDEBAR_BREAKPOINT {
+        if sidebar_visible {
             egui::Panel::left("sidebar_places")
-                .exact_size(232.0)
+                .exact_size(212.0)
                 .resizable(false)
                 .frame(
                     egui::Frame::new()
                         .fill(self.theme.mantle)
-                        .inner_margin(egui::Margin::symmetric(12, 14)),
+                        .inner_margin(egui::Margin::symmetric(10, 10)),
                 )
                 .show(ui, |ui| self.render_sidebar(ui));
         }
@@ -372,15 +400,15 @@ impl eframe::App for SkiApp {
             .frame(
                 egui::Frame::new()
                     .fill(self.theme.base)
-                    .inner_margin(egui::Margin::symmetric(12, 8)),
+                    .inner_margin(egui::Margin::symmetric(10, 8)),
             )
-            .show(ui, |ui| self.render_top_bar(ui));
+            .show(ui, |ui| self.render_top_bar(ui, sidebar_visible));
 
         egui::CentralPanel::default()
             .frame(
                 egui::Frame::new()
                     .fill(self.theme.base)
-                    .inner_margin(egui::Margin { left: 8, right: 8, top: 0, bottom: 8 }),
+                    .inner_margin(egui::Margin { left: 6, right: 6, top: 0, bottom: 6 }),
             )
             .show(ui, |ui| {
                 if let Some(ref err) = self.error_message {
@@ -388,13 +416,15 @@ impl eframe::App for SkiApp {
                         ui.label(egui::RichText::new(err).color(self.theme.red));
                     });
                 } else if self.items.is_empty() {
-                    let msg = if self.search_query.is_empty() && self.type_filter == TypeFilter::All {
-                        "This folder is empty".to_owned()
+                    let msg = if !self.search_query.trim().is_empty() {
+                        "Searching…"
+                    } else if self.type_filter != TypeFilter::All {
+                        "Nothing matches"
                     } else {
-                        "Nothing matches".to_owned()
+                        "This folder is empty"
                     };
                     ui.centered_and_justified(|ui| {
-                        ui.label(egui::RichText::new(msg).size(15.0).color(self.theme.subtext1));
+                        ui.label(egui::RichText::new(msg).size(14.0).color(self.theme.subtext1));
                     });
                 } else {
                     match self.view_mode {
@@ -413,9 +443,8 @@ impl eframe::App for SkiApp {
 
 impl SkiApp {
     /// One fixed-height row: every control is `CONTROL_HEIGHT` tall and centered on the same axis.
-    fn render_top_bar(&mut self, ui: &mut egui::Ui) {
-        let compact = ui.available_width() < COMPACT_BREAKPOINT;
-        let gap = 4.0;
+    fn render_top_bar(&mut self, ui: &mut egui::Ui, sidebar_visible: bool) {
+        let gap = 2.0;
 
         ui.allocate_ui_with_layout(
             egui::vec2(ui.available_width(), CONTROL_HEIGHT),
@@ -431,40 +460,35 @@ impl SkiApp {
                 if icon_button(ui, "btn_fwd", icons::ARROW_FORWARD, &self.theme, can_forward, "Forward").clicked() {
                     self.go_forward();
                 }
-                let mut left_buttons = 2.0;
-                if !compact {
-                    let can_up = self.current_path.parent().is_some();
-                    if icon_button(ui, "btn_up", icons::ARROW_UP, &self.theme, can_up, "Parent folder").clicked() {
-                        self.go_up();
-                    }
-                    left_buttons += 1.0;
-                }
 
-                let right_buttons = 2.0;
+                // Search lives in the sidebar; without a sidebar it becomes a header button.
+                let right_buttons = if sidebar_visible { 2.0 } else { 3.0 };
                 let reserved = right_buttons * (CONTROL_HEIGHT + gap);
-                let _ = left_buttons;
-                let field_width = (ui.available_width() - reserved - gap).max(40.0);
+                let title_width = (ui.available_width() - reserved - gap).max(40.0);
 
-                let (field_rect, field_resp) =
-                    ui.allocate_exact_size(egui::vec2(field_width, CONTROL_HEIGHT), egui::Sense::click());
-                ui.painter().rect_filled(field_rect, egui::CornerRadius::same(20), self.theme.surface1);
+                let (title_rect, title_resp) =
+                    ui.allocate_exact_size(egui::vec2(title_width, CONTROL_HEIGHT), egui::Sense::click());
 
-                if self.show_search {
-                    self.render_search_field(ui, field_rect);
+                if self.show_search && !sidebar_visible {
+                    ui.painter().rect_filled(title_rect, egui::CornerRadius::same(17), self.theme.surface1);
+                    self.render_search_field(ui, title_rect);
                 } else if self.is_editing_path {
-                    self.render_path_field(ui, field_rect);
+                    ui.painter().rect_filled(title_rect, egui::CornerRadius::same(17), self.theme.surface1);
+                    self.render_path_field(ui, title_rect);
                 } else {
-                    self.render_breadcrumbs(ui, field_rect, &field_resp);
+                    self.render_title(ui, title_rect, &title_resp);
                 }
 
-                let search_icon = if self.show_search { icons::CLOSE } else { icons::SEARCH };
-                if icon_button(ui, "btn_search", search_icon, &self.theme, true, "Filter by name (/)").clicked() {
-                    if self.show_search {
-                        self.close_search();
-                    } else {
-                        self.show_search = true;
-                        self.focus_search = true;
-                        self.is_editing_path = false;
+                if !sidebar_visible {
+                    let icon = if self.show_search { icons::CLOSE } else { icons::SEARCH };
+                    if icon_button(ui, "btn_search", icon, &self.theme, true, "Search (/)").clicked() {
+                        if self.show_search {
+                            self.close_search();
+                        } else {
+                            self.show_search = true;
+                            self.focus_search = true;
+                            self.is_editing_path = false;
+                        }
                     }
                 }
 
@@ -473,6 +497,11 @@ impl SkiApp {
                 if settings.clicked() {
                     self.show_settings = !self.show_settings;
                 }
+
+                let close = icon_button_tinted(ui, "btn_close", icons::CLOSE, &self.theme, true, "Close", Some(self.theme.red));
+                if close.clicked() {
+                    ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+                }
             },
         );
     }
@@ -480,43 +509,44 @@ impl SkiApp {
     fn render_search_field(&mut self, ui: &mut egui::Ui, rect: egui::Rect) {
         material::paint_icon(
             ui.painter(),
-            egui::pos2(rect.left() + 22.0, rect.center().y),
+            egui::pos2(rect.left() + 18.0, rect.center().y),
             icons::SEARCH,
-            18.0,
+            16.0,
             self.theme.subtext1,
         );
         let edit_rect = egui::Rect::from_min_max(
-            egui::pos2(rect.left() + 42.0, rect.top()),
-            egui::pos2(rect.right() - 16.0, rect.bottom()),
+            egui::pos2(rect.left() + 36.0, rect.top()),
+            egui::pos2(rect.right() - 12.0, rect.bottom()),
         );
         let resp = ui.put(
             edit_rect,
             egui::TextEdit::singleline(&mut self.search_query)
                 .frame(egui::Frame::NONE)
                 .align(egui::Align2::LEFT_CENTER)
-                .font(egui::FontId::proportional(14.0))
-                .hint_text("Filter this folder"),
+                .font(egui::FontId::proportional(13.5))
+                .hint_text("Search files"),
         );
         if self.focus_search {
             resp.request_focus();
             self.focus_search = false;
         }
         if resp.changed() {
-            self.reload_items();
+            let ctx = ui.ctx().clone();
+            self.on_query_changed(&ctx);
         }
     }
 
     fn render_path_field(&mut self, ui: &mut egui::Ui, rect: egui::Rect) {
         let edit_rect = egui::Rect::from_min_max(
-            egui::pos2(rect.left() + 18.0, rect.top()),
-            egui::pos2(rect.right() - 16.0, rect.bottom()),
+            egui::pos2(rect.left() + 16.0, rect.top()),
+            egui::pos2(rect.right() - 12.0, rect.bottom()),
         );
         let resp = ui.put(
             edit_rect,
             egui::TextEdit::singleline(&mut self.path_input)
                 .frame(egui::Frame::NONE)
                 .align(egui::Align2::LEFT_CENTER)
-                .font(egui::FontId::proportional(14.0))
+                .font(egui::FontId::proportional(13.5))
                 .hint_text("Type a path and press Enter"),
         );
         if !resp.has_focus() && !resp.lost_focus() {
@@ -533,124 +563,122 @@ impl SkiApp {
         }
     }
 
-    /// Path shown as clickable segments. Leading segments collapse into an ellipsis
-    /// when the field is too narrow, so the current folder is always visible.
-    fn render_breadcrumbs(&mut self, ui: &mut egui::Ui, rect: egui::Rect, field: &egui::Response) {
-        struct Crumb {
-            label: String,
-            icon: Option<&'static str>,
-            path: PathBuf,
-            width: f32,
-        }
-
-        let mut crumbs: Vec<Crumb> = Vec::new();
-        let mut acc = PathBuf::new();
-        for comp in self.current_path.components() {
-            match comp {
-                Component::RootDir => {
-                    acc.push("/");
-                    crumbs.push(Crumb { label: String::new(), icon: Some(icons::STORAGE), path: acc.clone(), width: 0.0 });
-                }
-                Component::Normal(seg) => {
-                    acc.push(seg);
-                    crumbs.push(Crumb { label: seg.to_string_lossy().into_owned(), icon: None, path: acc.clone(), width: 0.0 });
-                }
-                _ => {}
-            }
-        }
-
-        let font = egui::FontId::proportional(14.0);
-        for c in &mut crumbs {
-            c.width = match c.icon {
-                Some(_) => 36.0,
-                None => ui.painter().layout_no_wrap(c.label.clone(), font.clone(), self.theme.text).size().x + 22.0,
-            };
-        }
-
-        let sep = 16.0;
-        let ellipsis = 34.0;
-        let avail = rect.width() - 16.0;
-
-        // Walk from the current folder backwards while it still fits.
-        let mut first = crumbs.len();
-        let mut used = 0.0;
-        while first > 0 {
-            let w = crumbs[first - 1].width + if first < crumbs.len() { sep } else { 0.0 };
-            let reserve = if first - 1 > 0 { ellipsis + sep } else { 0.0 };
-            if used + w + reserve > avail && first < crumbs.len() {
-                break;
-            }
-            used += w;
-            first -= 1;
-        }
-
-        let mut target: Option<PathBuf> = None;
-        let mut x = rect.left() + 8.0;
+    /// The location as plain text: the current folder, with its parent as a quiet link in front.
+    /// Clicking anywhere else on the title switches to typing a path.
+    fn render_title(&mut self, ui: &mut egui::Ui, rect: egui::Rect, field: &egui::Response) {
         let cy = rect.center().y;
-        let last = crumbs.len().saturating_sub(1);
+        let name_font = egui::FontId::proportional(15.0);
+        let parent_font = egui::FontId::proportional(13.5);
+        let mut x = rect.left() + 10.0;
 
-        if first > 0 {
-            let r = egui::Rect::from_min_size(egui::pos2(x, cy - 15.0), egui::vec2(ellipsis, 30.0));
-            let resp = ui.interact(r, ui.make_persistent_id("crumb_more"), egui::Sense::click());
-            let hover = ui.ctx().animate_bool_responsive(resp.id.with("h"), resp.hovered());
-            ui.painter().rect_filled(r, egui::CornerRadius::same(15), self.theme.with_alpha(self.theme.text, (hover * 22.0) as u8));
-            material::paint_icon(ui.painter(), r.center(), icons::MORE, 18.0, self.theme.subtext0);
-            if resp.clicked() {
-                target = Some(crumbs[first - 1].path.clone());
-            }
-            x += ellipsis;
-            material::paint_icon(ui.painter(), egui::pos2(x + sep / 2.0, cy), icons::CHEVRON_RIGHT, 16.0, self.theme.subtext1);
-            x += sep;
-        }
+        let searching = !self.search_query.trim().is_empty();
+        let name = if searching {
+            format!("Results for “{}”", self.search_query.trim())
+        } else {
+            self.current_path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "Computer".to_owned())
+        };
 
-        for i in first..crumbs.len() {
-            let c = &crumbs[i];
-            if i > first {
-                material::paint_icon(ui.painter(), egui::pos2(x + sep / 2.0, cy), icons::CHEVRON_RIGHT, 16.0, self.theme.subtext1);
-                x += sep;
-            }
-            let w = c.width.min((rect.right() - 8.0 - x).max(0.0));
-            let r = egui::Rect::from_min_size(egui::pos2(x, cy - 15.0), egui::vec2(w, 30.0));
-            let resp = ui.interact(r, ui.make_persistent_id(("crumb", i)), egui::Sense::click());
-            let hover = ui.ctx().animate_bool_responsive(resp.id.with("h"), resp.hovered());
-            ui.painter().rect_filled(r, egui::CornerRadius::same(15), self.theme.with_alpha(self.theme.text, (hover * 22.0) as u8));
+        if !searching {
+            let parent_name = self
+                .current_path
+                .parent()
+                .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()));
+            let name_w = ui.painter().layout_no_wrap(name.clone(), name_font.clone(), self.theme.text).size().x;
 
-            let is_current = i == last;
-            let color = if is_current { self.theme.text } else { self.theme.subtext0 };
-            match c.icon {
-                Some(ic) => material::paint_icon(ui.painter(), r.center(), ic, 18.0, color),
-                None => {
-                    ui.painter().text(egui::pos2(r.left() + 11.0, cy), egui::Align2::LEFT_CENTER, &c.label, font.clone(), color);
+            if let Some(parent) = parent_name {
+                let pw = ui.painter().layout_no_wrap(parent.clone(), parent_font.clone(), self.theme.subtext1).size().x;
+                let slash_w = 18.0;
+                // Only show the parent when it fits next to the folder name
+                if pw + slash_w + name_w + 20.0 < rect.width() {
+                    let r = egui::Rect::from_min_size(egui::pos2(x - 6.0, cy - 14.0), egui::vec2(pw + 12.0, 28.0));
+                    let resp = ui.interact(r, ui.make_persistent_id("title_parent"), egui::Sense::click());
+                    let hover = ui.ctx().animate_bool_with_time(resp.id.with("h"), resp.hovered(), 0.18);
+                    ui.painter().rect_filled(r, egui::CornerRadius::same(14), self.theme.with_alpha(self.theme.text, (hover * 20.0) as u8));
+                    let color = material::lerp_color(self.theme.subtext1, self.theme.text, hover);
+                    ui.painter().text(egui::pos2(x, cy), egui::Align2::LEFT_CENTER, &parent, parent_font.clone(), color);
+                    if resp.clicked() {
+                        if let Some(p) = self.current_path.parent() {
+                            let p = p.to_path_buf();
+                            self.navigate_to(p);
+                        }
+                    }
+                    x += pw + 6.0;
+                    ui.painter().text(egui::pos2(x, cy), egui::Align2::LEFT_CENTER, "/", parent_font.clone(), self.theme.surface2);
+                    x += slash_w - 6.0;
                 }
             }
-            if resp.clicked() {
-                target = Some(c.path.clone());
-            }
-            x += c.width;
         }
 
-        // Clicking the empty area of the field switches to typing a path.
-        if field.clicked() && target.is_none() {
+        let max_w = (rect.right() - x - 4.0).max(10.0);
+        let mut job = egui::text::LayoutJob::simple_singleline(name, name_font, self.theme.text);
+        job.wrap = egui::text::TextWrapping::truncate_at_width(max_w);
+        let galley = ui.painter().layout_job(job);
+        ui.painter().galley(egui::pos2(x, cy - galley.size().y / 2.0), galley, self.theme.text);
+
+        if field.clicked() && !searching {
             self.is_editing_path = true;
             self.path_input = self.current_path.to_string_lossy().to_string();
-        }
-        if let Some(t) = target {
-            self.navigate_to(t);
         }
     }
 
     fn render_sidebar(&mut self, ui: &mut egui::Ui) {
-        let mut destination: Option<PathBuf> = None;
+        // Search field on top of the places
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 36.0), egui::Sense::hover());
+        let search_id = egui::Id::new("sidebar_search");
+        let focused = ui.memory(|m| m.has_focus(search_id));
+        let fill = if focused { self.theme.surface2 } else { self.theme.surface1 };
+        ui.painter().rect_filled(rect, egui::CornerRadius::same(18), fill);
+        material::paint_icon(ui.painter(), egui::pos2(rect.left() + 20.0, rect.center().y), icons::SEARCH, 16.0, self.theme.subtext1);
+
+        let clear_w = if self.search_query.is_empty() { 0.0 } else { 30.0 };
+        let edit_rect = egui::Rect::from_min_max(
+            egui::pos2(rect.left() + 36.0, rect.top()),
+            egui::pos2(rect.right() - 12.0 - clear_w, rect.bottom()),
+        );
+        let resp = ui.put(
+            edit_rect,
+            egui::TextEdit::singleline(&mut self.search_query)
+                .id(search_id)
+                .frame(egui::Frame::NONE)
+                .align(egui::Align2::LEFT_CENTER)
+                .font(egui::FontId::proportional(13.5))
+                .hint_text("Search files"),
+        );
+        if self.focus_search {
+            resp.request_focus();
+            self.focus_search = false;
+        }
+        if resp.changed() {
+            let ctx = ui.ctx().clone();
+            self.on_query_changed(&ctx);
+        }
+        if clear_w > 0.0 {
+            let clear_rect = egui::Rect::from_center_size(egui::pos2(rect.right() - 20.0, rect.center().y), egui::vec2(26.0, 26.0));
+            let clear = ui.interact(clear_rect, ui.make_persistent_id("sidebar_search_clear"), egui::Sense::click());
+            let hover = ui.ctx().animate_bool_with_time(clear.id.with("h"), clear.hovered(), 0.18);
+            ui.painter().rect_filled(clear_rect, egui::CornerRadius::same(13), self.theme.with_alpha(self.theme.text, (hover * 26.0) as u8));
+            material::paint_icon(ui.painter(), clear_rect.center(), icons::CLOSE, 14.0, material::lerp_color(self.theme.subtext1, self.theme.text, hover));
+            if clear.clicked() {
+                self.close_search();
+            }
+        }
+
+        ui.add_space(8.0);
         ui.spacing_mut().item_spacing.y = 2.0;
 
+        let mut destination: Option<PathBuf> = None;
         for (idx, place) in self.places.iter().enumerate() {
-            let selected = self.current_path == place.path;
+            let selected = self.search_query.trim().is_empty() && self.current_path == place.path;
             if nav_item(ui, ("place", idx), place.icon, &place.name, &self.theme, selected).clicked() {
                 destination = Some(place.path.clone());
             }
         }
 
         if let Some(dest) = destination {
+            self.close_search();
             self.navigate_to(dest);
         }
     }
@@ -663,16 +691,32 @@ impl SkiApp {
         }
     }
 
+    /// Parent folder of a search result, with the home folder abbreviated.
+    fn path_hint(&self, item: &FileItem) -> Option<String> {
+        if self.search_query.trim().is_empty() {
+            return None;
+        }
+        let parent = item.path.parent()?;
+        let home = dirs::home_dir();
+        Some(match home.as_ref().and_then(|h| parent.strip_prefix(h).ok()) {
+            Some(rel) if rel.as_os_str().is_empty() => "~".to_owned(),
+            Some(rel) => format!("~/{}", rel.display()),
+            None => parent.display().to_string(),
+        })
+    }
+
     fn render_list_view(&mut self, ui: &mut egui::Ui) {
         let mut opened: Option<FileItem> = None;
         let mut copied: Option<FileItem> = None;
         let should_scroll = std::mem::take(&mut self.scroll_to_selected);
 
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-            ui.spacing_mut().item_spacing.y = 2.0;
+            ui.spacing_mut().item_spacing.y = 1.0;
             for (idx, item) in self.items.iter().enumerate() {
                 let selected = self.selected_index == Some(idx);
-                let resp = file_row(ui, idx, item, &self.theme, selected, should_scroll);
+                let hint = self.path_hint(item);
+                let thumb = self.thumbs.get(&item.path);
+                let resp = file_row(ui, idx, item, &self.theme, selected, should_scroll, thumb, hint.as_deref());
                 if resp.clicked() || resp.secondary_clicked() {
                     self.selected_index = Some(idx);
                 }
@@ -703,7 +747,8 @@ impl SkiApp {
                     for (col_idx, item) in row.iter().enumerate() {
                         let idx = row_idx * cols + col_idx;
                         let selected = self.selected_index == Some(idx);
-                        let resp = file_tile(ui, idx, item, &self.theme, selected, should_scroll);
+                        let thumb = self.thumbs.get(&item.path);
+                        let resp = file_tile(ui, idx, item, &self.theme, selected, should_scroll, thumb);
                         if resp.clicked() {
                             self.selected_index = Some(idx);
                         }
@@ -748,22 +793,22 @@ impl SkiApp {
 
     fn render_settings(&mut self, ctx: &egui::Context) {
         let screen = ctx.content_rect();
-        let width = (screen.width() - 24.0).clamp(240.0, 380.0);
+        let width = (screen.width() - 24.0).clamp(240.0, 340.0);
         let max_height = (screen.height() - 80.0).max(160.0);
         let mut reload = false;
 
         let area = egui::Area::new(egui::Id::new("settings_popup"))
             .order(egui::Order::Foreground)
-            .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-12.0, 60.0))
+            .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-10.0, 52.0))
             .show(ctx, |ui| {
                 egui::Frame::new()
                     .fill(self.theme.mantle)
-                    .corner_radius(egui::CornerRadius::same(24))
+                    .corner_radius(egui::CornerRadius::same(22))
                     .shadow(ctx.global_style().visuals.window_shadow)
-                    .inner_margin(egui::Margin::same(20))
+                    .inner_margin(egui::Margin::same(16))
                     .show(ui, |ui| {
-                        ui.set_width(width - 40.0);
-                        egui::ScrollArea::vertical().max_height(max_height - 40.0).show(ui, |ui| {
+                        ui.set_width(width - 32.0);
+                        egui::ScrollArea::vertical().max_height(max_height - 32.0).show(ui, |ui| {
                             reload = self.settings_contents(ui);
                         });
                     });
@@ -781,13 +826,17 @@ impl SkiApp {
             self.show_settings = false;
         }
         if reload {
-            self.reload_items();
+            if self.search_query.trim().is_empty() {
+                self.reload_items();
+            } else {
+                self.on_query_changed(ctx);
+            }
         }
     }
 
     fn section_title(&self, ui: &mut egui::Ui, text: &str) {
-        ui.add_space(10.0);
-        ui.label(egui::RichText::new(text).size(12.0).color(self.theme.subtext1));
+        ui.add_space(6.0);
+        ui.label(egui::RichText::new(text).size(11.5).color(self.theme.subtext1));
         ui.add_space(2.0);
     }
 
@@ -796,7 +845,7 @@ impl SkiApp {
         let mut reload = false;
         ui.spacing_mut().item_spacing = egui::vec2(6.0, 8.0);
 
-        ui.label(egui::RichText::new("Settings").size(18.0).color(self.theme.text));
+        ui.label(egui::RichText::new("Settings").size(16.0).color(self.theme.text));
 
         self.section_title(ui, "View");
         ui.horizontal_wrapped(|ui| {

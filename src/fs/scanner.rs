@@ -74,7 +74,6 @@ impl TypeFilter {
 #[derive(Debug, Clone)]
 pub struct ListOptions {
     pub show_hidden: bool,
-    pub query: String,
     pub sort_by: SortBy,
     pub sort_order: SortOrder,
     pub folders_first: bool,
@@ -92,12 +91,6 @@ pub fn read_directory(path: &Path, opts: &ListOptions) -> io::Result<Vec<FileIte
 
         if let Some(item) = FileItem::from_path(&entry.path()) {
             if !opts.show_hidden && item.is_hidden {
-                continue;
-            }
-
-            if !opts.query.is_empty()
-                && !item.name.to_lowercase().contains(&opts.query.to_lowercase())
-            {
                 continue;
             }
 
