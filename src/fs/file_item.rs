@@ -20,7 +20,7 @@ impl FileType {
     pub fn icon(&self) -> &'static str {
         match self {
             FileType::Directory => icons::FOLDER,
-            FileType::Document => icons::FILE,
+            FileType::Document => icons::DOCUMENT,
             FileType::Image => icons::IMAGE,
             FileType::Audio => icons::AUDIO,
             FileType::Video => icons::VIDEO,

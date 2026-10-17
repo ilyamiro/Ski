@@ -32,7 +32,7 @@ impl Place {
 
         if let Some(docs) = dirs::document_dir() {
             if docs.exists() {
-                places.push(Place::new("Documents", docs, icons::FOLDER));
+                places.push(Place::new("Documents", docs, icons::DOCUMENTS));
             }
         }
 
@@ -60,7 +60,7 @@ impl Place {
             }
         }
 
-        places.push(Place::new("Root Filesystem", PathBuf::from("/"), icons::STORAGE));
+        places.push(Place::new("Computer", PathBuf::from("/"), icons::STORAGE));
 
         places
     }

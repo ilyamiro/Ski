@@ -3,7 +3,7 @@ use std::fs;
 use std::io;
 use std::path::Path;
 
-use super::file_item::FileItem;
+use super::file_item::{FileItem, FileType};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SortBy {
@@ -18,13 +18,70 @@ pub enum SortOrder {
     Descending,
 }
 
-pub fn read_directory(
-    path: &Path,
-    show_hidden: bool,
-    search_query: &str,
-    sort_by: SortBy,
-    sort_order: SortOrder,
-) -> io::Result<Vec<FileItem>> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TypeFilter {
+    All,
+    Folders,
+    Documents,
+    Images,
+    Audio,
+    Video,
+    Archives,
+    Code,
+}
+
+impl TypeFilter {
+    pub const ALL: [TypeFilter; 8] = [
+        TypeFilter::All,
+        TypeFilter::Folders,
+        TypeFilter::Documents,
+        TypeFilter::Images,
+        TypeFilter::Audio,
+        TypeFilter::Video,
+        TypeFilter::Archives,
+        TypeFilter::Code,
+    ];
+
+    pub fn label(&self) -> &'static str {
+        match self {
+            TypeFilter::All => "All",
+            TypeFilter::Folders => "Folders",
+            TypeFilter::Documents => "Documents",
+            TypeFilter::Images => "Images",
+            TypeFilter::Audio => "Audio",
+            TypeFilter::Video => "Video",
+            TypeFilter::Archives => "Archives",
+            TypeFilter::Code => "Code",
+        }
+    }
+
+    /// Folders stay visible under every filter except `Folders` itself, so navigation never breaks.
+    fn matches(&self, item: &FileItem) -> bool {
+        let wanted = match self {
+            TypeFilter::All => return true,
+            TypeFilter::Folders => return item.is_dir,
+            TypeFilter::Documents => FileType::Document,
+            TypeFilter::Images => FileType::Image,
+            TypeFilter::Audio => FileType::Audio,
+            TypeFilter::Video => FileType::Video,
+            TypeFilter::Archives => FileType::Archive,
+            TypeFilter::Code => FileType::Code,
+        };
+        item.is_dir || item.file_type == wanted
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ListOptions {
+    pub show_hidden: bool,
+    pub query: String,
+    pub sort_by: SortBy,
+    pub sort_order: SortOrder,
+    pub folders_first: bool,
+    pub type_filter: TypeFilter,
+}
+
+pub fn read_directory(path: &Path, opts: &ListOptions) -> io::Result<Vec<FileItem>> {
     let mut items = Vec::new();
 
     for entry in fs::read_dir(path)? {
@@ -34,16 +91,17 @@ pub fn read_directory(
         };
 
         if let Some(item) = FileItem::from_path(&entry.path()) {
-            if !show_hidden && item.is_hidden {
+            if !opts.show_hidden && item.is_hidden {
                 continue;
             }
 
-            if !search_query.is_empty()
-                && !item
-                    .name
-                    .to_lowercase()
-                    .contains(&search_query.to_lowercase())
+            if !opts.query.is_empty()
+                && !item.name.to_lowercase().contains(&opts.query.to_lowercase())
             {
+                continue;
+            }
+
+            if !opts.type_filter.matches(&item) {
                 continue;
             }
 
@@ -51,15 +109,16 @@ pub fn read_directory(
         }
     }
 
-    sort_items(&mut items, sort_by, sort_order);
+    sort_items(&mut items, opts);
 
     Ok(items)
 }
 
-fn sort_items(items: &mut [FileItem], sort_by: SortBy, sort_order: SortOrder) {
+fn sort_items(items: &mut [FileItem], opts: &ListOptions) {
+    let (sort_by, sort_order) = (opts.sort_by, opts.sort_order);
     items.sort_by(|a, b| {
-        // Always group directories first
-        if a.is_dir != b.is_dir {
+        // Group directories first when enabled
+        if opts.folders_first && a.is_dir != b.is_dir {
             return if a.is_dir {
                 Ordering::Less
             } else {

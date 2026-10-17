@@ -1,34 +1,48 @@
-//! Material Symbols Rounded Unicode Codepoints
+//! Icon glyphs from the Nerd Fonts "Symbols Nerd Font Mono" (Material Design set, `md-*`).
+//!
+//! This is the same font Serpantinum pins for its icons. Icons are only ever drawn with the
+//! dedicated `icons` font family, so no glyph can fall back to another font and every glyph
+//! shares the same monospaced metrics.
 #![allow(dead_code)]
 
-pub const FOLDER: &str = "\u{e2c7}";
-pub const FILE: &str = "\u{e873}";
-pub const CODE: &str = "\u{e86f}";
-pub const IMAGE: &str = "\u{e3f4}";
-pub const AUDIO: &str = "\u{e405}";
-pub const VIDEO: &str = "\u{e404}";
-pub const ARCHIVE: &str = "\u{eb2c}";
-pub const EXECUTABLE: &str = "\u{eb8e}";
-pub const SYMLINK: &str = "\u{e250}";
+use eframe::egui::{FontFamily, FontId};
 
-pub const HOME: &str = "\u{e9b2}";
-pub const DESKTOP: &str = "\u{e30c}";
-pub const DOWNLOAD: &str = "\u{f090}";
-pub const STORAGE: &str = "\u{e1db}";
+pub const FAMILY: &str = "icons";
 
-pub const ARROW_BACK: &str = "\u{e5c4}";
-pub const ARROW_FORWARD: &str = "\u{e5c8}";
-pub const ARROW_UP: &str = "\u{e5d8}";
-pub const REFRESH: &str = "\u{e5d5}";
-pub const SEARCH: &str = "\u{e8b6}";
+pub fn font(size: f32) -> FontId {
+    FontId::new(size, FontFamily::Name(FAMILY.into()))
+}
 
-pub const VIEW_LIST: &str = "\u{e8ef}";
-pub const GRID_VIEW: &str = "\u{e9b0}";
-pub const VISIBILITY: &str = "\u{e8f4}";
-pub const VISIBILITY_OFF: &str = "\u{e8f5}";
+pub const FOLDER: &str = "\u{f024b}";
+pub const FILE: &str = "\u{f0224}";
+pub const DOCUMENT: &str = "\u{f09ee}";
+pub const CODE: &str = "\u{f0174}";
+pub const IMAGE: &str = "\u{f0976}";
+pub const AUDIO: &str = "\u{f0f74}";
+pub const VIDEO: &str = "\u{f0bdc}";
+pub const ARCHIVE: &str = "\u{f07b9}";
+pub const EXECUTABLE: &str = "\u{f018d}";
+pub const SYMLINK: &str = "\u{f0339}";
 
-pub const EDIT: &str = "\u{f097}";
-pub const HELP: &str = "\u{e8fd}";
-pub const CHECK: &str = "\u{e5ca}";
-pub const COPY: &str = "\u{e14d}";
-pub const CHEVRON_RIGHT: &str = "\u{e5cc}";
+pub const HOME: &str = "\u{f06a1}";
+pub const DESKTOP: &str = "\u{f07c0}";
+pub const DOWNLOAD: &str = "\u{f0b8f}";
+pub const DOCUMENTS: &str = "\u{f0c83}";
+pub const STORAGE: &str = "\u{f02ca}";
+
+pub const ARROW_BACK: &str = "\u{f004d}";
+pub const ARROW_FORWARD: &str = "\u{f0054}";
+pub const ARROW_UP: &str = "\u{f005d}";
+pub const SEARCH: &str = "\u{f0349}";
+pub const SETTINGS: &str = "\u{f08bb}";
+pub const CLOSE: &str = "\u{f0156}";
+pub const CHECK: &str = "\u{f012c}";
+pub const CHEVRON_RIGHT: &str = "\u{f0142}";
+pub const MORE: &str = "\u{f01d8}";
+
+pub const VIEW_LIST: &str = "\u{f0572}";
+pub const GRID_VIEW: &str = "\u{f0570}";
+pub const VISIBILITY: &str = "\u{f06d0}";
+pub const VISIBILITY_OFF: &str = "\u{f06d1}";
+pub const SORT_ASC: &str = "\u{f04bc}";
+pub const SORT_DESC: &str = "\u{f04bd}";

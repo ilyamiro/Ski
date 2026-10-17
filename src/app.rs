@@ -1,17 +1,14 @@
 use std::path::{Component, Path, PathBuf};
-use eframe::egui::{self, Color32};
+use eframe::egui;
 
 use crate::fs::{
     file_item::FileItem,
     places::Place,
-    scanner::{read_directory, SortBy, SortOrder},
+    scanner::{read_directory, ListOptions, SortBy, SortOrder, TypeFilter},
 };
 use crate::ui::{
     icons,
-    material::{
-        lerp_color, serpantinum_chip_button, serpantinum_file_row, serpantinum_icon_button,
-        serpantinum_nav_item,
-    },
+    material::{self, chip, file_row, file_tile, icon_button, nav_item, CONTROL_HEIGHT},
     theme::SerpantinumTheme,
 };
 
@@ -37,6 +34,8 @@ pub struct SkiApp {
     // Search and display options
     search_query: String,
     show_hidden: bool,
+    folders_first: bool,
+    type_filter: TypeFilter,
     view_mode: ViewMode,
     sort_by: SortBy,
     sort_order: SortOrder,
@@ -48,8 +47,11 @@ pub struct SkiApp {
     // Places
     places: Vec<Place>,
 
-    // Keyboard shortcuts help overlay
-    show_help: bool,
+    // Header search field and settings popup
+    show_search: bool,
+    focus_search: bool,
+    show_settings: bool,
+    settings_button_rect: egui::Rect,
 
     // Status toast message (text, timestamp)
     status_toast: Option<(String, std::time::Instant)>,
@@ -73,13 +75,18 @@ impl SkiApp {
             forward_history: Vec::new(),
             search_query: String::new(),
             show_hidden: false,
+            folders_first: true,
+            type_filter: TypeFilter::All,
             view_mode: ViewMode::List,
             sort_by: SortBy::Name,
             sort_order: SortOrder::Ascending,
             is_editing_path: false,
             path_input: canonical_path.to_string_lossy().to_string(),
             places,
-            show_help: false,
+            show_search: false,
+            focus_search: false,
+            show_settings: false,
+            settings_button_rect: egui::Rect::NOTHING,
             status_toast: None,
             scroll_to_selected: false,
         };
@@ -101,6 +108,7 @@ impl SkiApp {
             self.path_input = self.current_path.to_string_lossy().to_string();
             self.selected_index = None;
             self.search_query.clear();
+            self.show_search = false;
             self.is_editing_path = false;
             self.reload_items();
         } else {
@@ -135,20 +143,22 @@ impl SkiApp {
     }
 
     pub fn refresh(&mut self) {
-        // Also refresh theme from disk in case user changed wallpaper / Matugen theme in Serpantinum!
+        // Also reload the theme from disk in case the wallpaper / Matugen theme changed
         self.theme = SerpantinumTheme::load();
         self.reload_items();
-        self.set_toast("Refreshed & reloaded theme");
+        self.set_toast("Refreshed");
     }
 
     pub fn reload_items(&mut self) {
-        match read_directory(
-            &self.current_path,
-            self.show_hidden,
-            &self.search_query,
-            self.sort_by,
-            self.sort_order,
-        ) {
+        let opts = ListOptions {
+            show_hidden: self.show_hidden,
+            query: self.search_query.clone(),
+            sort_by: self.sort_by,
+            sort_order: self.sort_order,
+            folders_first: self.folders_first,
+            type_filter: self.type_filter,
+        };
+        match read_directory(&self.current_path, &opts) {
             Ok(items) => {
                 self.items = items;
                 self.error_message = None;
@@ -176,6 +186,14 @@ impl SkiApp {
 
     fn set_toast(&mut self, message: impl Into<String>) {
         self.status_toast = Some((message.into(), std::time::Instant::now()));
+    }
+
+    fn close_search(&mut self) {
+        self.show_search = false;
+        if !self.search_query.is_empty() {
+            self.search_query.clear();
+            self.reload_items();
+        }
     }
 
     fn move_selection(&mut self, delta: isize) {
@@ -224,23 +242,29 @@ impl SkiApp {
         if ctx.egui_wants_keyboard_input() {
             if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
                 self.is_editing_path = false;
-                if !self.search_query.is_empty() {
-                    self.search_query.clear();
-                    self.reload_items();
-                }
+                self.close_search();
             }
             return;
+        }
+
+        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            if self.show_settings {
+                self.show_settings = false;
+                return;
+            }
+            if self.show_search {
+                self.close_search();
+                return;
+            }
         }
 
         if ctx.input(|i| i.key_pressed(egui::Key::Questionmark)) {
-            self.show_help = !self.show_help;
+            self.show_settings = !self.show_settings;
         }
 
-        if self.show_help {
-            if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
-                self.show_help = false;
-            }
-            return;
+        if ctx.input(|i| i.key_pressed(egui::Key::Slash) || (i.modifiers.command && i.key_pressed(egui::Key::F))) {
+            self.show_search = true;
+            self.focus_search = true;
         }
 
         // Vim & Arrow Keys
@@ -314,6 +338,11 @@ impl SkiApp {
     }
 }
 
+/// Content width below which the sidebar is hidden.
+const SIDEBAR_BREAKPOINT: f32 = 720.0;
+/// Content width below which secondary header controls are hidden.
+const COMPACT_BREAKPOINT: f32 = 520.0;
+
 impl eframe::App for SkiApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
@@ -325,70 +354,47 @@ impl eframe::App for SkiApp {
             }
         }
 
-        // Top Navigation Bar (matching Serpantinum modular TopBar)
+        let window_width = ui.available_width();
+
+        if window_width >= SIDEBAR_BREAKPOINT {
+            egui::Panel::left("sidebar_places")
+                .exact_size(232.0)
+                .resizable(false)
+                .frame(
+                    egui::Frame::new()
+                        .fill(self.theme.mantle)
+                        .inner_margin(egui::Margin::symmetric(12, 14)),
+                )
+                .show(ui, |ui| self.render_sidebar(ui));
+        }
+
         egui::Panel::top("top_navigation")
             .frame(
                 egui::Frame::new()
-                    .fill(self.theme.mantle)
-                    .inner_margin(egui::Margin::symmetric(16, 12)),
+                    .fill(self.theme.base)
+                    .inner_margin(egui::Margin::symmetric(12, 8)),
             )
-            .show(ui, |ui| {
-                self.render_top_bar(ui);
-            });
+            .show(ui, |ui| self.render_top_bar(ui));
 
-        // Bottom Status Bar (matching Serpantinum crust footer)
-        egui::Panel::bottom("bottom_status")
-            .frame(
-                egui::Frame::new()
-                    .fill(self.theme.crust)
-                    .inner_margin(egui::Margin::symmetric(18, 8)),
-            )
-            .show(ui, |ui| {
-                self.render_bottom_bar(ui);
-            });
-
-        // Left Sidebar (matching Serpantinum SideBar / GuideSidebar)
-        egui::Panel::left("sidebar_places")
-            .default_size(220.0)
-            .min_size(170.0)
-            .max_size(300.0)
-            .resizable(true)
-            .frame(
-                egui::Frame::new()
-                    .fill(self.theme.mantle)
-                    .inner_margin(egui::Margin::symmetric(14, 16)),
-            )
-            .show(ui, |ui| {
-                self.render_sidebar(ui);
-            });
-
-        // Central Panel (File Canvas in base color)
         egui::CentralPanel::default()
             .frame(
                 egui::Frame::new()
                     .fill(self.theme.base)
-                    .inner_margin(egui::Margin::symmetric(20, 16)),
+                    .inner_margin(egui::Margin { left: 8, right: 8, top: 0, bottom: 8 }),
             )
             .show(ui, |ui| {
                 if let Some(ref err) = self.error_message {
                     ui.centered_and_justified(|ui| {
-                        ui.colored_label(self.theme.red, format!("⚠ {err}"));
+                        ui.label(egui::RichText::new(err).color(self.theme.red));
                     });
                 } else if self.items.is_empty() {
+                    let msg = if self.search_query.is_empty() && self.type_filter == TypeFilter::All {
+                        "This folder is empty".to_owned()
+                    } else {
+                        "Nothing matches".to_owned()
+                    };
                     ui.centered_and_justified(|ui| {
-                        if !self.search_query.is_empty() {
-                            ui.label(
-                                egui::RichText::new(format!("No matches for \"{}\"", self.search_query))
-                                    .size(15.0)
-                                    .color(self.theme.subtext1),
-                            );
-                        } else {
-                            ui.label(
-                                egui::RichText::new("Empty Directory")
-                                    .size(15.0)
-                                    .color(self.theme.subtext1),
-                            );
-                        }
+                        ui.label(egui::RichText::new(msg).size(15.0).color(self.theme.subtext1));
                     });
                 } else {
                     match self.view_mode {
@@ -398,233 +404,248 @@ impl eframe::App for SkiApp {
                 }
             });
 
-        // Shortcuts modal
-        if self.show_help {
-            self.render_help_modal(&ctx);
+        if self.show_settings {
+            self.render_settings(&ctx);
         }
+        self.render_toast(&ctx);
     }
 }
 
 impl SkiApp {
+    /// One fixed-height row: every control is `CONTROL_HEIGHT` tall and centered on the same axis.
     fn render_top_bar(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
-            // Serpantinum IconButton replicas (42dp, scale animation 1.04/1.08, glass rim)
-            let can_back = !self.back_history.is_empty();
-            if serpantinum_icon_button(ui, "btn_back", icons::ARROW_BACK, &self.theme, can_back, "Back (Alt+Left)").clicked() {
-                self.go_back();
-            }
+        let compact = ui.available_width() < COMPACT_BREAKPOINT;
+        let gap = 4.0;
 
-            let can_forward = !self.forward_history.is_empty();
-            if serpantinum_icon_button(ui, "btn_fwd", icons::ARROW_FORWARD, &self.theme, can_forward, "Forward (Alt+Right)").clicked() {
-                self.go_forward();
-            }
+        ui.allocate_ui_with_layout(
+            egui::vec2(ui.available_width(), CONTROL_HEIGHT),
+            egui::Layout::left_to_right(egui::Align::Center),
+            |ui| {
+                ui.spacing_mut().item_spacing.x = gap;
 
-            let can_up = self.current_path.parent().is_some();
-            if serpantinum_icon_button(ui, "btn_up", icons::ARROW_UP, &self.theme, can_up, "Parent Directory (h / Backspace)").clicked() {
-                self.go_up();
-            }
-
-            if serpantinum_icon_button(ui, "btn_refresh", icons::REFRESH, &self.theme, true, "Refresh & Reload Theme (F5)").clicked() {
-                self.refresh();
-            }
-
-            ui.add_space(8.0);
-
-            // Breadcrumbs / Path Editor
-            if self.is_editing_path {
-                let response = ui.add(
-                    egui::TextEdit::singleline(&mut self.path_input)
-                        .desired_width(f32::INFINITY)
-                        .font(egui::FontId::proportional(14.0))
-                        .margin(egui::Margin::symmetric(14, 8))
-                        .hint_text("Enter path and press Enter..."),
-                );
-                response.request_focus();
-
-                if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                    let target = PathBuf::from(&self.path_input);
-                    self.navigate_to(target);
+                let can_back = !self.back_history.is_empty();
+                if icon_button(ui, "btn_back", icons::ARROW_BACK, &self.theme, can_back, "Back").clicked() {
+                    self.go_back();
                 }
-            } else {
-                self.render_breadcrumbs(ui);
-            }
-
-            // Right-aligned toolbar
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                // Help button
-                if serpantinum_icon_button(ui, "btn_help", icons::HELP, &self.theme, true, "Shortcuts (?)").clicked() {
-                    self.show_help = !self.show_help;
+                let can_forward = !self.forward_history.is_empty();
+                if icon_button(ui, "btn_fwd", icons::ARROW_FORWARD, &self.theme, can_forward, "Forward").clicked() {
+                    self.go_forward();
+                }
+                let mut left_buttons = 2.0;
+                if !compact {
+                    let can_up = self.current_path.parent().is_some();
+                    if icon_button(ui, "btn_up", icons::ARROW_UP, &self.theme, can_up, "Parent folder").clicked() {
+                        self.go_up();
+                    }
+                    left_buttons += 1.0;
                 }
 
-                ui.add_space(3.0);
+                let right_buttons = 2.0;
+                let reserved = right_buttons * (CONTROL_HEIGHT + gap);
+                let _ = left_buttons;
+                let field_width = (ui.available_width() - reserved - gap).max(40.0);
 
-                // View Toggle buttons
-                let is_grid = self.view_mode == ViewMode::Grid;
-                let grid_btn = serpantinum_chip_button(
-                    ui,
-                    "btn_grid",
-                    Some(icons::GRID_VIEW),
-                    "Grid",
-                    &self.theme,
-                    is_grid,
-                    "Grid View (Ctrl+2)",
-                );
-                if grid_btn.clicked() {
-                    self.view_mode = ViewMode::Grid;
+                let (field_rect, field_resp) =
+                    ui.allocate_exact_size(egui::vec2(field_width, CONTROL_HEIGHT), egui::Sense::click());
+                ui.painter().rect_filled(field_rect, egui::CornerRadius::same(20), self.theme.surface1);
+
+                if self.show_search {
+                    self.render_search_field(ui, field_rect);
+                } else if self.is_editing_path {
+                    self.render_path_field(ui, field_rect);
+                } else {
+                    self.render_breadcrumbs(ui, field_rect, &field_resp);
                 }
 
-                let list_btn = serpantinum_chip_button(
-                    ui,
-                    "btn_list",
-                    Some(icons::VIEW_LIST),
-                    "List",
-                    &self.theme,
-                    !is_grid,
-                    "List View (Ctrl+1)",
-                );
-                if list_btn.clicked() {
-                    self.view_mode = ViewMode::List;
+                let search_icon = if self.show_search { icons::CLOSE } else { icons::SEARCH };
+                if icon_button(ui, "btn_search", search_icon, &self.theme, true, "Filter by name (/)").clicked() {
+                    if self.show_search {
+                        self.close_search();
+                    } else {
+                        self.show_search = true;
+                        self.focus_search = true;
+                        self.is_editing_path = false;
+                    }
                 }
 
-                ui.add_space(3.0);
-
-                // Hidden files toggle
-                let hidden_icon = if self.show_hidden { icons::VISIBILITY } else { icons::VISIBILITY_OFF };
-                let hidden_btn = serpantinum_chip_button(
-                    ui,
-                    "btn_hidden",
-                    Some(hidden_icon),
-                    if self.show_hidden { "Hidden" } else { "Show" },
-                    &self.theme,
-                    self.show_hidden,
-                    "Toggle Hidden Files (Ctrl+H)",
-                );
-                if hidden_btn.clicked() {
-                    self.show_hidden = !self.show_hidden;
-                    self.reload_items();
+                let settings = icon_button(ui, "btn_settings", icons::SETTINGS, &self.theme, true, "Settings (?)");
+                self.settings_button_rect = settings.rect;
+                if settings.clicked() {
+                    self.show_settings = !self.show_settings;
                 }
-
-                ui.add_space(8.0);
-
-                // Serpantinum Input.qml replica
-                let search_hint = format!("{}  Filter...", icons::SEARCH);
-                egui::Frame::new()
-                    .fill(self.theme.surface0)
-                    .corner_radius(egui::CornerRadius::same(12))
-                    .stroke(egui::Stroke::new(1.0, self.theme.surface1))
-                    .inner_margin(egui::Margin::symmetric(14, 6))
-                    .show(ui, |ui| {
-                        let search_resp = ui.add(
-                            egui::TextEdit::singleline(&mut self.search_query)
-                                .font(egui::FontId::proportional(13.0))
-                                .desired_width(140.0)
-                                .frame(egui::Frame::new())
-                                .hint_text(search_hint),
-                        );
-                        if search_resp.changed() {
-                            self.reload_items();
-                        }
-                    });
-            });
-        });
+            },
+        );
     }
 
-    fn render_breadcrumbs(&mut self, ui: &mut egui::Ui) {
-        let mut target_path: Option<PathBuf> = None;
+    fn render_search_field(&mut self, ui: &mut egui::Ui, rect: egui::Rect) {
+        material::paint_icon(
+            ui.painter(),
+            egui::pos2(rect.left() + 22.0, rect.center().y),
+            icons::SEARCH,
+            18.0,
+            self.theme.subtext1,
+        );
+        let edit_rect = egui::Rect::from_min_max(
+            egui::pos2(rect.left() + 42.0, rect.top()),
+            egui::pos2(rect.right() - 16.0, rect.bottom()),
+        );
+        let resp = ui.put(
+            edit_rect,
+            egui::TextEdit::singleline(&mut self.search_query)
+                .frame(egui::Frame::NONE)
+                .align(egui::Align2::LEFT_CENTER)
+                .font(egui::FontId::proportional(14.0))
+                .hint_text("Filter this folder"),
+        );
+        if self.focus_search {
+            resp.request_focus();
+            self.focus_search = false;
+        }
+        if resp.changed() {
+            self.reload_items();
+        }
+    }
 
-        egui::ScrollArea::horizontal()
-            .id_salt("breadcrumb_scroll")
-            .show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    let mut accumulated = PathBuf::new();
+    fn render_path_field(&mut self, ui: &mut egui::Ui, rect: egui::Rect) {
+        let edit_rect = egui::Rect::from_min_max(
+            egui::pos2(rect.left() + 18.0, rect.top()),
+            egui::pos2(rect.right() - 16.0, rect.bottom()),
+        );
+        let resp = ui.put(
+            edit_rect,
+            egui::TextEdit::singleline(&mut self.path_input)
+                .frame(egui::Frame::NONE)
+                .align(egui::Align2::LEFT_CENTER)
+                .font(egui::FontId::proportional(14.0))
+                .hint_text("Type a path and press Enter"),
+        );
+        if !resp.has_focus() && !resp.lost_focus() {
+            resp.request_focus();
+        }
+        if resp.lost_focus() {
+            if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                let target = PathBuf::from(&self.path_input);
+                self.is_editing_path = false;
+                self.navigate_to(target);
+            } else {
+                self.is_editing_path = false;
+            }
+        }
+    }
 
-                    for (i, comp) in self.current_path.components().enumerate() {
-                        match comp {
-                            Component::RootDir => {
-                                accumulated.push("/");
-                                let is_current = accumulated == self.current_path;
-                                let chip = serpantinum_chip_button(
-                                    ui,
-                                    "crumb_root",
-                                    Some(icons::STORAGE),
-                                    "/",
-                                    &self.theme,
-                                    is_current,
-                                    "Root filesystem",
-                                );
-                                if chip.clicked() {
-                                    target_path = Some(PathBuf::from("/"));
-                                }
-                            }
-                            Component::Normal(segment) => {
-                                accumulated.push(segment);
-                                let name = segment.to_string_lossy();
-                                let path_clone = accumulated.clone();
+    /// Path shown as clickable segments. Leading segments collapse into an ellipsis
+    /// when the field is too narrow, so the current folder is always visible.
+    fn render_breadcrumbs(&mut self, ui: &mut egui::Ui, rect: egui::Rect, field: &egui::Response) {
+        struct Crumb {
+            label: String,
+            icon: Option<&'static str>,
+            path: PathBuf,
+            width: f32,
+        }
 
-                                if i > 1 {
-                                    ui.label(
-                                        egui::RichText::new(icons::CHEVRON_RIGHT)
-                                            .size(16.0)
-                                            .color(self.theme.subtext1),
-                                    );
-                                }
+        let mut crumbs: Vec<Crumb> = Vec::new();
+        let mut acc = PathBuf::new();
+        for comp in self.current_path.components() {
+            match comp {
+                Component::RootDir => {
+                    acc.push("/");
+                    crumbs.push(Crumb { label: String::new(), icon: Some(icons::STORAGE), path: acc.clone(), width: 0.0 });
+                }
+                Component::Normal(seg) => {
+                    acc.push(seg);
+                    crumbs.push(Crumb { label: seg.to_string_lossy().into_owned(), icon: None, path: acc.clone(), width: 0.0 });
+                }
+                _ => {}
+            }
+        }
 
-                                let is_current = accumulated == self.current_path;
-                                let chip = serpantinum_chip_button(
-                                    ui,
-                                    format!("crumb_{i}_{name}"),
-                                    None,
-                                    name.as_ref(),
-                                    &self.theme,
-                                    is_current,
-                                    "",
-                                );
+        let font = egui::FontId::proportional(14.0);
+        for c in &mut crumbs {
+            c.width = match c.icon {
+                Some(_) => 36.0,
+                None => ui.painter().layout_no_wrap(c.label.clone(), font.clone(), self.theme.text).size().x + 22.0,
+            };
+        }
 
-                                if chip.clicked() {
-                                    target_path = Some(path_clone);
-                                }
-                            }
-                            _ => {}
-                        }
-                    }
+        let sep = 16.0;
+        let ellipsis = 34.0;
+        let avail = rect.width() - 16.0;
 
-                    // Path edit button
-                    if serpantinum_icon_button(ui, "btn_edit_path", icons::EDIT, &self.theme, true, "Edit Path (Ctrl+L)").clicked() {
-                        self.is_editing_path = true;
-                        self.path_input = self.current_path.to_string_lossy().to_string();
-                    }
-                });
-            });
+        // Walk from the current folder backwards while it still fits.
+        let mut first = crumbs.len();
+        let mut used = 0.0;
+        while first > 0 {
+            let w = crumbs[first - 1].width + if first < crumbs.len() { sep } else { 0.0 };
+            let reserve = if first - 1 > 0 { ellipsis + sep } else { 0.0 };
+            if used + w + reserve > avail && first < crumbs.len() {
+                break;
+            }
+            used += w;
+            first -= 1;
+        }
 
-        if let Some(target) = target_path {
-            self.navigate_to(target);
+        let mut target: Option<PathBuf> = None;
+        let mut x = rect.left() + 8.0;
+        let cy = rect.center().y;
+        let last = crumbs.len().saturating_sub(1);
+
+        if first > 0 {
+            let r = egui::Rect::from_min_size(egui::pos2(x, cy - 15.0), egui::vec2(ellipsis, 30.0));
+            let resp = ui.interact(r, ui.make_persistent_id("crumb_more"), egui::Sense::click());
+            let hover = ui.ctx().animate_bool_responsive(resp.id.with("h"), resp.hovered());
+            ui.painter().rect_filled(r, egui::CornerRadius::same(15), self.theme.with_alpha(self.theme.text, (hover * 22.0) as u8));
+            material::paint_icon(ui.painter(), r.center(), icons::MORE, 18.0, self.theme.subtext0);
+            if resp.clicked() {
+                target = Some(crumbs[first - 1].path.clone());
+            }
+            x += ellipsis;
+            material::paint_icon(ui.painter(), egui::pos2(x + sep / 2.0, cy), icons::CHEVRON_RIGHT, 16.0, self.theme.subtext1);
+            x += sep;
+        }
+
+        for i in first..crumbs.len() {
+            let c = &crumbs[i];
+            if i > first {
+                material::paint_icon(ui.painter(), egui::pos2(x + sep / 2.0, cy), icons::CHEVRON_RIGHT, 16.0, self.theme.subtext1);
+                x += sep;
+            }
+            let w = c.width.min((rect.right() - 8.0 - x).max(0.0));
+            let r = egui::Rect::from_min_size(egui::pos2(x, cy - 15.0), egui::vec2(w, 30.0));
+            let resp = ui.interact(r, ui.make_persistent_id(("crumb", i)), egui::Sense::click());
+            let hover = ui.ctx().animate_bool_responsive(resp.id.with("h"), resp.hovered());
+            ui.painter().rect_filled(r, egui::CornerRadius::same(15), self.theme.with_alpha(self.theme.text, (hover * 22.0) as u8));
+
+            let is_current = i == last;
+            let color = if is_current { self.theme.text } else { self.theme.subtext0 };
+            match c.icon {
+                Some(ic) => material::paint_icon(ui.painter(), r.center(), ic, 18.0, color),
+                None => {
+                    ui.painter().text(egui::pos2(r.left() + 11.0, cy), egui::Align2::LEFT_CENTER, &c.label, font.clone(), color);
+                }
+            }
+            if resp.clicked() {
+                target = Some(c.path.clone());
+            }
+            x += c.width;
+        }
+
+        // Clicking the empty area of the field switches to typing a path.
+        if field.clicked() && target.is_none() {
+            self.is_editing_path = true;
+            self.path_input = self.current_path.to_string_lossy().to_string();
+        }
+        if let Some(t) = target {
+            self.navigate_to(t);
         }
     }
 
     fn render_sidebar(&mut self, ui: &mut egui::Ui) {
-        ui.add_space(2.0);
-        ui.label(
-            egui::RichText::new("FAVORITES")
-                .size(11.0)
-                .strong()
-                .color(self.theme.subtext1),
-        );
-        ui.add_space(10.0);
-
         let mut destination: Option<PathBuf> = None;
+        ui.spacing_mut().item_spacing.y = 2.0;
 
         for (idx, place) in self.places.iter().enumerate() {
-            let is_selected = self.current_path == place.path;
-            let item_resp = serpantinum_nav_item(
-                ui,
-                format!("place_{idx}"),
-                place.icon,
-                &place.name,
-                &self.theme,
-                is_selected,
-            );
-
-            if item_resp.clicked() {
+            let selected = self.current_path == place.path;
+            if nav_item(ui, ("place", idx), place.icon, &place.name, &self.theme, selected).clicked() {
                 destination = Some(place.path.clone());
             }
         }
@@ -634,354 +655,228 @@ impl SkiApp {
         }
     }
 
+    fn open_item(&mut self, item: FileItem) {
+        if item.is_dir {
+            self.navigate_to(item.path);
+        } else {
+            self.open_file(&item.path);
+        }
+    }
+
     fn render_list_view(&mut self, ui: &mut egui::Ui) {
-        let mut clicked_item: Option<FileItem> = None;
-        let mut secondary_clicked_item: Option<FileItem> = None;
+        let mut opened: Option<FileItem> = None;
+        let mut copied: Option<FileItem> = None;
+        let should_scroll = std::mem::take(&mut self.scroll_to_selected);
 
-        egui::ScrollArea::vertical().show(ui, |ui| {
-            // Column Headers
-            ui.horizontal(|ui| {
-                ui.add_space(16.0);
-                if ui.button(
-                    egui::RichText::new(format!("NAME {}", self.sort_symbol(SortBy::Name)))
-                        .size(11.5)
-                        .strong()
-                        .color(self.theme.subtext1),
-                ).clicked() {
-                    self.toggle_sort(SortBy::Name);
-                }
-
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.add_space(18.0);
-                    if ui.button(
-                        egui::RichText::new(format!("MODIFIED {}", self.sort_symbol(SortBy::Modified)))
-                            .size(11.5)
-                            .strong()
-                            .color(self.theme.subtext1),
-                    ).clicked() {
-                        self.toggle_sort(SortBy::Modified);
-                    }
-
-                    ui.add_space(32.0);
-                    if ui.button(
-                        egui::RichText::new(format!("SIZE {}", self.sort_symbol(SortBy::Size)))
-                            .size(11.5)
-                            .strong()
-                            .color(self.theme.subtext1),
-                    ).clicked() {
-                        self.toggle_sort(SortBy::Size);
-                    }
-                });
-            });
-
-            ui.add_space(6.0);
-
-            let should_scroll = self.scroll_to_selected;
-            self.scroll_to_selected = false;
-
+        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+            ui.spacing_mut().item_spacing.y = 2.0;
             for (idx, item) in self.items.iter().enumerate() {
-                let is_selected = self.selected_index == Some(idx);
-
-                let (_, clicked, double_clicked, secondary_clicked) = serpantinum_file_row(
-                    ui,
-                    idx,
-                    item,
-                    &self.theme,
-                    is_selected,
-                    should_scroll,
-                );
-
-                if clicked {
+                let selected = self.selected_index == Some(idx);
+                let resp = file_row(ui, idx, item, &self.theme, selected, should_scroll);
+                if resp.clicked() || resp.secondary_clicked() {
                     self.selected_index = Some(idx);
                 }
-
-                if double_clicked {
-                    clicked_item = Some(item.clone());
+                if resp.double_clicked() {
+                    opened = Some(item.clone());
                 }
-
-                if secondary_clicked {
-                    self.selected_index = Some(idx);
-                    secondary_clicked_item = Some(item.clone());
+                if resp.secondary_clicked() {
+                    copied = Some(item.clone());
                 }
             }
         });
 
-        if let Some(item) = clicked_item {
-            if item.is_dir {
-                self.navigate_to(item.path);
-            } else {
-                self.open_file(&item.path);
-            }
-        }
-
-        if let Some(item) = secondary_clicked_item {
-            ui.ctx().copy_text(item.path.to_string_lossy().to_string());
-            self.set_toast(format!("Copied: {}", item.name));
-        }
+        self.finish_item_actions(ui, opened, copied);
     }
 
     fn render_grid_view(&mut self, ui: &mut egui::Ui) {
-        let mut clicked_item: Option<FileItem> = None;
+        let mut opened: Option<FileItem> = None;
+        let should_scroll = std::mem::take(&mut self.scroll_to_selected);
 
-        egui::ScrollArea::vertical().show(ui, |ui| {
-            let available_width = ui.available_width();
-            let item_width = 110.0;
-            let item_height = 100.0;
-            let cols = (available_width / item_width).floor().max(1.0) as usize;
+        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+            let cell = material::GRID_CELL;
+            let spacing = 4.0;
+            let cols = ((ui.available_width() + spacing) / (cell.x + spacing)).floor().max(1.0) as usize;
+            ui.spacing_mut().item_spacing = egui::vec2(spacing, spacing);
 
             for (row_idx, row) in self.items.chunks(cols).enumerate() {
                 ui.horizontal(|ui| {
                     for (col_idx, item) in row.iter().enumerate() {
                         let idx = row_idx * cols + col_idx;
-                        let is_selected = self.selected_index == Some(idx);
-
-                        let (rect, response) = ui.allocate_exact_size(
-                            egui::vec2(item_width, item_height),
-                            egui::Sense::click(),
-                        );
-
-                        let id = ui.make_persistent_id(format!("grid_{idx}"));
-                        let hover_t = ui.ctx().animate_bool_responsive(id.with("hov"), response.hovered());
-
-                        let target_scale = if response.is_pointer_button_down_on() { 0.98 } else { 1.0 };
-                        let current_scale = ui.ctx().animate_value_with_time(id.with("scale"), target_scale, 0.18);
-
-                        let selection_bg = self.theme.with_alpha(self.theme.mauve, 50);
-                        let hover_bg = self.theme.with_alpha(self.theme.surface0, 160);
-
-                        let bg_color = if is_selected {
-                            lerp_color(selection_bg, self.theme.with_alpha(self.theme.mauve, 75), hover_t)
-                        } else {
-                            lerp_color(Color32::TRANSPARENT, hover_bg, hover_t)
-                        };
-
-                        let animated_rect = egui::Rect::from_center_size(rect.center(), rect.size() * current_scale);
-
-                        if bg_color != Color32::TRANSPARENT {
-                            ui.painter().rect_filled(
-                                animated_rect,
-                                egui::CornerRadius::same(self.theme.border_radius as u8),
-                                bg_color,
-                            );
-                        }
-
-                        // Icon in rounded 36x36 container
-                        let icon_box_rect = egui::Rect::from_center_size(
-                            egui::pos2(animated_rect.center().x, animated_rect.top() + 34.0),
-                            egui::vec2(38.0, 38.0),
-                        );
-
-                        let box_bg = if is_selected {
-                            self.theme.with_alpha(self.theme.mauve, 85)
-                        } else {
-                            self.theme.surface2
-                        };
-
-                        ui.painter().rect_filled(
-                            icon_box_rect,
-                            egui::CornerRadius::same(10),
-                            box_bg,
-                        );
-
-                        let icon_str = if item.is_symlink {
-                            icons::SYMLINK
-                        } else {
-                            item.file_type.icon()
-                        };
-
-                        let icon_color = if is_selected {
-                            self.theme.text
-                        } else if item.is_dir {
-                            self.theme.blue
-                        } else {
-                            self.theme.subtext0
-                        };
-
-                        ui.painter().text(
-                            icon_box_rect.center(),
-                            egui::Align2::CENTER_CENTER,
-                            icon_str,
-                            egui::FontId::proportional(22.0),
-                            icon_color,
-                        );
-
-                        // Label
-                        let display_name = if item.name.len() > 12 {
-                            format!("{}…", &item.name[..11])
-                        } else {
-                            item.name.clone()
-                        };
-
-                        let text_color = if is_selected {
-                            self.theme.text
-                        } else {
-                            lerp_color(
-                                self.theme.subtext0,
-                                self.theme.text,
-                                hover_t,
-                            )
-                        };
-
-                        let text_pos = egui::pos2(animated_rect.center().x, animated_rect.bottom() - 16.0);
-                        ui.painter().text(
-                            text_pos,
-                            egui::Align2::CENTER_CENTER,
-                            display_name,
-                            egui::FontId::proportional(12.0),
-                            text_color,
-                        );
-
-                        if response.clicked() {
+                        let selected = self.selected_index == Some(idx);
+                        let resp = file_tile(ui, idx, item, &self.theme, selected, should_scroll);
+                        if resp.clicked() {
                             self.selected_index = Some(idx);
                         }
-
-                        if response.double_clicked() {
-                            clicked_item = Some(item.clone());
+                        if resp.double_clicked() {
+                            opened = Some(item.clone());
                         }
                     }
                 });
-                ui.add_space(8.0);
             }
         });
 
-        if let Some(item) = clicked_item {
-            if item.is_dir {
-                self.navigate_to(item.path);
-            } else {
-                self.open_file(&item.path);
-            }
+        self.finish_item_actions(ui, opened, None);
+    }
+
+    fn finish_item_actions(&mut self, ui: &egui::Ui, opened: Option<FileItem>, copied: Option<FileItem>) {
+        if let Some(item) = opened {
+            self.open_item(item);
+        }
+        if let Some(item) = copied {
+            ui.ctx().copy_text(item.path.to_string_lossy().to_string());
+            self.set_toast(format!("Copied path of {}", item.name));
         }
     }
 
-    fn render_bottom_bar(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
-            ui.label(
-                egui::RichText::new(format!("{} items", self.items.len()))
-                    .size(12.0)
-                    .color(self.theme.subtext1),
-            );
-
-            if let Some(idx) = self.selected_index {
-                if let Some(item) = self.items.get(idx) {
-                    ui.label(egui::RichText::new("•").color(self.theme.surface2));
-                    ui.label(
-                        egui::RichText::new(&item.name)
-                            .size(12.0)
-                            .strong()
-                            .color(self.theme.text),
-                    );
-                    ui.label(
-                        egui::RichText::new(format!("({})", item.file_type.label()))
-                            .size(12.0)
-                            .color(self.theme.subtext1),
-                    );
-                    if !item.is_dir {
-                        ui.label(
-                            egui::RichText::new(item.formatted_size())
-                                .size(12.0)
-                                .color(self.theme.subtext0),
-                        );
-                    }
-                }
-            }
-
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if let Some((ref toast, _)) = self.status_toast {
-                    ui.colored_label(self.theme.green, format!("{} {toast}", icons::CHECK));
-                } else {
-                    ui.label(
-                        egui::RichText::new("j/k: Navigate • Enter: Open • h: Up • ?: Shortcuts")
-                            .size(12.0)
-                            .color(self.theme.subtext1),
-                    );
-                }
+    fn render_toast(&mut self, ctx: &egui::Context) {
+        let Some((msg, _)) = &self.status_toast else { return };
+        egui::Area::new(egui::Id::new("toast"))
+            .order(egui::Order::Tooltip)
+            .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -20.0))
+            .interactable(false)
+            .show(ctx, |ui| {
+                egui::Frame::new()
+                    .fill(self.theme.surface2)
+                    .corner_radius(egui::CornerRadius::same(18))
+                    .inner_margin(egui::Margin::symmetric(18, 10))
+                    .show(ui, |ui| {
+                        ui.label(egui::RichText::new(msg).size(13.5).color(self.theme.text));
+                    });
             });
-        });
+        ctx.request_repaint_after(std::time::Duration::from_secs(1));
     }
 
-    fn render_help_modal(&mut self, ctx: &egui::Context) {
-        egui::Window::new("Shortcuts")
-            .collapsible(false)
-            .resizable(false)
-            .frame(
+    fn render_settings(&mut self, ctx: &egui::Context) {
+        let screen = ctx.content_rect();
+        let width = (screen.width() - 24.0).clamp(240.0, 380.0);
+        let max_height = (screen.height() - 80.0).max(160.0);
+        let mut reload = false;
+
+        let area = egui::Area::new(egui::Id::new("settings_popup"))
+            .order(egui::Order::Foreground)
+            .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-12.0, 60.0))
+            .show(ctx, |ui| {
                 egui::Frame::new()
                     .fill(self.theme.mantle)
-                    .corner_radius(egui::CornerRadius::same(self.theme.border_radius as u8))
-                    .stroke(egui::Stroke::new(1.0, self.theme.surface1))
-                    .inner_margin(egui::Margin::symmetric(24, 20)),
-            )
-            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
-            .show(ctx, |ui| {
-                ui.add_space(4.0);
-                egui::Grid::new("shortcuts_grid")
-                    .num_columns(2)
-                    .spacing([28.0, 10.0])
+                    .corner_radius(egui::CornerRadius::same(24))
+                    .shadow(ctx.global_style().visuals.window_shadow)
+                    .inner_margin(egui::Margin::same(20))
                     .show(ui, |ui| {
-                        let shortcuts = [
-                            ("j / ↓", "Move selection down"),
-                            ("k / ↑", "Move selection up"),
-                            ("Enter / l", "Open file / enter folder"),
-                            ("Backspace / h", "Go to parent folder"),
-                            ("Alt + ← / →", "Navigate history"),
-                            ("Home / g", "Jump to top"),
-                            ("End / G", "Jump to bottom"),
-                            ("/ or Ctrl + F", "Filter files"),
-                            ("Ctrl + L", "Direct path editing"),
-                            ("Ctrl + H", "Toggle hidden files"),
-                            ("Ctrl + 1 / 2", "List / Grid view"),
-                            ("y / Ctrl + C", "Copy file path"),
-                            ("F5 / Ctrl + R", "Refresh & reload theme"),
-                            ("? / Esc", "Toggle this dialog"),
-                        ];
-
-                        for (key, desc) in shortcuts {
-                            ui.label(
-                                egui::RichText::new(key)
-                                    .strong()
-                                    .color(self.theme.mauve),
-                            );
-                            ui.label(
-                                egui::RichText::new(desc)
-                                    .color(self.theme.text),
-                            );
-                            ui.end_row();
-                        }
+                        ui.set_width(width - 40.0);
+                        egui::ScrollArea::vertical().max_height(max_height - 40.0).show(ui, |ui| {
+                            reload = self.settings_contents(ui);
+                        });
                     });
-
-                ui.add_space(16.0);
-                ui.vertical_centered(|ui| {
-                    if ui.button(
-                        egui::RichText::new("Close (Esc)")
-                            .size(13.0)
-                            .color(self.theme.mauve),
-                    ).clicked() {
-                        self.show_help = false;
-                    }
-                });
             });
+
+        // Click outside closes the popup (the settings button handles its own toggle).
+        let rect = area.response.rect;
+        let outside_press = ctx.input(|i| {
+            i.pointer.any_pressed()
+                && i.pointer
+                    .interact_pos()
+                    .is_some_and(|p| !rect.contains(p) && !self.settings_button_rect.contains(p))
+        });
+        if outside_press {
+            self.show_settings = false;
+        }
+        if reload {
+            self.reload_items();
+        }
     }
 
-    fn sort_symbol(&self, field: SortBy) -> &'static str {
-        if self.sort_by == field {
-            match self.sort_order {
-                SortOrder::Ascending => "▲",
-                SortOrder::Descending => "▼",
+    fn section_title(&self, ui: &mut egui::Ui, text: &str) {
+        ui.add_space(10.0);
+        ui.label(egui::RichText::new(text).size(12.0).color(self.theme.subtext1));
+        ui.add_space(2.0);
+    }
+
+    /// Returns true when a setting that affects the file listing changed.
+    fn settings_contents(&mut self, ui: &mut egui::Ui) -> bool {
+        let mut reload = false;
+        ui.spacing_mut().item_spacing = egui::vec2(6.0, 8.0);
+
+        ui.label(egui::RichText::new("Settings").size(18.0).color(self.theme.text));
+
+        self.section_title(ui, "View");
+        ui.horizontal_wrapped(|ui| {
+            if chip(ui, "set_list", Some(icons::VIEW_LIST), "List", &self.theme, self.view_mode == ViewMode::List).clicked() {
+                self.view_mode = ViewMode::List;
             }
-        } else {
-            ""
-        }
-    }
+            if chip(ui, "set_grid", Some(icons::GRID_VIEW), "Grid", &self.theme, self.view_mode == ViewMode::Grid).clicked() {
+                self.view_mode = ViewMode::Grid;
+            }
+        });
 
-    fn toggle_sort(&mut self, field: SortBy) {
-        if self.sort_by == field {
-            self.sort_order = match self.sort_order {
-                SortOrder::Ascending => SortOrder::Descending,
-                SortOrder::Descending => SortOrder::Ascending,
-            };
-        } else {
-            self.sort_by = field;
-            self.sort_order = SortOrder::Ascending;
+        self.section_title(ui, "Sort by");
+        ui.horizontal_wrapped(|ui| {
+            for (field, label) in [(SortBy::Name, "Name"), (SortBy::Size, "Size"), (SortBy::Modified, "Modified")] {
+                if chip(ui, ("set_sort", label), None, label, &self.theme, self.sort_by == field).clicked() {
+                    self.sort_by = field;
+                    reload = true;
+                }
+            }
+        });
+        ui.horizontal_wrapped(|ui| {
+            let asc = self.sort_order == SortOrder::Ascending;
+            if chip(ui, "set_asc", Some(icons::SORT_ASC), "Ascending", &self.theme, asc).clicked() {
+                self.sort_order = SortOrder::Ascending;
+                reload = true;
+            }
+            if chip(ui, "set_desc", Some(icons::SORT_DESC), "Descending", &self.theme, !asc).clicked() {
+                self.sort_order = SortOrder::Descending;
+                reload = true;
+            }
+        });
+
+        self.section_title(ui, "Show");
+        ui.horizontal_wrapped(|ui| {
+            let icon = if self.show_hidden { icons::VISIBILITY } else { icons::VISIBILITY_OFF };
+            if chip(ui, "set_hidden", Some(icon), "Hidden files", &self.theme, self.show_hidden).clicked() {
+                self.show_hidden = !self.show_hidden;
+                reload = true;
+            }
+            if chip(ui, "set_folders_first", Some(icons::FOLDER), "Folders first", &self.theme, self.folders_first).clicked() {
+                self.folders_first = !self.folders_first;
+                reload = true;
+            }
+        });
+
+        self.section_title(ui, "File type");
+        ui.horizontal_wrapped(|ui| {
+            for filter in TypeFilter::ALL {
+                if chip(ui, ("set_type", filter.label()), None, filter.label(), &self.theme, self.type_filter == filter).clicked() {
+                    self.type_filter = filter;
+                    reload = true;
+                }
+            }
+        });
+
+        self.section_title(ui, "Shortcuts");
+        egui::Grid::new("shortcuts_grid").num_columns(2).spacing([16.0, 6.0]).show(ui, |ui| {
+            for (key, desc) in [
+                ("j / k", "Move selection"),
+                ("Enter / l", "Open"),
+                ("Backspace / h", "Parent folder"),
+                ("Alt + Left / Right", "History"),
+                ("/", "Filter by name"),
+                ("Ctrl + L", "Edit path"),
+                ("Ctrl + H", "Hidden files"),
+                ("Ctrl + 1 / 2", "List / grid"),
+                ("y", "Copy path"),
+                ("F5", "Refresh"),
+            ] {
+                ui.label(egui::RichText::new(key).size(12.5).color(self.theme.mauve));
+                ui.label(egui::RichText::new(desc).size(12.5).color(self.theme.subtext0));
+                ui.end_row();
+            }
+        });
+
+        ui.add_space(6.0);
+        if chip(ui, "set_refresh", None, "Refresh and reload theme", &self.theme, false).clicked() {
+            self.refresh();
         }
-        self.reload_items();
+
+        reload
     }
 }

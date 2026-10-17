@@ -20,7 +20,7 @@ fn main() -> eframe::Result {
         viewport: egui::ViewportBuilder::default()
             .with_title("Ski")
             .with_inner_size([1080.0, 720.0])
-            .with_min_inner_size([620.0, 420.0]),
+            .with_min_inner_size([360.0, 420.0]),
         ..Default::default()
     };
 
@@ -28,75 +28,75 @@ fn main() -> eframe::Result {
         "ski-file-manager",
         native_options,
         Box::new(move |cc| {
-            // Load and register Serpantinum fonts
             let mut fonts = egui::FontDefinitions::default();
 
+            // Text: Adwaita Sans, in front of egui's defaults (kept as fallback for rare glyphs)
             fonts.font_data.insert(
-                "adwaita_mono".to_owned(),
+                "adwaita_sans".to_owned(),
                 std::sync::Arc::new(egui::FontData::from_static(include_bytes!(
-                    "../assets/fonts/AdwaitaMonoNerdFont-Regular.ttf"
+                    "../assets/fonts/AdwaitaSans-Regular.ttf"
                 ))),
             );
+            fonts
+                .families
+                .entry(egui::FontFamily::Proportional)
+                .or_default()
+                .insert(0, "adwaita_sans".to_owned());
 
+            // Icons: the same Symbols Nerd Font Mono Serpantinum pins, in a family of its own
+            // with no fallback, so every icon comes from one font with identical metrics.
             fonts.font_data.insert(
                 "nerd_symbols".to_owned(),
                 std::sync::Arc::new(egui::FontData::from_static(include_bytes!(
                     "../assets/fonts/SymbolsNerdFontMono-Regular.ttf"
                 ))),
             );
-
-            fonts.font_data.insert(
-                "material_symbols".to_owned(),
-                std::sync::Arc::new(egui::FontData::from_static(include_bytes!(
-                    "../assets/fonts/MaterialSymbolsRounded.ttf"
-                ))),
+            fonts.families.insert(
+                egui::FontFamily::Name(ui::icons::FAMILY.into()),
+                vec!["nerd_symbols".to_owned()],
             );
-
-            // Primary font: Adwaita Mono (Nerd Font) matching Serpantinum
-            fonts
-                .families
-                .entry(egui::FontFamily::Proportional)
-                .or_default()
-                .clear();
-
-            fonts
-                .families
-                .entry(egui::FontFamily::Proportional)
-                .or_default()
-                .extend([
-                    "adwaita_mono".to_owned(),
-                    "nerd_symbols".to_owned(),
-                    "material_symbols".to_owned(),
-                ]);
-
-            fonts
-                .families
-                .entry(egui::FontFamily::Monospace)
-                .or_default()
-                .clear();
-
-            fonts
-                .families
-                .entry(egui::FontFamily::Monospace)
-                .or_default()
-                .extend([
-                    "adwaita_mono".to_owned(),
-                    "nerd_symbols".to_owned(),
-                    "material_symbols".to_owned(),
-                ]);
 
             cc.egui_ctx.set_fonts(fonts);
 
-            // Configure visual styling to match Serpantinum shell
+            // Flat Material look: no strokes anywhere, state is shown by fills only
             let mut visuals = egui::Visuals::dark();
-            visuals.window_corner_radius = egui::CornerRadius::same(theme.border_radius as u8);
-            visuals.menu_corner_radius = egui::CornerRadius::same(12);
-
+            visuals.window_corner_radius = egui::CornerRadius::same(24);
+            visuals.menu_corner_radius = egui::CornerRadius::same(16);
+            visuals.window_stroke = egui::Stroke::NONE;
+            visuals.popup_shadow = egui::Shadow::NONE;
+            visuals.window_shadow = egui::Shadow {
+                offset: [0, 8],
+                blur: 32,
+                spread: 0,
+                color: egui::Color32::from_black_alpha(110),
+            };
+            let w = &mut visuals.widgets;
+            for state in [&mut w.noninteractive, &mut w.inactive, &mut w.hovered, &mut w.active, &mut w.open] {
+                state.bg_stroke = egui::Stroke::NONE;
+                state.fg_stroke.color = theme.text;
+            }
+            visuals.selection.stroke = egui::Stroke::NONE;
+            visuals.selection.bg_fill = theme.with_alpha(theme.mauve, 90);
             visuals.panel_fill = theme.base;
-            visuals.window_fill = theme.surface0;
-            visuals.extreme_bg_color = theme.crust;
-
+            visuals.window_fill = theme.mantle;
+            visuals.extreme_bg_color = theme.surface1;
+            visuals.override_text_color = Some(theme.text);
             cc.egui_ctx.set_visuals(visuals);
+
+            cc.egui_ctx.all_styles_mut(|style| {
+                style.spacing.item_spacing = egui::vec2(6.0, 6.0);
+                style.interaction.selectable_labels = false;
+                for (ts, size) in [
+                    (egui::TextStyle::Body, 14.0),
+                    (egui::TextStyle::Button, 14.0),
+                    (egui::TextStyle::Small, 12.0),
+                    (egui::TextStyle::Heading, 18.0),
+                ] {
+                    if let Some(f) = style.text_styles.get_mut(&ts) {
+                        f.size = size;
+                    }
+                }
+            });
 
             Ok(Box::new(SkiApp::new(initial_path, theme)))
         }),
