@@ -39,6 +39,19 @@ fn application_dirs() -> Vec<PathBuf> {
     dirs
 }
 
+/// The installed applications, scanned once. Blocks the calling thread until the scan is done.
+pub fn installed() -> &'static [AppEntry] {
+    static APPS: OnceLock<Vec<AppEntry>> = OnceLock::new();
+    APPS.get_or_init(load_apps)
+}
+
+/// Start scanning the `.desktop` files in the background so the first use does not stall the UI.
+pub fn preload() {
+    std::thread::spawn(|| {
+        installed();
+    });
+}
+
 /// Every graphical application in the XDG data dirs. Earlier dirs win.
 pub fn load_apps() -> Vec<AppEntry> {
     let mut seen = HashSet::new();

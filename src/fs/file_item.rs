@@ -16,6 +16,73 @@ pub enum FileType {
     Other,
 }
 
+/// Which theme color a file type icon is tinted with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Tint {
+    Red,
+    Peach,
+    Green,
+    Blue,
+    Mauve,
+    Muted,
+}
+
+/// A glyph and tint of its own for the file kinds people recognise at a glance.
+/// Returns `None` for kinds that only have the generic per-category icon.
+pub fn specific_icon(name: &str) -> Option<(&'static str, Tint)> {
+    let lower = name.to_ascii_lowercase();
+    match lower.as_str() {
+        "makefile" | "cmakelists.txt" | "justfile" => return Some((icons::CONFIG, Tint::Muted)),
+        "dockerfile" | "containerfile" => return Some((icons::DOCKER, Tint::Blue)),
+        ".gitignore" | ".gitattributes" | ".gitmodules" => return Some((icons::GIT, Tint::Peach)),
+        "license" | "licence" | "copying" | "readme" => return Some((icons::TEXT, Tint::Muted)),
+        _ => {}
+    }
+    let ext = lower.rsplit_once('.')?.1;
+    Some(match ext {
+        "pdf" => (icons::PDF, Tint::Red),
+        "html" | "htm" | "xhtml" => (icons::HTML, Tint::Peach),
+        "iso" | "img" | "dmg" | "cue" | "nrg" => (icons::DISC, Tint::Blue),
+        "doc" | "docx" | "odt" | "rtf" | "dotx" => (icons::WORD, Tint::Blue),
+        "xls" | "xlsx" | "ods" | "xlsm" => (icons::EXCEL, Tint::Green),
+        "csv" | "tsv" => (icons::TABLE, Tint::Green),
+        "ppt" | "pptx" | "odp" => (icons::POWERPOINT, Tint::Peach),
+        "md" | "markdown" | "rst" => (icons::MARKDOWN, Tint::Muted),
+        "txt" => (icons::TEXT, Tint::Muted),
+        "log" => (icons::LOG, Tint::Muted),
+        "epub" | "mobi" | "azw3" | "djvu" => (icons::EBOOK, Tint::Peach),
+        "py" | "pyc" | "ipynb" => (icons::PYTHON, Tint::Blue),
+        "rs" => (icons::RUST, Tint::Peach),
+        "js" | "mjs" | "cjs" | "jsx" => (icons::JAVASCRIPT, Tint::Peach),
+        "ts" | "tsx" => (icons::TYPESCRIPT, Tint::Blue),
+        "css" | "scss" | "sass" | "less" => (icons::CSS, Tint::Blue),
+        "json" | "jsonc" | "json5" => (icons::JSON, Tint::Peach),
+        "c" | "h" => (icons::LANG_C, Tint::Blue),
+        "cpp" | "cc" | "cxx" | "hpp" | "hh" => (icons::LANG_CPP, Tint::Blue),
+        "go" => (icons::GO, Tint::Blue),
+        "java" | "jar" => (icons::JAVA, Tint::Red),
+        "kt" | "kts" => (icons::KOTLIN, Tint::Mauve),
+        "swift" => (icons::SWIFT, Tint::Peach),
+        "lua" => (icons::LUA, Tint::Blue),
+        "php" => (icons::PHP, Tint::Mauve),
+        "rb" => (icons::RUBY, Tint::Red),
+        "sh" | "bash" | "zsh" | "fish" => (icons::SHELL, Tint::Green),
+        "nix" => (icons::NIX, Tint::Blue),
+        "toml" | "yaml" | "yml" | "ini" | "conf" | "cfg" | "env" | "desktop" | "service" => (icons::CONFIG, Tint::Muted),
+        "sql" | "db" | "sqlite" | "sqlite3" => (icons::DATABASE, Tint::Mauve),
+        "svg" => (icons::VECTOR, Tint::Green),
+        "ttf" | "otf" | "woff" | "woff2" => (icons::FONT, Tint::Muted),
+        "pem" | "key" | "gpg" | "pub" | "asc" => (icons::KEY, Tint::Peach),
+        "crt" | "cer" | "p12" => (icons::CERTIFICATE, Tint::Peach),
+        "deb" | "rpm" | "apk" | "pkg" | "flatpakref" | "snap" => (icons::PACKAGE, Tint::Peach),
+        "appimage" | "exe" | "msi" => (icons::APPLICATION, Tint::Green),
+        "torrent" => (icons::TORRENT, Tint::Green),
+        "zip" | "tar" | "gz" | "bz2" | "xz" | "7z" | "rar" | "zst" | "tgz" => (icons::ZIP, Tint::Peach),
+        "dxf" | "dwg" | "stl" | "obj" | "step" | "stp" => (icons::CAD, Tint::Mauve),
+        _ => return None,
+    })
+}
+
 impl FileType {
     pub fn icon(&self) -> &'static str {
         match self {

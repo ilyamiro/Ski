@@ -1,5 +1,6 @@
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
+use std::sync::mpsc;
 use eframe::egui;
 
 use crate::fs::{
@@ -33,14 +34,16 @@ enum MenuTarget {
     Item(FileItem),
     Folder,
     Pin(PathBuf),
+    /// The hamburger menu next to the search field.
+    Main,
 }
 
 struct ContextMenu {
     pos: egui::Pos2,
     target: MenuTarget,
-    /// "Open with <default app>" for files that have one.
+    /// "Open with <default app>" for files that have one; resolved off the UI thread.
     open_label: Option<String>,
-    label_ready: bool,
+    label_rx: Option<mpsc::Receiver<Option<String>>>,
 }
 
 #[derive(Clone)]
@@ -66,6 +69,9 @@ enum MenuAction {
     NewFile,
     NewFolder,
     Refresh,
+    NewWindow,
+    OpenSettings,
+    Shortcuts,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -111,6 +117,7 @@ enum Dialog {
         picking: Option<usize>,
         defaults: Vec<Option<String>>,
     },
+    Shortcuts,
     Icon { folder: PathBuf, input: String, error: Option<String>, candidates: Vec<PathBuf>, browse: Option<PathBuf> },
 }
 
@@ -158,12 +165,12 @@ pub struct SkiApp {
     focus_search: bool,
     show_settings: bool,
     settings_button_rect: egui::Rect,
+    main_button_rect: egui::Rect,
 
     // Optional list columns, pinned folders, context menu and modal dialog
     columns: Vec<Column>,
     folder_icons: HashMap<PathBuf, PathBuf>,
     open_overrides: HashMap<PathBuf, String>,
-    apps: Option<Vec<AppEntry>>,
     app_icons: HashMap<String, Option<egui::TextureHandle>>,
 
     // Persisted preferences, and what the next frame has to re-apply to egui
@@ -186,6 +193,7 @@ pub struct SkiApp {
 
 impl SkiApp {
     pub fn new(initial_path: PathBuf, theme: SerpantinumTheme, settings: Settings, ctx: &egui::Context) -> Self {
+        apps::preload();
         let places = Place::default_places();
         let canonical_path = initial_path.canonicalize().unwrap_or(initial_path);
 
@@ -218,6 +226,7 @@ impl SkiApp {
             focus_search: false,
             show_settings: false,
             settings_button_rect: egui::Rect::NOTHING,
+            main_button_rect: egui::Rect::NOTHING,
             columns: settings.columns.clone(),
             folder_icons: load_folder_icons(),
             open_overrides: apps::load_overrides(),
@@ -228,7 +237,6 @@ impl SkiApp {
             system_fonts: None,
             theme_dirty: false,
             fonts_dirty: false,
-            apps: None,
             pins: Place::load_pins(),
             menu: None,
             dialog: None,
@@ -536,14 +544,44 @@ impl SkiApp {
         }
     }
 
-    /// Name of the app a file opens with, shown in the context menu ("Open with Writer").
-    fn open_label_for(&mut self, target: &MenuTarget) -> Option<String> {
-        let MenuTarget::Item(item) = target else { return None };
-        if item.is_dir {
-            return None;
+    /// Show the context menu right away. The "Open with <app>" label needs process calls
+    /// (`xdg-mime`) and the application scan, so a worker resolves it and the menu fills it in later.
+    fn open_menu(&mut self, ctx: &egui::Context, pos: egui::Pos2, target: MenuTarget) {
+        let label_rx = match &target {
+            MenuTarget::Item(item) if !item.is_dir => {
+                let (tx, rx) = mpsc::channel();
+                let path = item.path.clone();
+                let chosen = self.open_overrides.get(&path).cloned();
+                let ctx = ctx.clone();
+                std::thread::spawn(move || {
+                    let id = chosen.or_else(|| apps::default_for(&apps::mime_of(&path)));
+                    let label = id.and_then(|id| apps::installed().iter().find(|a| a.id == id).map(|a| format!("Open with {}", a.name)));
+                    let _ = tx.send(label);
+                    ctx.request_repaint();
+                });
+                Some(rx)
+            }
+            _ => None,
+        };
+        self.menu = Some(ContextMenu { pos, target, open_label: None, label_rx });
+    }
+
+    fn toggle_main_menu(&mut self, ctx: &egui::Context) {
+        if matches!(self.menu.as_ref().map(|m| &m.target), Some(MenuTarget::Main)) {
+            self.menu = None;
+        } else {
+            let rect = self.main_button_rect;
+            self.open_menu(ctx, egui::pos2(rect.left(), rect.bottom() + 6.0), MenuTarget::Main);
         }
-        let id = self.open_overrides.get(&item.path).cloned().or_else(|| apps::default_for(&apps::mime_of(&item.path)))?;
-        self.installed_apps().iter().find(|a| a.id == id).map(|a| format!("Open with {}", a.name))
+    }
+
+    /// Another Ski window on the current folder.
+    fn new_window(&mut self) {
+        let started = std::env::current_exe()
+            .and_then(|exe| std::process::Command::new(exe).arg(&self.current_path).spawn());
+        if let Err(err) = started {
+            self.set_toast(format!("Could not open a new window: {err}"));
+        }
     }
 
     fn rebuild_theme(&mut self) {
@@ -588,8 +626,8 @@ impl SkiApp {
         }
     }
 
-    fn installed_apps(&mut self) -> &[AppEntry] {
-        self.apps.get_or_insert_with(apps::load_apps)
+    fn installed_apps(&self) -> &'static [AppEntry] {
+        apps::installed()
     }
 
     fn set_toast(&mut self, message: impl Into<String>) {
@@ -689,6 +727,9 @@ impl SkiApp {
         }
 
         if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            if self.menu.take().is_some() {
+                return;
+            }
             if self.show_settings {
                 self.show_settings = false;
                 return;
@@ -700,7 +741,7 @@ impl SkiApp {
         }
 
         if ctx.input(|i| i.key_pressed(egui::Key::Questionmark)) {
-            self.show_settings = !self.show_settings;
+            self.dialog = Some(Dialog::Shortcuts);
         }
 
         if ctx.input(|i| i.key_pressed(egui::Key::Slash) || (i.modifiers.command && i.key_pressed(egui::Key::F))) {
@@ -873,7 +914,7 @@ impl eframe::App for SkiApp {
                 let background = ui.interact(ui.max_rect(), ui.make_persistent_id("list_background"), egui::Sense::click());
                 if background.secondary_clicked() && self.search_query.trim().is_empty() {
                     if let Some(pos) = background.interact_pointer_pos() {
-                        self.menu = Some(ContextMenu { pos, target: MenuTarget::Folder, open_label: None, label_ready: false });
+                        self.open_menu(ui.ctx(), pos, MenuTarget::Folder);
                     }
                 }
 
@@ -928,7 +969,7 @@ impl SkiApp {
                 }
 
                 // Search lives in the sidebar; without a sidebar it becomes a header button.
-                let right_buttons = if sidebar_visible { 2.0 } else { 3.0 };
+                let right_buttons = if sidebar_visible { 2.0 } else { 4.0 };
                 let reserved = right_buttons * (CONTROL_HEIGHT + gap);
                 let title_width = (ui.available_width() - reserved - gap).max(40.0);
 
@@ -958,9 +999,21 @@ impl SkiApp {
                     }
                 }
 
-                let settings = icon_button(ui, "btn_settings", icons::SETTINGS, &self.theme, true, "Settings (?)");
-                self.settings_button_rect = settings.rect;
-                if settings.clicked() {
+                if !sidebar_visible {
+                    let menu = icon_button(ui, "btn_main_menu", icons::MENU, &self.theme, true, "Main menu");
+                    self.main_button_rect = menu.rect;
+                    if menu.clicked() {
+                        self.toggle_main_menu(ui.ctx());
+                    }
+                }
+
+                let view_icon = match self.view_mode {
+                    ViewMode::List => icons::VIEW_LIST,
+                    ViewMode::Grid => icons::GRID_VIEW,
+                };
+                let view = icon_button(ui, "btn_view_options", view_icon, &self.theme, true, "View options");
+                self.settings_button_rect = view.rect;
+                if view.clicked() {
                     self.show_settings = !self.show_settings;
                 }
 
@@ -1098,6 +1151,7 @@ impl SkiApp {
 
         let browsing = self.search_query.trim().is_empty();
         let mut destination: Option<PathBuf> = None;
+        let mut menu_at: Option<(egui::Pos2, MenuTarget)> = None;
         for (idx, place) in self.places.iter().enumerate() {
             let selected = browsing && self.current_path == place.path;
             if nav_item(ui, ("place", idx), place.icon, &place.name, &self.theme, selected).clicked() {
@@ -1119,32 +1173,50 @@ impl SkiApp {
             }
             if resp.secondary_clicked() {
                 if let Some(pos) = resp.interact_pointer_pos() {
-                    self.menu = Some(ContextMenu { pos, target: MenuTarget::Pin(pin.clone()), open_label: None, label_ready: false });
+                    menu_at = Some((pos, MenuTarget::Pin(pin.clone())));
                 }
             }
         }
 
+        if let Some((pos, target)) = menu_at {
+            self.open_menu(ui.ctx(), pos, target);
+        }
         if let Some(dest) = destination {
             self.close_search();
             self.navigate_to(dest);
         }
     }
 
-    /// A lone search icon that grows into the search field when clicked.
+    /// Search icon (growing into the search field when clicked) with the main menu button at the right.
     fn render_sidebar_search(&mut self, ui: &mut egui::Ui) {
         let open = self.show_search || !self.search_query.is_empty();
         let open_t = ui.ctx().animate_bool_with_time_and_easing(egui::Id::unique("sidebar_search_open"), open, 0.3, material::quint_out);
 
+        let (row, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), CONTROL_HEIGHT), egui::Sense::hover());
+        let menu_rect = egui::Rect::from_min_size(egui::pos2(row.right() - CONTROL_HEIGHT, row.top()), egui::vec2(CONTROL_HEIGHT, CONTROL_HEIGHT));
+        let menu = ui.scope_builder(egui::UiBuilder::new().max_rect(menu_rect), |ui| {
+            icon_button(ui, "sidebar_main_menu", icons::MENU, &self.theme, true, "Main menu")
+        });
+        self.main_button_rect = menu.inner.rect;
+        if menu.inner.clicked() {
+            self.toggle_main_menu(ui.ctx());
+        }
+
+        // The search grows over the free space left of the menu button
+        let full = row.width() - CONTROL_HEIGHT - 4.0;
+        let slot = egui::Rect::from_min_size(row.min, egui::vec2(full, CONTROL_HEIGHT));
+
         if !open && open_t <= 0.0 {
-            if icon_button(ui, "sidebar_search_btn", icons::SEARCH, &self.theme, true, "Search (/)").clicked() {
+            let button = ui.scope_builder(egui::UiBuilder::new().max_rect(slot), |ui| {
+                icon_button(ui, "sidebar_search_btn", icons::SEARCH, &self.theme, true, "Search (/)")
+            });
+            if button.inner.clicked() {
                 self.show_search = true;
                 self.focus_search = true;
             }
             return;
         }
 
-        let full = ui.available_width();
-        let (slot, _) = ui.allocate_exact_size(egui::vec2(full, CONTROL_HEIGHT), egui::Sense::hover());
         let rect = egui::Rect::from_min_size(slot.min, egui::vec2(CONTROL_HEIGHT + (full - CONTROL_HEIGHT) * open_t, CONTROL_HEIGHT));
 
         let search_id = egui::Id::unique("sidebar_search");
@@ -1215,6 +1287,7 @@ impl SkiApp {
         let should_scroll = std::mem::take(&mut self.scroll_to_selected);
 
         let mut clicked: Option<(usize, egui::Modifiers)> = None;
+        let mut menu_at: Option<(egui::Pos2, MenuTarget)> = None;
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
             ui.spacing_mut().item_spacing.y = 1.0;
             for (idx, item) in self.items.iter().enumerate() {
@@ -1232,7 +1305,7 @@ impl SkiApp {
                 }
                 if resp.secondary_clicked() {
                     if let Some(pos) = resp.interact_pointer_pos() {
-                        self.menu = Some(ContextMenu { pos, target: MenuTarget::Item(item.clone()), open_label: None, label_ready: false });
+                        menu_at = Some((pos, MenuTarget::Item(item.clone())));
                     }
                 }
             }
@@ -1240,6 +1313,9 @@ impl SkiApp {
 
         if let Some((idx, modifiers)) = clicked {
             self.click_select(idx, modifiers);
+        }
+        if let Some((pos, target)) = menu_at {
+            self.open_menu(ui.ctx(), pos, target);
         }
         if let Some(item) = opened {
             self.open_item(item);
@@ -1251,6 +1327,7 @@ impl SkiApp {
         let should_scroll = std::mem::take(&mut self.scroll_to_selected);
 
         let mut clicked: Option<(usize, egui::Modifiers)> = None;
+        let mut menu_at: Option<(egui::Pos2, MenuTarget)> = None;
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
             let cell = material::GRID_CELL;
             let spacing = 4.0;
@@ -1274,7 +1351,7 @@ impl SkiApp {
                         }
                         if resp.secondary_clicked() {
                             if let Some(pos) = resp.interact_pointer_pos() {
-                                self.menu = Some(ContextMenu { pos, target: MenuTarget::Item(item.clone()), open_label: None, label_ready: false });
+                                menu_at = Some((pos, MenuTarget::Item(item.clone())));
                             }
                         }
                     }
@@ -1284,6 +1361,9 @@ impl SkiApp {
 
         if let Some((idx, modifiers)) = clicked {
             self.click_select(idx, modifiers);
+        }
+        if let Some((pos, target)) = menu_at {
+            self.open_menu(ui.ctx(), pos, target);
         }
         if let Some(item) = opened {
             self.open_item(item);
@@ -1334,7 +1414,7 @@ impl SkiApp {
                     .show(ui, |ui| {
                         ui.set_width(width - 32.0);
                         egui::ScrollArea::vertical().max_height(max_height - 32.0).show(ui, |ui| {
-                            reload = self.settings_contents(ui);
+                            reload = self.view_options_contents(ui);
                         });
                     });
             });
@@ -1440,58 +1520,52 @@ impl SkiApp {
         reload
     }
 
-    fn apply_listing_change(&mut self, ctx: &egui::Context) {
-        if self.search_query.trim().is_empty() {
-            self.reload_items();
-        } else {
-            self.on_query_changed(ctx);
-        }
+    /// Contents of the view options popup: only what changes how this folder is shown.
+    /// Returns true when a setting that affects the file listing changed.
+    fn view_options_contents(&mut self, ui: &mut egui::Ui) -> bool {
+        ui.spacing_mut().item_spacing = egui::vec2(6.0, 8.0);
+        ui.label(egui::RichText::new("View").size(16.0).color(self.theme.text));
+        self.file_options(ui)
     }
 
-    /// Returns true when a setting that affects the file listing changed.
-    fn settings_contents(&mut self, ui: &mut egui::Ui) -> bool {
-        let mut reload = false;
-        ui.spacing_mut().item_spacing = egui::vec2(6.0, 8.0);
-
-        ui.label(egui::RichText::new("Settings").size(16.0).color(self.theme.text));
-
-        reload |= self.file_options(ui);
-        if chip(ui, "set_all", Some(icons::SETTINGS), "All settings…", &self.theme, false).clicked() {
-            self.open_settings_dialog();
-            self.show_settings = false;
-        }
-
-        self.section_title(ui, "Shortcuts");
-        egui::Grid::new("shortcuts_grid").num_columns(2).spacing([16.0, 6.0]).show(ui, |ui| {
-            for (key, desc) in [
-                ("j / k", "Move selection"),
-                ("Enter / l", "Open"),
-                ("Backspace / h", "Parent folder"),
-                ("Alt + Left / Right", "History"),
-                ("/", "Filter by name"),
-                ("Ctrl + L", "Edit path"),
-                ("Ctrl + H", "Hidden files"),
-                ("Ctrl + 1 / 2", "List / grid"),
-                ("Ctrl + D", "Pin folder"),
-                ("Alt + Enter", "Properties"),
-                ("Ctrl + C / X / V", "Copy / cut / paste"),
-                ("Ctrl + A", "Select all"),
-                ("Shift / Ctrl + click", "Select several"),
-                ("y", "Copy path"),
-                ("F5", "Refresh"),
-            ] {
-                ui.label(egui::RichText::new(key).size(12.5).color(self.theme.mauve));
-                ui.label(egui::RichText::new(desc).size(12.5).color(self.theme.subtext0));
-                ui.end_row();
-            }
+    fn shortcuts_contents(&mut self, ui: &mut egui::Ui) -> bool {
+        let theme = self.theme;
+        let mut close = false;
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new("Keyboard shortcuts").size(16.0).color(theme.text));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if filled_icon_button(ui, "sc_close", icons::CLOSE, &theme, 30.0, "Close", Some(theme.red)).clicked() {
+                    close = true;
+                }
+            });
         });
-
-        ui.add_space(6.0);
-        if chip(ui, "set_refresh", None, "Refresh and reload theme", &self.theme, false).clicked() {
-            self.refresh();
-        }
-
-        reload
+        let max_height = (ui.ctx().content_rect().height() - 220.0).clamp(200.0, 520.0);
+        egui::ScrollArea::vertical().max_height(max_height).auto_shrink([false, true]).show(ui, |ui| {
+            egui::Grid::new("shortcuts_grid").num_columns(2).spacing([24.0, 8.0]).show(ui, |ui| {
+                for (key, desc) in [
+                    ("j / k", "Move selection"),
+                    ("Enter / l", "Open"),
+                    ("Backspace / h", "Parent folder"),
+                    ("Alt + Left / Right", "History"),
+                    ("/", "Filter by name"),
+                    ("Ctrl + L", "Edit path"),
+                    ("Ctrl + H", "Hidden files"),
+                    ("Ctrl + 1 / 2", "List / grid"),
+                    ("Ctrl + D", "Pin folder"),
+                    ("Alt + Enter", "Properties"),
+                    ("Ctrl + C / X / V", "Copy / cut / paste"),
+                    ("Ctrl + A", "Select all"),
+                    ("Shift / Ctrl + click", "Select several"),
+                    ("y", "Copy path"),
+                    ("F5", "Refresh"),
+                ] {
+                    ui.label(egui::RichText::new(key).size(13.0).color(theme.mauve));
+                    ui.label(egui::RichText::new(desc).size(13.0).color(theme.subtext0));
+                    ui.end_row();
+                }
+            });
+        });
+        close
     }
 }
 
@@ -1577,6 +1651,9 @@ impl SkiApp {
             MenuAction::NewFile => self.open_create_dialog(false),
             MenuAction::NewFolder => self.open_create_dialog(true),
             MenuAction::Refresh => self.refresh(),
+            MenuAction::NewWindow => self.new_window(),
+            MenuAction::OpenSettings => self.open_settings_dialog(),
+            MenuAction::Shortcuts => self.dialog = Some(Dialog::Shortcuts),
             MenuAction::Copy(paths) => self.set_clipboard(paths, false),
             MenuAction::Cut(paths) => self.set_clipboard(paths, true),
             MenuAction::Paste => self.paste(),
@@ -1676,6 +1753,14 @@ impl SkiApp {
                     (icons::INFO, "Properties", MenuAction::Properties(self.current_path.clone())),
                 ],
             ],
+            MenuTarget::Main => vec![
+                vec![(icons::NEW_WINDOW, "New window", MenuAction::NewWindow)],
+                vec![
+                    (icons::REFRESH, "Refresh and reload theme", MenuAction::Refresh),
+                    (icons::SETTINGS, "Settings", MenuAction::OpenSettings),
+                ],
+                vec![(icons::KEYBOARD, "Keyboard shortcuts", MenuAction::Shortcuts)],
+            ],
             MenuTarget::Pin(path) => vec![
                 vec![(icons::OPEN, "Open", MenuAction::OpenPath(path.clone()))],
                 vec![(icons::PIN_OFF, "Unpin from sidebar", MenuAction::Unpin(path.clone())), icon_entry(path)],
@@ -1685,13 +1770,10 @@ impl SkiApp {
     }
 
     fn render_menu(&mut self, ctx: &egui::Context) {
-        let t = ctx.animate_bool_with_time_and_easing(egui::Id::unique("menu_anim"), self.menu.is_some(), 0.2, material::quint_out);
-        if self.menu.as_ref().is_some_and(|m| !m.label_ready) {
-            let target = self.menu.as_ref().map(|m| m.target.clone());
-            let label = target.as_ref().and_then(|t| self.open_label_for(t));
-            if let Some(menu) = self.menu.as_mut() {
+        if let Some(menu) = self.menu.as_mut() {
+            if let Some(Ok(label)) = menu.label_rx.as_ref().map(|rx| rx.try_recv()) {
                 menu.open_label = label;
-                menu.label_ready = true;
+                menu.label_rx = None;
             }
         }
         let Some(menu) = self.menu.as_ref() else { return };
@@ -1705,12 +1787,12 @@ impl SkiApp {
             pos.y.min(screen.bottom() - size.y - 8.0).max(8.0),
         );
 
+        let is_main = matches!(self.menu.as_ref().map(|m| &m.target), Some(MenuTarget::Main));
         let mut chosen = None;
         let area = egui::Area::new(egui::Id::unique("context_menu"))
             .order(egui::Order::Foreground)
-            .fixed_pos(origin + egui::vec2(0.0, (1.0 - t) * -8.0))
+            .fixed_pos(origin)
             .show(ctx, |ui| {
-                ui.set_opacity(t);
                 egui::Frame::new()
                     .fill(self.theme.mantle)
                     .corner_radius(egui::CornerRadius::same(22))
@@ -1739,7 +1821,11 @@ impl SkiApp {
             });
 
         let rect = area.response.rect;
-        let outside_press = ctx.input(|i| i.pointer.any_pressed() && i.pointer.interact_pos().is_some_and(|p| !rect.contains(p)));
+        let main_button = self.main_button_rect;
+        let outside_press = ctx.input(|i| {
+            i.pointer.any_pressed()
+                && i.pointer.interact_pos().is_some_and(|p| !rect.contains(p) && !(is_main && main_button.contains(p)))
+        });
         if chosen.is_some() || outside_press {
             self.menu = None;
         }
@@ -1798,6 +1884,7 @@ impl SkiApp {
                             Dialog::Settings { .. } => self.settings_dialog_contents(ui, &mut dialog),
                             Dialog::PickFolder { .. } => self.pick_folder_contents(ui, &mut dialog),
                             Dialog::Compress { .. } => self.compress_contents(ui, &mut dialog),
+                            Dialog::Shortcuts => self.shortcuts_contents(ui),
                         };
                     });
             });
@@ -2060,7 +2147,7 @@ impl SkiApp {
             });
         });
         ui.horizontal(|ui| {
-            for (idx, (icon, label)) in [(icons::SETTINGS, "Appearance"), (icons::VIEW_LIST, "Files"), (icons::APPS, "Applications")].into_iter().enumerate() {
+            for (idx, (icon, label)) in [(icons::SETTINGS, "Appearance"), (icons::APPS, "Applications")].into_iter().enumerate() {
                 if chip(ui, ("set_tab", idx), Some(icon), label, &theme, *tab == idx).clicked() {
                     *tab = idx;
                 }
@@ -2073,11 +2160,6 @@ impl SkiApp {
             ui.spacing_mut().item_spacing = egui::vec2(6.0, 8.0);
             match *tab {
                 0 => self.appearance_tab(ui, font_query, hex),
-                1 => {
-                    if self.file_options(ui) {
-                        self.apply_listing_change(&ctx);
-                    }
-                }
                 _ => self.applications_tab(ui, picking, defaults),
             }
         });
@@ -2322,6 +2404,8 @@ impl SkiApp {
 
         let max_height = (ui.ctx().content_rect().height() - 300.0).clamp(160.0, 400.0);
         let mut launch = false;
+        // The application list sits in a box of its own
+        egui::Frame::new().fill(theme.surface0).corner_radius(egui::CornerRadius::same(22)).inner_margin(egui::Margin::same(6)).show(ui, |ui| {
         egui::ScrollArea::vertical().max_height(max_height).auto_shrink([false, true]).id_salt("ow_scroll").show(ui, |ui| {
             ui.spacing_mut().item_spacing.y = 2.0;
             for (title, rows) in &sections {
@@ -2357,13 +2441,15 @@ impl SkiApp {
                 }
             }
         });
+        });
 
         ui.add_space(4.0);
-        ui.horizontal_wrapped(|ui| {
-            if chip(ui, "ow_file", Some(icons::FILE), "Always for this file", &theme, *for_file).clicked() {
+        egui::Frame::new().fill(theme.surface0).corner_radius(egui::CornerRadius::same(22)).inner_margin(egui::Margin::same(6)).show(ui, |ui| {
+            ui.spacing_mut().item_spacing.y = 2.0;
+            if material::switch_row(ui, "ow_file", icons::FILE, "Always for this file", &theme, *for_file).clicked() {
                 *for_file = !*for_file;
             }
-            if chip(ui, "ow_type", Some(icons::APPS), "Always for this file type", &theme, *for_type).clicked() {
+            if material::switch_row(ui, "ow_type", icons::APPS, "Always for this file type", &theme, *for_type).clicked() {
                 *for_type = !*for_type;
             }
         });

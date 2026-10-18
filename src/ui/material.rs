@@ -4,7 +4,7 @@ use eframe::egui::{
     self, text::LayoutJob, text::TextWrapping, Align2, Color32, CornerRadius, Pos2, Rect, Vec2,
 };
 use super::theme::SerpantinumTheme;
-use crate::fs::file_item::FileItem;
+use crate::fs::file_item::{specific_icon, FileItem, FileType, Tint};
 use crate::ui::icons;
 
 /// Height shared by every control in the header so the row always lines up.
@@ -279,26 +279,49 @@ pub fn nav_item(
     response
 }
 
-fn item_icon(item: &FileItem) -> &'static str {
-    if item.is_symlink { icons::SYMLINK } else { item.file_type.icon() }
-}
-
-fn item_icon_color(item: &FileItem, theme: &SerpantinumTheme, selected: bool) -> Color32 {
-    if selected {
-        theme.mauve
-    } else if item.is_dir {
-        theme.blue
-    } else {
-        theme.subtext0
+/// Glyph and color of a file's type icon.
+fn item_icon(item: &FileItem, theme: &SerpantinumTheme, selected: bool) -> (&'static str, Color32) {
+    if item.is_dir {
+        return (icons::FOLDER, if selected { theme.mauve } else { theme.blue });
     }
+    if item.is_symlink {
+        return (icons::SYMLINK, if selected { theme.mauve } else { theme.subtext0 });
+    }
+    if let Some((glyph, tint)) = specific_icon(&item.name) {
+        let color = match tint {
+            Tint::Red => theme.red,
+            Tint::Peach => theme.peach,
+            Tint::Green => theme.green,
+            Tint::Blue => theme.blue,
+            Tint::Mauve => theme.mauve,
+            Tint::Muted => theme.subtext0,
+        };
+        return (glyph, color);
+    }
+    let color = match item.file_type {
+        FileType::Image => theme.green,
+        FileType::Audio => theme.peach,
+        FileType::Video => theme.red,
+        FileType::Archive => theme.peach,
+        FileType::Executable => theme.green,
+        FileType::Code => theme.blue,
+        _ => theme.subtext0,
+    };
+    (item.file_type.icon(), color)
 }
 
-/// Paints an image thumbnail as a rounded square (the texture is pre-cropped to a square).
+/// Paints a preview as a rounded picture that keeps its aspect ratio inside `rect`.
+/// Document pages sit on a thin shadow so the white sheet reads as paper on dark themes.
 fn paint_thumb(ui: &egui::Ui, tex: &egui::TextureHandle, rect: Rect, radius: u8) {
-    egui::Image::from_texture(egui::load::SizedTexture::new(tex.id(), rect.size()))
+    let size = tex.size_vec2();
+    let fit = (rect.width() / size.x).min(rect.height() / size.y);
+    let shown = Rect::from_center_size(rect.center(), size * fit);
+    egui::Image::from_texture(egui::load::SizedTexture::new(tex.id(), shown.size()))
         .corner_radius(CornerRadius::same(radius))
-        .paint_at(ui, rect);
+        .paint_at(ui, shown);
 }
+
+pub const ROW_HEIGHT: f32 = 44.0;
 
 /// One row of the list view. Columns drop out as the row gets narrower.
 /// `path_hint` replaces size/date (used by search results to show where the file lives).
@@ -313,7 +336,7 @@ pub fn file_row(
     path_hint: Option<&str>,
     columns: &[Column],
 ) -> egui::Response {
-    let (rect, response) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 38.0), egui::Sense::click());
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(ui.available_width(), ROW_HEIGHT), egui::Sense::click());
     let id = ui.make_persistent_id(("row", idx));
     let fx = fx(ui, id, &response, true, &FxSpec::ROW);
     let sel_t = ui.ctx().animate_bool_with_time_and_easing(id.with("sel"), selected, 0.25, quint_out);
@@ -330,22 +353,25 @@ pub fn file_row(
     );
     paint_fill(ui.painter(), r, 12, bg, &fx);
 
-    let icon_center = Pos2::new(r.left() + 26.0, r.center().y);
+    let icon_center = Pos2::new(r.left() + 28.0, r.center().y);
     match thumb {
-        Some(tex) => paint_thumb(ui, tex, Rect::from_center_size(icon_center, Vec2::splat(26.0)), 6),
-        None => paint_icon(ui.painter(), icon_center, item_icon(item), 20.0, item_icon_color(item, theme, selected)),
+        Some(tex) => paint_thumb(ui, tex, Rect::from_center_size(icon_center, Vec2::splat(32.0)), 6),
+        None => {
+            let (glyph, color) = item_icon(item, theme, selected);
+            paint_icon(ui.painter(), icon_center, glyph, 24.0, color);
+        }
     }
 
     let mut right = r.right() - 16.0;
-    let small = egui::FontId::proportional(12.0);
+    let small = egui::FontId::proportional(12.5);
     if let Some(hint) = path_hint {
-        let galley = truncated(ui, hint, 12.0, theme.subtext1, (r.width() * 0.4).min(260.0));
+        let galley = truncated(ui, hint, 12.5, theme.subtext1, (r.width() * 0.4).min(260.0));
         let pos = Pos2::new(right - galley.size().x, r.center().y - galley.size().y / 2.0);
         right = pos.x - 12.0;
         ui.painter().galley(pos, galley, theme.subtext1);
     } else {
         // Columns that don't fit next to a readable name are dropped, rightmost first
-        let budget = r.width() - 48.0 - 16.0 - 160.0;
+        let budget = r.width() - 54.0 - 16.0 - 160.0;
         let mut used = 0.0;
         let fitting: Vec<Column> = columns
             .iter()
@@ -361,9 +387,9 @@ pub fn file_row(
         }
     }
 
-    let name_color = lerp_color(lerp_color(theme.subtext0, theme.text, fx.hover), theme.text, sel_t);
-    let galley = truncated(ui, &item.name, 13.5, name_color, right - r.left() - 52.0);
-    let pos = Pos2::new(r.left() + 48.0, r.center().y - galley.size().y / 2.0);
+    let name_color = theme.text;
+    let galley = truncated(ui, &item.name, 14.0, name_color, right - r.left() - 60.0);
+    let pos = Pos2::new(r.left() + 54.0, r.center().y - galley.size().y / 2.0);
     ui.painter().galley(pos, galley, name_color);
 
     if selected && should_scroll {
@@ -446,7 +472,7 @@ pub fn menu_item(
     response
 }
 
-pub const GRID_CELL: Vec2 = Vec2::new(104.0, 96.0);
+pub const GRID_CELL: Vec2 = Vec2::new(116.0, 128.0);
 
 /// One cell of the grid view.
 pub fn file_tile(
@@ -469,21 +495,62 @@ pub fn file_tile(
         theme.with_alpha(theme.mauve, 48),
         sel_t,
     );
-    paint_fill(ui.painter(), r, 14, bg, &fx);
+    paint_fill(ui.painter(), r, 18, bg, &fx);
 
-    let icon_center = Pos2::new(r.center().x, r.top() + 34.0);
+    let picture = Rect::from_center_size(Pos2::new(r.center().x, r.top() + 48.0), Vec2::splat(72.0));
     match thumb {
-        Some(tex) => paint_thumb(ui, tex, Rect::from_center_size(icon_center, Vec2::splat(52.0)), 10),
-        None => paint_icon(ui.painter(), icon_center, item_icon(item), 32.0, item_icon_color(item, theme, selected)),
+        Some(tex) => paint_thumb(ui, tex, picture, 8),
+        None => {
+            let (glyph, color) = item_icon(item, theme, selected);
+            paint_icon(ui.painter(), picture.center(), glyph, 48.0, color);
+        }
     }
 
-    let color = lerp_color(lerp_color(theme.subtext0, theme.text, fx.hover), theme.text, sel_t);
-    let galley = truncated(ui, &item.name, 12.0, color, r.width() - 14.0);
-    let pos = Pos2::new(r.center().x - galley.size().x / 2.0, r.bottom() - 24.0);
-    ui.painter().galley(pos, galley, color);
+    // Names wrap over two lines and are centered under the picture, like Nautilus
+    let mut job = LayoutJob::simple(item.name.clone(), egui::FontId::proportional(12.5), theme.text, r.width() - 14.0);
+    job.wrap = TextWrapping { max_width: r.width() - 14.0, max_rows: 2, break_anywhere: true, overflow_character: Some('…') };
+    job.halign = egui::Align::Center;
+    let galley = ui.painter().layout_job(job);
+    let pos = Pos2::new(r.center().x, r.top() + 94.0);
+    ui.painter().galley(pos - egui::vec2(galley.size().x / 2.0, 0.0), galley, theme.text);
 
     if selected && should_scroll {
         response.scroll_to_me(Some(egui::Align::Center));
     }
     response
+}
+
+/// Material switch row: a label on the left and an animated on/off switch on the right.
+pub fn switch_row(
+    ui: &mut egui::Ui,
+    id_source: impl std::hash::Hash + std::fmt::Debug,
+    icon: &str,
+    label: &str,
+    theme: &SerpantinumTheme,
+    on: bool,
+) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 44.0), egui::Sense::click());
+    let id = ui.make_persistent_id(id_source);
+    let fx = fx(ui, id, &response, true, &FxSpec::ROW);
+    let t = ui.ctx().animate_bool_with_time_and_easing(id.with("on"), on, 0.25, quint_out);
+    paint_fill(ui.painter(), rect, 18, lerp_color(Color32::TRANSPARENT, theme.with_alpha(theme.text, 16), fx.hover), &fx);
+
+    paint_icon(ui.painter(), Pos2::new(rect.left() + 24.0, rect.center().y), icon, 18.0, lerp_color(theme.subtext0, theme.mauve, t));
+    ui.painter().text(Pos2::new(rect.left() + 46.0, rect.center().y), Align2::LEFT_CENTER, label, egui::FontId::proportional(13.5), theme.text);
+
+    let track = Rect::from_center_size(Pos2::new(rect.right() - 36.0, rect.center().y), Vec2::new(46.0, 26.0));
+    let track_color = lerp_color(theme.surface2, theme.mauve, t);
+    ui.painter().rect_filled(track, CornerRadius::same(13), track_color);
+    let knob_r = lerp(8.0, 10.0, t.max(fx.press));
+    let knob_x = lerp(track.left() + 13.0, track.right() - 13.0, t);
+    let knob_color = lerp_color(theme.subtext1, theme.crust, t);
+    ui.painter().circle_filled(Pos2::new(knob_x, track.center().y), knob_r, knob_color);
+    if t > 0.5 {
+        paint_icon(ui.painter(), Pos2::new(knob_x, track.center().y), icons::CHECK, 12.0, theme.mauve.gamma_multiply(t));
+    }
+    response
+}
+
+fn lerp(a: f32, b: f32, t: f32) -> f32 {
+    a + (b - a) * t
 }
