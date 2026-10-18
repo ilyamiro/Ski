@@ -43,43 +43,53 @@ pub struct SystemFont {
 }
 
 /// Installed font families (via fontconfig), regular style only, sorted by name.
-pub fn system_fonts() -> Vec<SystemFont> {
-    let Some(output) = Command::new("fc-list")
-        .args(["--format", "%{file}\t%{family[0]}\t%{style[0]}\n"])
-        .stderr(Stdio::null())
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-    else {
-        return Vec::new();
-    };
-    let text = String::from_utf8_lossy(&output.stdout);
-
-    let mut best: std::collections::HashMap<String, (u8, PathBuf)> = std::collections::HashMap::new();
-    for line in text.lines() {
-        let mut parts = line.split('\t');
-        let (Some(file), Some(family), style) = (parts.next(), parts.next(), parts.next().unwrap_or("")) else { continue };
-        let ext = Path::new(file).extension().map(|e| e.to_string_lossy().to_lowercase());
-        if !matches!(ext.as_deref(), Some("ttf" | "otf")) || family.is_empty() {
-            continue;
-        }
-        let style = style.to_lowercase();
-        let score = match style.as_str() {
-            "regular" | "book" | "roman" | "normal" => 0,
-            "" => 1,
-            s if s.contains("bold") || s.contains("italic") || s.contains("oblique") => 3,
-            _ => 2,
+pub fn system_fonts() -> &'static [SystemFont] {
+    static CACHED: std::sync::OnceLock<Vec<SystemFont>> = std::sync::OnceLock::new();
+    CACHED.get_or_init(|| {
+        let Some(output) = Command::new("fc-list")
+            .args(["--format", "%{file}\t%{family[0]}\t%{style[0]}\n"])
+            .stderr(Stdio::null())
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+        else {
+            return Vec::new();
         };
-        let entry = best.entry(family.to_owned()).or_insert((u8::MAX, PathBuf::new()));
-        if score < entry.0 {
-            *entry = (score, PathBuf::from(file));
+        let text = String::from_utf8_lossy(&output.stdout);
+
+        let mut best: std::collections::HashMap<String, (u8, PathBuf)> = std::collections::HashMap::new();
+        for line in text.lines() {
+            let mut parts = line.split('\t');
+            let (Some(file), Some(family), style) = (parts.next(), parts.next(), parts.next().unwrap_or("")) else { continue };
+            let ext = Path::new(file).extension().map(|e| e.to_string_lossy().to_lowercase());
+            if !matches!(ext.as_deref(), Some("ttf" | "otf")) || family.is_empty() {
+                continue;
+            }
+            let style = style.to_lowercase();
+            let score = match style.as_str() {
+                "regular" | "book" | "roman" | "normal" => 0,
+                "" => 1,
+                s if s.contains("bold") || s.contains("italic") || s.contains("oblique") => 3,
+                _ => 2,
+            };
+            let entry = best.entry(family.to_owned()).or_insert((u8::MAX, PathBuf::new()));
+            if score < entry.0 {
+                *entry = (score, PathBuf::from(file));
+            }
         }
-    }
-    let mut list: Vec<SystemFont> = best
-        .into_iter()
-        .filter(|(_, (score, _))| *score < 3)
-        .map(|(family, (_, path))| SystemFont { family, path })
-        .collect();
-    list.sort_by_key(|f| f.family.to_lowercase());
-    list
+        let mut list: Vec<SystemFont> = best
+            .into_iter()
+            .filter(|(_, (score, _))| *score < 3)
+            .map(|(family, (_, path))| SystemFont { family, path })
+            .collect();
+        list.sort_by_key(|f| f.family.to_lowercase());
+        list
+    }).as_slice()
+}
+
+/// Pre-scan installed fonts on a background thread so opening Appearance settings never stalls.
+pub fn preload() {
+    std::thread::spawn(|| {
+        let _ = system_fonts();
+    });
 }

@@ -14,15 +14,13 @@ use crate::ui::theme::{self, SerpantinumTheme, ACCENTS, PRESETS};
 
 impl SkiApp {
     pub(crate) fn open_settings_dialog(&mut self) {
-        let defaults = apps::CATEGORIES.iter().map(|c| apps::default_for(c.mimes[0])).collect();
-        self.system_fonts.get_or_insert_with(crate::ui::fonts::system_fonts);
         self.capturing_key = false;
         self.dialog = Some(Dialog::Settings {
             tab: 0,
             font_query: String::new(),
             hex: self.settings.accent.clone().unwrap_or_default(),
             picking: None,
-            defaults,
+            defaults: Vec::new(),
             keybind_search: String::new(),
             capture: None,
             conflict_warning: None,
@@ -281,12 +279,10 @@ impl SkiApp {
             );
         });
         let needle = font_query.trim().to_lowercase();
-        let fonts: Vec<SystemFont> = self
-            .system_fonts
-            .get_or_insert_with(crate::ui::fonts::system_fonts)
+        let all_fonts = crate::ui::fonts::system_fonts();
+        let fonts: Vec<&SystemFont> = all_fonts
             .iter()
             .filter(|f| needle.is_empty() || f.family.to_lowercase().contains(&needle))
-            .cloned()
             .collect();
         let show_default = needle.is_empty() || "adwaita sans".contains(&needle);
         let total = fonts.len() + usize::from(show_default);
@@ -304,7 +300,7 @@ impl SkiApp {
                         }
                         continue;
                     }
-                    let font = &fonts[row - usize::from(show_default)];
+                    let font = fonts[row - usize::from(show_default)];
                     let on = self.settings.font.as_deref() == Some(font.path.as_path());
                     if nav_item(ui, ("font_row", row), icons::DOCUMENT, &font.family, &theme, on).clicked() {
                         picked = Some(Some(font.clone()));
@@ -716,14 +712,14 @@ impl SkiApp {
                     ui.label(egui::RichText::new(action.label()).size(13.0).color(label_color));
 
                     // Per-action reset button if overridden
-                    if is_overridden {
-                        if filled_icon_button(ui, ("rst_act", action.id()), icons::REFRESH, &theme, 22.0, "Reset to default", None).clicked() {
-                            self.settings.keybinds.remove(action.id());
-                            self.persist_settings();
-                            if matches!(*capture, Some((a, _)) if a == action) {
-                                *capture = None;
-                                self.capturing_key = false;
-                            }
+                    if is_overridden
+                        && filled_icon_button(ui, ("rst_act", action.id()), icons::REFRESH, &theme, 22.0, "Reset to default", None).clicked()
+                    {
+                        self.settings.keybinds.remove(action.id());
+                        self.persist_settings();
+                        if matches!(*capture, Some((a, _)) if a == action) {
+                            *capture = None;
+                            self.capturing_key = false;
                         }
                     }
 
@@ -790,7 +786,10 @@ impl SkiApp {
         }
     }
 
-    fn applications_tab(&mut self, ui: &mut egui::Ui, picking: &mut Option<usize>, defaults: &mut [Option<String>]) {
+    fn applications_tab(&mut self, ui: &mut egui::Ui, picking: &mut Option<usize>, defaults: &mut Vec<Option<String>>) {
+        if defaults.is_empty() {
+            *defaults = apps::CATEGORIES.iter().map(|c| apps::default_for(c.mimes[0])).collect();
+        }
         let theme = self.theme;
         material::section_label(ui, "Default Applications", &theme);
         ui.label(
@@ -799,9 +798,9 @@ impl SkiApp {
                 .color(theme.subtext1),
         );
         ui.spacing_mut().item_spacing.y = 2.0;
-        let installed: Vec<AppEntry> = self.installed_apps().to_vec();
+        let installed = self.installed_apps();
         for (idx, category) in apps::CATEGORIES.iter().enumerate() {
-            let current = defaults[idx].as_deref().and_then(|id| installed.iter().find(|a| a.id == id));
+            let current = defaults.get(idx).and_then(|d| d.as_deref()).and_then(|id| installed.iter().find(|a| a.id == id));
             let value = current.map_or("Not set", |a| a.name.as_str());
             if category_row(ui, ("cat_row", idx), category.icon, category.label, value, &theme, *picking == Some(idx)).clicked() {
                 *picking = if *picking == Some(idx) { None } else { Some(idx) };
@@ -809,7 +808,8 @@ impl SkiApp {
             if *picking != Some(idx) {
                 continue;
             }
-            let candidates = apps::apps_for(&installed, category.mimes[0], defaults[idx].as_deref());
+            let default_app = defaults.get(idx).and_then(|d| d.as_deref());
+            let candidates = apps::apps_for(installed, category.mimes[0], default_app);
             let mut chosen: Option<&AppEntry> = None;
             for (row, app) in candidates.iter().enumerate() {
                 let probe = egui::Rect::from_min_size(ui.cursor().min, egui::vec2(ui.available_width(), 44.0));

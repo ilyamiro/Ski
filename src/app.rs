@@ -18,7 +18,6 @@ use crate::thumbs::Thumbnails;
 use crate::ui::{
     icons,
     material::{self, chip, file_row, file_tile, filled_icon_button, icon_button, menu_item, nav_item, Column, CONTROL_HEIGHT},
-    fonts::SystemFont,
     theme::SerpantinumTheme,
 };
 
@@ -180,12 +179,12 @@ pub struct SkiApp {
     pub(crate) settings: Settings,
     pub(crate) saved_settings: Settings,
     pub(crate) system_theme: SerpantinumTheme,
-    pub(crate) system_fonts: Option<Vec<SystemFont>>,
     pub(crate) theme_dirty: bool,
     pub(crate) fonts_dirty: bool,
     pins: Vec<PathBuf>,
     menu: Option<ContextMenu>,
     pub(crate) dialog: Option<Dialog>,
+    pub(crate) closing_dialog: Option<Dialog>,
 
     // Status toast message (text, timestamp)
     status_toast: Option<(String, std::time::Instant)>,
@@ -199,6 +198,7 @@ pub struct SkiApp {
 impl SkiApp {
     pub fn new(initial_path: PathBuf, theme: SerpantinumTheme, settings: Settings, ctx: &egui::Context) -> Self {
         apps::preload();
+        crate::ui::fonts::preload();
         let places = Place::default_places();
         let canonical_path = initial_path.canonicalize().unwrap_or(initial_path);
 
@@ -249,12 +249,12 @@ impl SkiApp {
             saved_settings: settings.clone(),
             settings,
             system_theme: SerpantinumTheme::load(),
-            system_fonts: None,
             theme_dirty: false,
             fonts_dirty: false,
             pins: Place::load_pins(),
             menu: None,
             dialog: None,
+            closing_dialog: None,
             status_toast: None,
             scroll_to_selected: false,
             capturing_key: false,
@@ -762,7 +762,10 @@ impl SkiApp {
         }
 
         if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
-            if self.dialog.take().is_some() || self.menu.take().is_some() {
+            if self.dialog.is_some() || self.menu.take().is_some() {
+                if let Some(d) = self.dialog.take() {
+                    self.closing_dialog = Some(d);
+                }
                 return;
             }
         }
@@ -1959,26 +1962,49 @@ impl SkiApp {
     }
 
     fn render_dialog(&mut self, ctx: &egui::Context) {
-        let t = ctx.animate_bool_with_time_and_easing(egui::Id::unique("dialog_anim"), self.dialog.is_some(), self.anim_time(0.25), material::quint_out);
-        let Some(mut dialog) = self.dialog.take() else { return };
+        let is_open = self.dialog.is_some();
+        let t = ctx.animate_bool_with_time_and_easing(
+            egui::Id::unique("dialog_anim"),
+            is_open,
+            self.anim_time(0.25),
+            material::quint_out,
+        );
 
-        if let Dialog::Icon { input, error, .. } = &mut dialog {
-            if let Some(path) = ctx.input(|i| i.raw.dropped_files.first().map(|f| f.path().to_path_buf())) {
-                *input = path.to_string_lossy().into_owned();
-                *error = None;
+        if !is_open && t <= 0.0 {
+            self.closing_dialog = None;
+            return;
+        }
+
+        let mut dialog = if let Some(d) = self.dialog.take() {
+            d
+        } else if let Some(d) = self.closing_dialog.take() {
+            d
+        } else {
+            return;
+        };
+
+        if is_open {
+            if let Dialog::Icon { input, error, .. } = &mut dialog {
+                if let Some(path) = ctx.input(|i| i.raw.dropped_files.first().map(|f| f.path().to_path_buf())) {
+                    *input = path.to_string_lossy().into_owned();
+                    *error = None;
+                }
             }
         }
 
-        // Dimmed backdrop; clicking it dismisses the dialog.
         let screen = ctx.content_rect();
         let mut close = false;
-        egui::Area::new(egui::Id::unique("dialog_scrim"))
-            .order(egui::Order::Foreground)
+
+        // Dimmed backdrop lives strictly in Order::Middle, preventing clicks from passing to the background
+        // while never covering or stealing clicks from the dialog in Order::Foreground.
+        let _scrim_area = egui::Area::new(egui::Id::unique("dialog_scrim"))
+            .order(egui::Order::Middle)
             .fixed_pos(screen.min)
+            .interactable(is_open)
             .show(ctx, |ui| {
                 let (rect, resp) = ui.allocate_exact_size(screen.size(), egui::Sense::click());
                 ui.painter().rect_filled(rect, 0, egui::Color32::from_black_alpha((110.0 * t) as u8));
-                close |= resp.clicked();
+                resp
             });
 
         let preferred = match &dialog {
@@ -1987,9 +2013,12 @@ impl SkiApp {
             _ => 440.0,
         };
         let width = (screen.width() - 32.0).clamp(240.0, preferred);
-        egui::Area::new(egui::Id::unique("dialog"))
+
+        // Dialog card sits in Order::Foreground, always above the backdrop scrim
+        let dialog_area = egui::Area::new(egui::Id::unique("dialog_window"))
             .order(egui::Order::Foreground)
             .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, (1.0 - t) * 14.0))
+            .interactable(is_open)
             .show(ctx, |ui| {
                 ui.set_opacity(t);
                 egui::Frame::new()
@@ -2013,9 +2042,28 @@ impl SkiApp {
                     });
             });
 
-        // A dialog opened from inside this one (e.g. Properties -> Custom icon) replaces it
-        if !close && self.dialog.is_none() {
-            self.dialog = Some(dialog);
+        // Click outside the dialog card dismisses it
+        let dialog_rect = dialog_area.response.rect;
+        let outside_click = is_open
+            && ctx.input(|i| {
+                i.pointer.primary_clicked()
+                    && i.pointer.interact_pos().is_some_and(|p| !dialog_rect.contains(p))
+            });
+
+        if outside_click {
+            close = true;
+        }
+
+        if is_open {
+            if close {
+                self.closing_dialog = Some(dialog);
+                self.dialog = None;
+            } else if self.dialog.is_none() {
+                // A child dialog opened inside this one replaces it
+                self.dialog = Some(dialog);
+            }
+        } else {
+            self.closing_dialog = Some(dialog);
         }
     }
 

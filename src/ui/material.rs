@@ -28,9 +28,8 @@ pub const FONT_TITLE: f32 = 16.0;
 /// Shared State Layer / Tonal Fill Alphas
 pub const ALPHA_HOVER: u8 = 16;
 pub const ALPHA_PRESS: u8 = 32;
-pub const ALPHA_SEL_BG: u8 = 85;
-pub const ALPHA_SEL_HOVER: u8 = 110;
-pub const ALPHA_SEL_OUTLINE: u8 = 120;
+pub const ALPHA_SEL_BG: u8 = 58;
+pub const ALPHA_SEL_HOVER: u8 = 74;
 pub const ALPHA_DIVIDER: u8 = 24;
 
 pub fn quint_out(t: f32) -> f32 {
@@ -250,17 +249,8 @@ pub fn chip(
     let r = scaled(rect, fx.scale);
 
     let idle = lerp_color(theme.surface1, theme.surface2, fx.hover);
-    let active = blend_over(theme.surface1, theme.with_alpha(theme.mauve, 70 + (fx.hover * 25.0) as u8));
+    let active = blend_over(theme.surface1, theme.with_alpha(theme.mauve, 64 + (fx.hover * 20.0) as u8));
     paint_fill(ui.painter(), r, 15, lerp_color(idle, active, sel_t), &fx);
-
-    if sel_t > 0.001 {
-        ui.painter().rect_stroke(
-            r,
-            CornerRadius::same(15),
-            egui::Stroke::new(1.0, theme.with_alpha(theme.mauve, (90.0 * sel_t) as u8)),
-            egui::StrokeKind::Inside,
-        );
-    }
 
     let color = lerp_color(lerp_color(theme.subtext0, theme.text, fx.hover), theme.mauve, sel_t);
     let mut x = r.left() + 12.0;
@@ -296,34 +286,12 @@ pub fn nav_item(
         theme.with_alpha(theme.text, ALPHA_PRESS),
         fx.press,
     );
-    let active_bg = theme.with_alpha(theme.mauve, ALPHA_SEL_BG + (fx.hover * 20.0) as u8);
+    let sel_alpha = (ALPHA_SEL_BG as f32 + fx.hover * (ALPHA_SEL_HOVER - ALPHA_SEL_BG) as f32) as u8;
+    let active_bg = theme.with_alpha(theme.mauve, sel_alpha);
     let bg = lerp_color(idle_bg, active_bg, sel_t);
     paint_fill(ui.painter(), r, RADIUS_LG, bg, &fx);
 
-    if sel_t > 0.001 {
-        ui.painter().rect_stroke(
-            r,
-            CornerRadius::same(RADIUS_LG),
-            egui::Stroke::new(1.5, theme.with_alpha(theme.mauve, (ALPHA_SEL_OUTLINE as f32 * sel_t) as u8)),
-            egui::StrokeKind::Inside,
-        );
-        let bar_rect = Rect::from_center_size(
-            Pos2::new(r.left() + 4.0, r.center().y),
-            Vec2::new(3.0, 18.0 * sel_t),
-        );
-        ui.painter().rect_filled(
-            bar_rect,
-            CornerRadius::same(2),
-            theme.with_alpha(theme.mauve, (230.0 * sel_t) as u8),
-        );
-    }
-
-    let active_color = if theme.light {
-        theme.mauve
-    } else {
-        lerp_color(theme.mauve, Color32::WHITE, 0.25)
-    };
-    let color = lerp_color(lerp_color(theme.subtext0, theme.text, fx.hover), active_color, sel_t);
+    let color = lerp_color(lerp_color(theme.subtext0, theme.text, fx.hover), theme.mauve, sel_t);
     paint_icon(ui.painter(), Pos2::new(r.left() + 22.0, r.center().y), icon, 17.0, color);
 
     let galley = truncated(ui, label, FONT_BODY, color, r.width() - 56.0);
@@ -379,6 +347,7 @@ pub const ROW_HEIGHT: f32 = 44.0;
 
 /// One row of the list view. Columns drop out as the row gets narrower.
 /// `path_hint` replaces size/date (used by search results to show where the file lives).
+#[allow(clippy::too_many_arguments)]
 pub fn file_row(
     ui: &mut egui::Ui,
     idx: usize,
@@ -402,44 +371,23 @@ pub fn file_row(
         theme.with_alpha(theme.text, ALPHA_PRESS),
         fx.press,
     );
-    let active_bg = theme.with_alpha(theme.mauve, ALPHA_SEL_BG + (fx.hover * 25.0) as u8);
+    let sel_alpha = (ALPHA_SEL_BG as f32 + fx.hover * (ALPHA_SEL_HOVER - ALPHA_SEL_BG) as f32) as u8;
+    let active_bg = theme.with_alpha(theme.mauve, sel_alpha);
     let bg = lerp_color(idle_bg, active_bg, sel_t);
     paint_fill(ui.painter(), r, RADIUS_MD, bg, &fx);
-
-    if sel_t > 0.001 {
-        // Subtle ~1.5px accent outline
-        ui.painter().rect_stroke(
-            r,
-            CornerRadius::same(RADIUS_MD),
-            egui::Stroke::new(1.5, theme.with_alpha(theme.mauve, (ALPHA_SEL_OUTLINE as f32 * sel_t) as u8)),
-            egui::StrokeKind::Inside,
-        );
-        // Accent left bar in list view
-        let bar_height = 22.0 * sel_t;
-        let bar_rect = Rect::from_center_size(
-            Pos2::new(r.left() + 4.0, r.center().y),
-            Vec2::new(3.5, bar_height),
-        );
-        ui.painter().rect_filled(
-            bar_rect,
-            CornerRadius::same(2),
-            theme.with_alpha(theme.mauve, (230.0 * sel_t) as u8),
-        );
-    }
 
     let icon_center = Pos2::new(r.left() + 28.0, r.center().y);
     match thumb {
         Some(tex) => paint_thumb(ui, tex, Rect::from_center_size(icon_center, Vec2::splat(32.0)), RADIUS_SM),
         None => {
-            let (glyph, base_color) = item_icon(item, theme, selected);
-            let icon_color = lerp_color(base_color, theme.mauve, sel_t * 0.7);
-            paint_icon(ui.painter(), icon_center, glyph, 24.0, icon_color);
+            let (glyph, color) = item_icon(item, theme, selected);
+            paint_icon(ui.painter(), icon_center, glyph, 24.0, color);
         }
     }
 
     let mut right = r.right() - 16.0;
     let small = egui::FontId::proportional(FONT_CAPTION);
-    let subtext_color = lerp_color(theme.subtext1, theme.subtext0, sel_t);
+    let subtext_color = theme.subtext1;
     if let Some(hint) = path_hint {
         let galley = truncated(ui, hint, FONT_CAPTION, subtext_color, (r.width() * 0.4).min(260.0));
         let pos = Pos2::new(right - galley.size().x, r.center().y - galley.size().y / 2.0);
@@ -463,11 +411,7 @@ pub fn file_row(
         }
     }
 
-    let name_color = if theme.light {
-        lerp_color(theme.text, theme.mauve, sel_t * 0.3)
-    } else {
-        lerp_color(theme.text, Color32::WHITE, sel_t * 0.6)
-    };
+    let name_color = theme.text;
     let galley = truncated(ui, item.display_name(), FONT_SUBTITLE, name_color, right - r.left() - 60.0);
     let pos = Pos2::new(r.left() + 54.0, r.center().y - galley.size().y / 2.0);
     ui.painter().galley(pos, galley, name_color);
@@ -561,6 +505,7 @@ pub fn menu_item(
 pub const GRID_CELL: Vec2 = Vec2::new(116.0, 128.0);
 
 /// One cell of the grid view.
+#[allow(clippy::too_many_arguments)]
 pub fn file_tile(
     ui: &mut egui::Ui,
     idx: usize,
@@ -580,35 +525,22 @@ pub fn file_tile(
     let r = scaled(rect, fx.scale);
 
     let idle_bg = lerp_color(Color32::TRANSPARENT, theme.with_alpha(theme.text, ALPHA_HOVER), fx.hover);
-    let active_bg = theme.with_alpha(theme.mauve, ALPHA_SEL_BG + (fx.hover * 25.0) as u8);
+    let sel_alpha = (ALPHA_SEL_BG as f32 + fx.hover * (ALPHA_SEL_HOVER - ALPHA_SEL_BG) as f32) as u8;
+    let active_bg = theme.with_alpha(theme.mauve, sel_alpha);
     let bg = lerp_color(idle_bg, active_bg, sel_t);
     paint_fill(ui.painter(), r, RADIUS_LG, bg, &fx);
-
-    if sel_t > 0.001 {
-        ui.painter().rect_stroke(
-            r,
-            CornerRadius::same(RADIUS_LG),
-            egui::Stroke::new(1.5, theme.with_alpha(theme.mauve, (ALPHA_SEL_OUTLINE as f32 * sel_t) as u8)),
-            egui::StrokeKind::Inside,
-        );
-    }
 
     let pic_sz = grid_size.picture_size();
     let picture = Rect::from_center_size(Pos2::new(r.center().x, r.top() + pic_sz * 0.5 + 12.0), Vec2::splat(pic_sz));
     match thumb {
         Some(tex) => paint_thumb(ui, tex, picture, RADIUS_SM),
         None => {
-            let (glyph, base_color) = item_icon(item, theme, selected);
-            let icon_color = lerp_color(base_color, theme.mauve, sel_t * 0.7);
-            paint_icon(ui.painter(), picture.center(), glyph, grid_size.icon_size(), icon_color);
+            let (glyph, color) = item_icon(item, theme, selected);
+            paint_icon(ui.painter(), picture.center(), glyph, grid_size.icon_size(), color);
         }
     }
 
-    let name_color = if theme.light {
-        lerp_color(theme.text, theme.mauve, sel_t * 0.3)
-    } else {
-        lerp_color(theme.text, Color32::WHITE, sel_t * 0.6)
-    };
+    let name_color = theme.text;
 
     // Names wrap over configured lines and are centered under the picture, like Nautilus.
     // Fixed: halign Center centers lines around 0 in the galley, so painting at r.center().x
@@ -707,6 +639,7 @@ pub fn divider(ui: &mut egui::Ui, theme: &SerpantinumTheme) {
 }
 
 /// Tonal card / subpanel frame with consistent background and corner radius.
+#[allow(dead_code)]
 pub fn card_frame(theme: &SerpantinumTheme, radius: u8) -> egui::Frame {
     egui::Frame::new()
         .fill(theme.surface1)
