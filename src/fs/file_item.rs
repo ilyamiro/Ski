@@ -56,6 +56,10 @@ pub struct FileItem {
     pub is_symlink: bool,
     pub size: u64,
     pub modified: Option<SystemTime>,
+    pub created: Option<SystemTime>,
+    pub accessed: Option<SystemTime>,
+    pub uid: u32,
+    pub mode: u32,
     pub file_type: FileType,
     pub is_hidden: bool,
 }
@@ -75,10 +79,20 @@ impl FileItem {
         // Follow symlink for actual metadata if possible, otherwise use symlink metadata
         let metadata = std::fs::metadata(path).ok().or(symlink_meta);
 
-        let (is_dir, size, modified, is_executable) = if let Some(ref meta) = metadata {
+        let (is_dir, size, modified, is_executable, created, accessed, uid, mode) = if let Some(ref meta) = metadata {
             let is_dir = meta.is_dir();
             let size = if is_dir { 0 } else { meta.len() };
             let modified = meta.modified().ok();
+            let created = meta.created().ok();
+            let accessed = meta.accessed().ok();
+
+            #[cfg(unix)]
+            let (uid, mode) = {
+                use std::os::unix::fs::MetadataExt;
+                (meta.uid(), meta.mode())
+            };
+            #[cfg(not(unix))]
+            let (uid, mode) = (0, 0);
 
             #[cfg(unix)]
             let is_executable = {
@@ -88,9 +102,9 @@ impl FileItem {
             #[cfg(not(unix))]
             let is_executable = false;
 
-            (is_dir, size, modified, is_executable)
+            (is_dir, size, modified, is_executable, created, accessed, uid, mode)
         } else {
-            (false, 0, None, false)
+            (false, 0, None, false, None, None, 0, 0)
         };
 
         let file_type = if is_dir {
@@ -110,6 +124,10 @@ impl FileItem {
             is_symlink,
             size,
             modified,
+            created,
+            accessed,
+            uid,
+            mode,
             file_type,
             is_hidden,
         })
@@ -121,6 +139,14 @@ impl FileItem {
         } else {
             format_bytes(self.size)
         }
+    }
+
+    pub fn owner(&self) -> String {
+        super::props::user_name(self.uid)
+    }
+
+    pub fn formatted_perms(&self) -> String {
+        super::props::mode_string(self.mode, self.is_dir)
     }
 
     pub fn formatted_date(&self) -> String {

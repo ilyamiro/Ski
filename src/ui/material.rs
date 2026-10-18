@@ -10,7 +10,7 @@ use crate::ui::icons;
 /// Height shared by every control in the header so the row always lines up.
 pub const CONTROL_HEIGHT: f32 = 34.0;
 
-fn quint_out(t: f32) -> f32 {
+pub fn quint_out(t: f32) -> f32 {
     1.0 - (1.0 - t).powi(5)
 }
 
@@ -37,7 +37,7 @@ pub struct FxSpec {
 impl FxSpec {
     pub const ICON: FxSpec = FxSpec { hover_scale: 1.06, press_scale: 0.92, pop_scale: 1.1 };
     pub const CLICK: FxSpec = FxSpec { hover_scale: 1.02, press_scale: 0.97, pop_scale: 1.04 };
-    pub const ROW: FxSpec = FxSpec { hover_scale: 1.0, press_scale: 0.985, pop_scale: 1.0 };
+    pub const ROW: FxSpec = FxSpec { hover_scale: 1.0, press_scale: 1.0, pop_scale: 1.0 };
 }
 
 pub fn fx(ui: &egui::Ui, id: egui::Id, resp: &egui::Response, enabled: bool, spec: &FxSpec) -> Fx {
@@ -179,6 +179,33 @@ pub fn icon_button_tinted(
     if tooltip.is_empty() { response } else { response.on_hover_text(tooltip) }
 }
 
+/// Icon-only counterpart of `chip`: a filled round button (dialog and window close buttons).
+pub fn filled_icon_button(
+    ui: &mut egui::Ui,
+    id_source: impl std::hash::Hash + std::fmt::Debug,
+    icon: &str,
+    theme: &SerpantinumTheme,
+    size: f32,
+    tooltip: &str,
+    accent: Option<Color32>,
+) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(Vec2::splat(size), egui::Sense::click());
+    let id = ui.make_persistent_id(id_source);
+    let fx = fx(ui, id, &response, true, &FxSpec::CLICK);
+    let r = scaled(rect, fx.scale);
+
+    let idle = theme.surface1;
+    let hovered = match accent {
+        Some(a) => blend_over(theme.surface1, theme.with_alpha(a, 70)),
+        None => theme.surface2,
+    };
+    paint_fill(ui.painter(), r, (size / 2.0) as u8, lerp_color(idle, hovered, fx.hover), &fx);
+
+    let color = lerp_color(theme.subtext1, accent.unwrap_or(theme.text), fx.hover);
+    paint_icon(ui.painter(), r.center(), icon, size * 0.5, color);
+    if tooltip.is_empty() { response } else { response.on_hover_text(tooltip) }
+}
+
 /// Pill shaped choice / toggle chip. Selected state is a tonal fill, never an outline.
 pub fn chip(
     ui: &mut egui::Ui,
@@ -233,19 +260,21 @@ pub fn nav_item(
     let r = scaled(rect, fx.scale);
 
     let bg = lerp_color(
-        lerp_color(Color32::TRANSPARENT, theme.with_alpha(theme.text, 16), fx.hover),
+        lerp_color(
+            lerp_color(Color32::TRANSPARENT, theme.with_alpha(theme.text, 16), fx.hover),
+            theme.with_alpha(theme.text, 30),
+            fx.press,
+        ),
         theme.with_alpha(theme.mauve, 52),
         sel_t,
     );
     paint_fill(ui.painter(), r, 18, bg, &fx);
 
-    // Hovering nudges the icon right a little, like a tactile lean
-    let nudge = 2.0 * fx.hover;
     let color = lerp_color(lerp_color(theme.subtext0, theme.text, fx.hover), theme.mauve, sel_t);
-    paint_icon(ui.painter(), Pos2::new(r.left() + 22.0 + nudge, r.center().y), icon, 17.0, color);
+    paint_icon(ui.painter(), Pos2::new(r.left() + 22.0, r.center().y), icon, 17.0, color);
 
     let galley = truncated(ui, label, 13.5, color, r.width() - 56.0);
-    let pos = Pos2::new(r.left() + 42.0 + nudge, r.center().y - galley.size().y / 2.0);
+    let pos = Pos2::new(r.left() + 42.0, r.center().y - galley.size().y / 2.0);
     ui.painter().galley(pos, galley, color);
     response
 }
@@ -282,6 +311,7 @@ pub fn file_row(
     should_scroll: bool,
     thumb: Option<&egui::TextureHandle>,
     path_hint: Option<&str>,
+    columns: &[Column],
 ) -> egui::Response {
     let (rect, response) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 38.0), egui::Sense::click());
     let id = ui.make_persistent_id(("row", idx));
@@ -290,7 +320,11 @@ pub fn file_row(
     let r = scaled(rect, fx.scale);
 
     let bg = lerp_color(
-        lerp_color(Color32::TRANSPARENT, theme.with_alpha(theme.text, 14), fx.hover),
+        lerp_color(
+            lerp_color(Color32::TRANSPARENT, theme.with_alpha(theme.text, 14), fx.hover),
+            theme.with_alpha(theme.text, 28),
+            fx.press,
+        ),
         theme.with_alpha(theme.mauve, 48),
         sel_t,
     );
@@ -310,13 +344,20 @@ pub fn file_row(
         right = pos.x - 12.0;
         ui.painter().galley(pos, galley, theme.subtext1);
     } else {
-        if r.width() >= 520.0 {
-            ui.painter().text(Pos2::new(right, r.center().y), Align2::RIGHT_CENTER, item.formatted_date(), small.clone(), theme.subtext1);
-            right -= 100.0;
-        }
-        if r.width() >= 380.0 {
-            ui.painter().text(Pos2::new(right, r.center().y), Align2::RIGHT_CENTER, item.formatted_size(), small, theme.subtext1);
-            right -= 76.0;
+        // Columns that don't fit next to a readable name are dropped, rightmost first
+        let budget = r.width() - 48.0 - 16.0 - 160.0;
+        let mut used = 0.0;
+        let fitting: Vec<Column> = columns
+            .iter()
+            .copied()
+            .take_while(|c| {
+                used += c.width();
+                used <= budget
+            })
+            .collect();
+        for column in fitting.iter().rev() {
+            ui.painter().text(Pos2::new(right, r.center().y), Align2::RIGHT_CENTER, column.value(item), small.clone(), theme.subtext1);
+            right -= column.width();
         }
     }
 
@@ -328,6 +369,80 @@ pub fn file_row(
     if selected && should_scroll {
         response.scroll_to_me(Some(egui::Align::Center));
     }
+    response
+}
+
+/// Optional detail columns of the list view, in display order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum Column {
+    Size,
+    Modified,
+    Created,
+    Accessed,
+    Owner,
+    Permissions,
+}
+
+impl Column {
+    pub const ALL: [Column; 6] = [
+        Column::Size,
+        Column::Modified,
+        Column::Created,
+        Column::Accessed,
+        Column::Owner,
+        Column::Permissions,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Column::Size => "Size",
+            Column::Modified => "Modified",
+            Column::Created => "Created",
+            Column::Accessed => "Accessed",
+            Column::Owner => "Owner",
+            Column::Permissions => "Permissions",
+        }
+    }
+
+    fn width(self) -> f32 {
+        match self {
+            Column::Size => 76.0,
+            Column::Modified => 100.0,
+            Column::Created | Column::Accessed => 124.0,
+            Column::Owner => 90.0,
+            Column::Permissions => 96.0,
+        }
+    }
+
+    fn value(self, item: &FileItem) -> String {
+        match self {
+            Column::Size => item.formatted_size(),
+            Column::Modified => item.formatted_date(),
+            Column::Created => crate::fs::props::format_datetime(item.created),
+            Column::Accessed => crate::fs::props::format_datetime(item.accessed),
+            Column::Owner => item.owner(),
+            Column::Permissions => item.formatted_perms(),
+        }
+    }
+}
+
+/// Entry of a context menu.
+pub fn menu_item(
+    ui: &mut egui::Ui,
+    id_source: impl std::hash::Hash + std::fmt::Debug,
+    icon: &str,
+    label: &str,
+    theme: &SerpantinumTheme,
+) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 34.0), egui::Sense::click());
+    let id = ui.make_persistent_id(id_source);
+    let fx = fx(ui, id, &response, true, &FxSpec::ROW);
+    let r = scaled(rect, fx.scale);
+    paint_fill(ui.painter(), r, 17, lerp_color(Color32::TRANSPARENT, theme.with_alpha(theme.text, 18), fx.hover), &fx);
+
+    let color = lerp_color(theme.subtext0, theme.text, fx.hover);
+    paint_icon(ui.painter(), Pos2::new(r.left() + 20.0, r.center().y), icon, 16.0, color);
+    ui.painter().text(Pos2::new(r.left() + 40.0, r.center().y), Align2::LEFT_CENTER, label, egui::FontId::proportional(13.5), color);
     response
 }
 

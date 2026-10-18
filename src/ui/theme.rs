@@ -1,5 +1,5 @@
 use std::fs;
-use eframe::egui::Color32;
+use eframe::egui::{self, Color32};
 use serde::Deserialize;
 
 #[derive(Debug, Clone, Deserialize)]
@@ -37,6 +37,7 @@ pub struct SerpantinumTheme {
     pub green: Color32,
     pub red: Color32,
     pub border_radius: f32,
+    pub light: bool,
 }
 
 impl Default for SerpantinumTheme {
@@ -57,11 +58,44 @@ impl Default for SerpantinumTheme {
             green: parse_hex("#cac3dc").unwrap_or(Color32::from_rgb(202, 195, 220)),
             red: parse_hex("#ffb4ab").unwrap_or(Color32::from_rgb(255, 180, 171)),
             border_radius: 16.0,
+            light: false,
         }
     }
 }
 
+/// Named palettes: base, mantle, crust, text, subtext0, subtext1, surface0-2, accent, peach, green, red.
+pub const PRESETS: [(&str, &str, [&str; 13], bool); 4] = [
+    ("midnight", "Midnight", ["#0b0e14", "#151a23", "#10141b", "#dfe6f3", "#b4bfd3", "#7d889c", "#181e29", "#212938", "#2b3446", "#8ab4f8", "#f2b8a2", "#9bd3a8", "#f28b82"], false),
+    ("nord", "Nord", ["#242933", "#2e3440", "#20242d", "#eceff4", "#d8dee9", "#8c95a6", "#343b49", "#3b4252", "#434c5e", "#88c0d0", "#d08770", "#a3be8c", "#bf616a"], false),
+    ("gruvbox", "Gruvbox", ["#1d2021", "#282828", "#181a1b", "#ebdbb2", "#d5c4a1", "#928374", "#32302f", "#3c3836", "#504945", "#d3869b", "#fe8019", "#b8bb26", "#fb4934"], false),
+    ("light", "Light", ["#fef7ff", "#f3edf7", "#ece6f0", "#1d1b20", "#49454f", "#79747e", "#f7f2fa", "#e7e0ec", "#ddd6e2", "#6750a4", "#7d5260", "#625b71", "#b3261e"], true),
+];
+
+/// Quick accent choices offered in the settings.
+pub const ACCENTS: [&str; 9] = ["#ccbeff", "#8ab4f8", "#88c0d0", "#a3d9a5", "#f5d76e", "#ffb784", "#ff9aa2", "#e0a3ff", "#f28b82"];
+
 impl SerpantinumTheme {
+    /// Palette picked in the settings (`system` follows Serpantinum), with the accent applied.
+    pub fn from_settings(settings: &crate::settings::Settings) -> Self {
+        let mut theme = match PRESETS.iter().find(|(id, ..)| *id == settings.theme) {
+            Some((_, _, c, light)) => {
+                let col = |i: usize| parse_hex(c[i]).unwrap_or(Color32::GRAY);
+                Self {
+                    base: col(0), mantle: col(1), crust: col(2), text: col(3), subtext0: col(4), subtext1: col(5),
+                    surface0: col(6), surface1: col(7), surface2: col(8), blue: col(9), mauve: col(9),
+                    peach: col(10), green: col(11), red: col(12), light: *light,
+                    ..Self::default()
+                }
+            }
+            None => Self::load(),
+        };
+        if let Some(accent) = settings.accent.as_deref().and_then(parse_hex) {
+            theme.mauve = accent;
+            theme.blue = accent;
+        }
+        theme
+    }
+
     pub fn load() -> Self {
         let mut theme = Self::default();
 
@@ -108,28 +142,6 @@ impl SerpantinumTheme {
         theme
     }
 
-    /// Darken color by factor (e.g. 1.12 => divide RGB by 1.12)
-    pub fn darker(&self, color: Color32, factor: f32) -> Color32 {
-        let f = factor.max(0.1);
-        Color32::from_rgba_unmultiplied(
-            ((color.r() as f32) / f).clamp(0.0, 255.0) as u8,
-            ((color.g() as f32) / f).clamp(0.0, 255.0) as u8,
-            ((color.b() as f32) / f).clamp(0.0, 255.0) as u8,
-            color.a(),
-        )
-    }
-
-    /// Lighten color by factor (e.g. 1.12 => multiply RGB by 1.12)
-    pub fn lighter(&self, color: Color32, factor: f32) -> Color32 {
-        let f = factor.max(0.1);
-        Color32::from_rgba_unmultiplied(
-            ((color.r() as f32) * f).clamp(0.0, 255.0) as u8,
-            ((color.g() as f32) * f).clamp(0.0, 255.0) as u8,
-            ((color.b() as f32) * f).clamp(0.0, 255.0) as u8,
-            color.a(),
-        )
-    }
-
     /// Semi-transparent color
     pub fn with_alpha(&self, color: Color32, alpha: u8) -> Color32 {
         Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), alpha)
@@ -152,4 +164,46 @@ pub fn parse_hex(hex: &str) -> Option<Color32> {
     } else {
         None
     }
+}
+
+/// Flat Material look: no strokes anywhere, state is shown by fills only.
+pub fn apply(ctx: &egui::Context, theme: &SerpantinumTheme) {
+    let mut visuals = if theme.light { egui::Visuals::light() } else { egui::Visuals::dark() };
+    visuals.window_corner_radius = egui::CornerRadius::same(24);
+    visuals.menu_corner_radius = egui::CornerRadius::same(16);
+    visuals.window_stroke = egui::Stroke::NONE;
+    visuals.popup_shadow = egui::Shadow::NONE;
+    visuals.window_shadow = egui::Shadow {
+        offset: [0, 8],
+        blur: 32,
+        spread: 0,
+        color: Color32::from_black_alpha(if theme.light { 50 } else { 110 }),
+    };
+    let w = &mut visuals.widgets;
+    for state in [&mut w.noninteractive, &mut w.inactive, &mut w.hovered, &mut w.active, &mut w.open] {
+        state.bg_stroke = egui::Stroke::NONE;
+        state.fg_stroke.color = theme.text;
+    }
+    visuals.selection.stroke = egui::Stroke::NONE;
+    visuals.selection.bg_fill = theme.with_alpha(theme.mauve, 90);
+    visuals.panel_fill = theme.base;
+    visuals.window_fill = theme.mantle;
+    visuals.extreme_bg_color = theme.surface1;
+    visuals.override_text_color = Some(theme.text);
+    ctx.set_visuals(visuals);
+
+    ctx.all_styles_mut(|style| {
+        style.spacing.item_spacing = egui::vec2(6.0, 6.0);
+        style.interaction.selectable_labels = false;
+        for (ts, size) in [
+            (egui::TextStyle::Body, 14.0),
+            (egui::TextStyle::Button, 14.0),
+            (egui::TextStyle::Small, 12.0),
+            (egui::TextStyle::Heading, 18.0),
+        ] {
+            if let Some(f) = style.text_styles.get_mut(&ts) {
+                f.size = size;
+            }
+        }
+    });
 }

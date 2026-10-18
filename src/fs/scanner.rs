@@ -5,14 +5,14 @@ use std::path::Path;
 
 use super::file_item::{FileItem, FileType};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum SortBy {
     Name,
     Size,
     Modified,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum SortOrder {
     Ascending,
     Descending,

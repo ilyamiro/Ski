@@ -73,6 +73,14 @@ impl Thumbnails {
         }
     }
 
+    /// Queue one extra image (e.g. a custom folder icon) without cancelling the folder's own work.
+    pub fn ensure(&mut self, path: &Path) {
+        if is_image(path) && !self.textures.contains_key(path) && self.queued.insert(path.to_path_buf()) {
+            let generation = self.generation.load(Ordering::Relaxed);
+            let _ = self.job_tx.send(Job { path: path.to_path_buf(), generation });
+        }
+    }
+
     /// Upload finished thumbnails; call once per frame.
     pub fn poll(&mut self, ctx: &egui::Context) {
         while let Ok((path, image)) = self.result_rx.try_recv() {

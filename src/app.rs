@@ -1,29 +1,130 @@
+use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use eframe::egui;
 
 use crate::fs::{
     file_item::FileItem,
-    places::Place,
+    apps::{self, AppEntry},
+    places::{load_folder_icons, save_folder_icons, Place},
+    props::{FolderScan, Properties},
     scanner::{read_directory, ListOptions, SortBy, SortOrder, TypeFilter},
+    recent,
     search::Search,
 };
+use crate::fs::ops::{self, ArchiveFormat, Jobs};
+use crate::settings::Settings;
 use crate::thumbs::Thumbnails;
 use crate::ui::{
     icons,
-    material::{self, chip, file_row, file_tile, icon_button, icon_button_tinted, nav_item, CONTROL_HEIGHT},
+    material::{self, chip, file_row, file_tile, filled_icon_button, icon_button, menu_item, nav_item, Column, CONTROL_HEIGHT},
+    fonts::SystemFont,
     theme::SerpantinumTheme,
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ViewMode {
     List,
     Grid,
+}
+
+/// What a right click landed on.
+#[derive(Clone)]
+enum MenuTarget {
+    Item(FileItem),
+    Folder,
+    Pin(PathBuf),
+}
+
+struct ContextMenu {
+    pos: egui::Pos2,
+    target: MenuTarget,
+    /// "Open with <default app>" for files that have one.
+    open_label: Option<String>,
+    label_ready: bool,
+}
+
+#[derive(Clone)]
+enum MenuAction {
+    Open(FileItem),
+    OpenPath(PathBuf),
+    CopyPath(PathBuf),
+    Properties(PathBuf),
+    OpenWith(PathBuf),
+    SetIcon(PathBuf),
+    Copy(Vec<PathBuf>),
+    Cut(Vec<PathBuf>),
+    Paste,
+    SelectAll,
+    CopyTo(Vec<PathBuf>),
+    MoveTo(Vec<PathBuf>),
+    Compress(Vec<PathBuf>),
+    ExtractHere(Vec<PathBuf>),
+    ExtractTo(Vec<PathBuf>),
+    UseAsIcon(PathBuf),
+    Pin(PathBuf),
+    Unpin(PathBuf),
+    NewFile,
+    NewFolder,
+    Refresh,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TransferOp {
+    Copy,
+    Move,
+    Extract,
+}
+
+enum Dialog {
+    Create { is_dir: bool, name: String, error: Option<String>, first_frame: bool },
+    Properties { props: Box<Properties>, scan: Option<FolderScan> },
+    OpenWith {
+        path: PathBuf,
+        mime: String,
+        apps: Vec<AppEntry>,
+        /// Indexes into `apps`: the app currently used, the ones made for this type, everything else.
+        default: Option<usize>,
+        recommended: Vec<usize>,
+        others: Vec<usize>,
+        selected: Option<usize>,
+        query: String,
+        first_frame: bool,
+        for_file: bool,
+        for_type: bool,
+    },
+    PickFolder {
+        op: TransferOp,
+        items: Vec<PathBuf>,
+        dir: PathBuf,
+        path_input: String,
+    },
+    Compress {
+        sources: Vec<PathBuf>,
+        name: String,
+        format: ArchiveFormat,
+        first_frame: bool,
+    },
+    Settings {
+        tab: usize,
+        font_query: String,
+        hex: String,
+        picking: Option<usize>,
+        defaults: Vec<Option<String>>,
+    },
+    Icon { folder: PathBuf, input: String, error: Option<String>, candidates: Vec<PathBuf>, browse: Option<PathBuf> },
 }
 
 pub struct SkiApp {
     current_path: PathBuf,
     items: Vec<FileItem>,
     selected_index: Option<usize>,
+    /// Every selected row (Ctrl / Shift click); `selected_index` is the focused one.
+    selection: BTreeSet<usize>,
+    anchor: Option<usize>,
+    last_cursor: Option<usize>,
+    /// Files copied or cut, waiting for a paste (`true` = cut).
+    clipboard: Option<(Vec<PathBuf>, bool)>,
+    jobs: Jobs,
     error_message: Option<String>,
 
     // Dynamic shell theme from Serpantinum
@@ -58,6 +159,24 @@ pub struct SkiApp {
     show_settings: bool,
     settings_button_rect: egui::Rect,
 
+    // Optional list columns, pinned folders, context menu and modal dialog
+    columns: Vec<Column>,
+    folder_icons: HashMap<PathBuf, PathBuf>,
+    open_overrides: HashMap<PathBuf, String>,
+    apps: Option<Vec<AppEntry>>,
+    app_icons: HashMap<String, Option<egui::TextureHandle>>,
+
+    // Persisted preferences, and what the next frame has to re-apply to egui
+    settings: Settings,
+    saved_settings: Settings,
+    system_theme: SerpantinumTheme,
+    system_fonts: Option<Vec<SystemFont>>,
+    theme_dirty: bool,
+    fonts_dirty: bool,
+    pins: Vec<PathBuf>,
+    menu: Option<ContextMenu>,
+    dialog: Option<Dialog>,
+
     // Status toast message (text, timestamp)
     status_toast: Option<(String, std::time::Instant)>,
 
@@ -66,7 +185,7 @@ pub struct SkiApp {
 }
 
 impl SkiApp {
-    pub fn new(initial_path: PathBuf, theme: SerpantinumTheme, ctx: &egui::Context) -> Self {
+    pub fn new(initial_path: PathBuf, theme: SerpantinumTheme, settings: Settings, ctx: &egui::Context) -> Self {
         let places = Place::default_places();
         let canonical_path = initial_path.canonicalize().unwrap_or(initial_path);
 
@@ -74,17 +193,22 @@ impl SkiApp {
             current_path: canonical_path.clone(),
             items: Vec::new(),
             selected_index: None,
+            selection: BTreeSet::new(),
+            anchor: None,
+            last_cursor: None,
+            clipboard: None,
+            jobs: Jobs::new(ctx),
             error_message: None,
             theme,
             back_history: Vec::new(),
             forward_history: Vec::new(),
             search_query: String::new(),
-            show_hidden: false,
-            folders_first: true,
+            show_hidden: settings.show_hidden,
+            folders_first: settings.folders_first,
             type_filter: TypeFilter::All,
-            view_mode: ViewMode::List,
-            sort_by: SortBy::Name,
-            sort_order: SortOrder::Ascending,
+            view_mode: settings.view_mode,
+            sort_by: settings.sort_by,
+            sort_order: settings.sort_order,
             is_editing_path: false,
             path_input: canonical_path.to_string_lossy().to_string(),
             thumbs: Thumbnails::new(ctx),
@@ -94,6 +218,20 @@ impl SkiApp {
             focus_search: false,
             show_settings: false,
             settings_button_rect: egui::Rect::NOTHING,
+            columns: settings.columns.clone(),
+            folder_icons: load_folder_icons(),
+            open_overrides: apps::load_overrides(),
+            app_icons: HashMap::new(),
+            saved_settings: settings.clone(),
+            settings,
+            system_theme: SerpantinumTheme::load(),
+            system_fonts: None,
+            theme_dirty: false,
+            fonts_dirty: false,
+            apps: None,
+            pins: Place::load_pins(),
+            menu: None,
+            dialog: None,
             status_toast: None,
             scroll_to_selected: false,
         };
@@ -111,6 +249,7 @@ impl SkiApp {
         if canonical.is_dir() {
             self.back_history.push(self.current_path.clone());
             self.forward_history.clear();
+            recent::record(&canonical);
             self.current_path = canonical;
             self.path_input = self.current_path.to_string_lossy().to_string();
             self.selected_index = None;
@@ -152,7 +291,8 @@ impl SkiApp {
 
     pub fn refresh(&mut self) {
         // Also reload the theme from disk in case the wallpaper / Matugen theme changed
-        self.theme = SerpantinumTheme::load();
+        self.system_theme = SerpantinumTheme::load();
+        self.rebuild_theme();
         self.reload_items();
         self.set_toast("Refreshed");
     }
@@ -170,6 +310,11 @@ impl SkiApp {
                 self.items = items;
                 self.error_message = None;
                 self.thumbs.preload(self.items.iter().map(|i| i.path.as_path()));
+                for item in self.items.iter().filter(|i| i.is_dir) {
+                    if let Some(icon) = self.folder_icons.get(&item.path) {
+                        self.thumbs.ensure(icon);
+                    }
+                }
                 if self.items.is_empty() {
                     self.selected_index = None;
                 } else if let Some(idx) = self.selected_index {
@@ -184,12 +329,267 @@ impl SkiApp {
                 self.error_message = Some(format!("Failed to open directory: {err}"));
             }
         }
+        self.sync_selection(true);
     }
 
     fn open_file(&mut self, path: &Path) {
+        recent::record(path);
+        let chosen = self.open_overrides.get(path).cloned();
+        if let Some(id) = chosen {
+            let app = self.installed_apps().iter().find(|a| a.id == id).cloned();
+            match app {
+                Some(app) => {
+                    if let Err(err) = apps::launch(&app, path) {
+                        self.set_toast(format!("Failed to start {}: {err}", app.name));
+                    }
+                    return;
+                }
+                // The chosen app is gone; fall back to the system default
+                None => {
+                    self.open_overrides.remove(path);
+                    apps::save_overrides(&self.open_overrides);
+                }
+            }
+        }
         if let Err(err) = open::that(path) {
             self.set_toast(format!("Failed to open file: {err}"));
         }
+    }
+
+    /// Keep `selection` in step with the focused row when something else (keyboard, reload)
+    /// moved it. Pass `force` after the listing itself changed.
+    fn sync_selection(&mut self, force: bool) {
+        if force || self.selected_index != self.last_cursor {
+            self.selection = self.selected_index.into_iter().collect();
+            self.anchor = self.selected_index;
+            self.last_cursor = self.selected_index;
+        }
+        let len = self.items.len();
+        self.selection.retain(|i| *i < len);
+    }
+
+    /// Plain click selects one row, Ctrl toggles it, Shift selects the range from the anchor.
+    fn click_select(&mut self, idx: usize, modifiers: egui::Modifiers) {
+        if modifiers.shift {
+            let anchor = self.anchor.unwrap_or(idx);
+            let (lo, hi) = (anchor.min(idx), anchor.max(idx));
+            if !modifiers.command {
+                self.selection.clear();
+            }
+            self.selection.extend(lo..=hi);
+        } else if modifiers.command {
+            if !self.selection.remove(&idx) {
+                self.selection.insert(idx);
+            }
+            self.anchor = Some(idx);
+        } else {
+            self.selection = BTreeSet::from([idx]);
+            self.anchor = Some(idx);
+        }
+        self.selected_index = Some(idx);
+        self.last_cursor = Some(idx);
+    }
+
+    fn select_all(&mut self) {
+        self.selection = (0..self.items.len()).collect();
+        self.anchor = Some(0);
+        if self.selected_index.is_none() && !self.items.is_empty() {
+            self.selected_index = Some(0);
+        }
+        self.last_cursor = self.selected_index;
+    }
+
+    /// Paths of everything selected, in list order.
+    fn selected_paths(&self) -> Vec<PathBuf> {
+        self.selection.iter().filter_map(|i| self.items.get(*i)).map(|i| i.path.clone()).collect()
+    }
+
+    /// The items a context menu on `item` acts on: the whole selection if `item` is part of it.
+    fn menu_group(&self, item: &FileItem) -> Vec<FileItem> {
+        let in_selection = self.selection.len() > 1
+            && self.items.iter().position(|i| i.path == item.path).is_some_and(|idx| self.selection.contains(&idx));
+        if in_selection {
+            self.selection.iter().filter_map(|i| self.items.get(*i)).cloned().collect()
+        } else {
+            vec![item.clone()]
+        }
+    }
+
+    fn describe_count(paths: &[PathBuf]) -> String {
+        match paths {
+            [one] => format!("“{}”", one.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()),
+            many => format!("{} items", many.len()),
+        }
+    }
+
+    fn set_clipboard(&mut self, paths: Vec<PathBuf>, cut: bool) {
+        if paths.is_empty() {
+            return;
+        }
+        let message = format!("{} {}", if cut { "Cut" } else { "Copied" }, Self::describe_count(&paths));
+        self.clipboard = Some((paths, cut));
+        self.set_toast(message);
+    }
+
+    fn paste(&mut self) {
+        let Some((paths, cut)) = self.clipboard.clone() else {
+            self.set_toast("Nothing to paste");
+            return;
+        };
+        let dest = self.current_path.clone();
+        self.transfer(if cut { TransferOp::Move } else { TransferOp::Copy }, paths, dest);
+        if cut {
+            self.clipboard = None;
+        }
+    }
+
+    /// Copy, move or extract `items` into `dest` on a worker thread.
+    fn transfer(&mut self, op: TransferOp, items: Vec<PathBuf>, dest: PathBuf) {
+        let label = Self::describe_count(&items);
+        let target = dest.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| dest.display().to_string());
+        self.set_toast(match op {
+            TransferOp::Copy => format!("Copying {label}…"),
+            TransferOp::Move => format!("Moving {label}…"),
+            TransferOp::Extract => format!("Extracting {label}…"),
+        });
+        self.jobs.spawn(move || {
+            let mut failures = Vec::new();
+            for item in &items {
+                let result = match op {
+                    TransferOp::Copy => ops::copy_into(item, &dest).map(|_| ()),
+                    TransferOp::Move => ops::move_into(item, &dest).map(|_| ()),
+                    TransferOp::Extract => ops::extract(item, &dest),
+                };
+                if let Err(err) = result {
+                    failures.push(format!("{}: {err}", item.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()));
+                }
+            }
+            if failures.is_empty() {
+                let verb = match op {
+                    TransferOp::Copy => "Copied",
+                    TransferOp::Move => "Moved",
+                    TransferOp::Extract => "Extracted",
+                };
+                Ok(format!("{verb} {label} to “{target}”"))
+            } else {
+                Err(failures.join(" · "))
+            }
+        });
+    }
+
+    fn extract_beside(&mut self, archives: Vec<PathBuf>) {
+        let archives: Vec<PathBuf> = archives.into_iter().filter(|p| ops::is_archive(p)).collect();
+        if archives.is_empty() {
+            return;
+        }
+        let label = Self::describe_count(&archives);
+        self.set_toast(format!("Extracting {label}…"));
+        self.jobs.spawn(move || {
+            let mut failures = Vec::new();
+            let mut last = None;
+            for archive in &archives {
+                match ops::extract_beside(archive) {
+                    Ok(dir) => last = Some(dir),
+                    Err(err) => failures.push(format!("{}: {err}", archive.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default())),
+                }
+            }
+            if failures.is_empty() {
+                let folder = last.and_then(|d| d.file_name().map(|n| n.to_string_lossy().into_owned())).unwrap_or_default();
+                Ok(if archives.len() == 1 { format!("Extracted to “{folder}”") } else { format!("Extracted {label}") })
+            } else {
+                Err(failures.join(" · "))
+            }
+        });
+    }
+
+    fn open_compress_dialog(&mut self, sources: Vec<PathBuf>) {
+        let base = self.current_path.clone();
+        let sources: Vec<PathBuf> = sources.into_iter().filter(|p| p.parent() == Some(base.as_path())).collect();
+        if sources.is_empty() {
+            self.set_toast("Open the folder first to compress its files");
+            return;
+        }
+        let name = match sources.as_slice() {
+            [one] => ops::archive_stem(one),
+            _ => base.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "Archive".to_owned()),
+        };
+        self.dialog = Some(Dialog::Compress { sources, name, format: ArchiveFormat::Zip, first_frame: true });
+    }
+
+    fn open_pick_folder(&mut self, op: TransferOp, items: Vec<PathBuf>) {
+        let dir = self.current_path.clone();
+        self.dialog = Some(Dialog::PickFolder { op, path_input: dir.to_string_lossy().into_owned(), dir, items });
+    }
+
+    /// Called once per frame: report finished background jobs.
+    fn poll_jobs(&mut self) {
+        let outcomes = self.jobs.poll();
+        if outcomes.is_empty() {
+            return;
+        }
+        for outcome in outcomes {
+            let message = if outcome.ok { outcome.message } else { format!("Failed: {}", outcome.message) };
+            self.set_toast(message);
+        }
+        if self.search_query.trim().is_empty() {
+            self.reload_items();
+        }
+    }
+
+    /// Name of the app a file opens with, shown in the context menu ("Open with Writer").
+    fn open_label_for(&mut self, target: &MenuTarget) -> Option<String> {
+        let MenuTarget::Item(item) = target else { return None };
+        if item.is_dir {
+            return None;
+        }
+        let id = self.open_overrides.get(&item.path).cloned().or_else(|| apps::default_for(&apps::mime_of(&item.path)))?;
+        self.installed_apps().iter().find(|a| a.id == id).map(|a| format!("Open with {}", a.name))
+    }
+
+    fn rebuild_theme(&mut self) {
+        let mut theme = SerpantinumTheme::from_settings(&self.settings);
+        if self.settings.theme == "system" {
+            let accent = self.settings.accent.as_deref().and_then(crate::ui::theme::parse_hex);
+            theme = self.system_theme;
+            if let Some(a) = accent {
+                theme.mauve = a;
+                theme.blue = a;
+            }
+        }
+        self.theme = theme;
+        self.theme_dirty = true;
+    }
+
+    /// Re-apply theme / font / scale to egui after a change, and write changed preferences to disk.
+    fn sync_settings(&mut self, ctx: &egui::Context) {
+        if self.theme_dirty {
+            crate::ui::theme::apply(ctx, &self.theme);
+            self.theme_dirty = false;
+        }
+        if self.fonts_dirty {
+            crate::ui::fonts::install(ctx, self.settings.font.as_deref());
+            self.fonts_dirty = false;
+        }
+        if (ctx.zoom_factor() - self.settings.scale).abs() > f32::EPSILON {
+            ctx.set_zoom_factor(self.settings.scale);
+        }
+        let current = Settings {
+            view_mode: self.view_mode,
+            sort_by: self.sort_by,
+            sort_order: self.sort_order,
+            show_hidden: self.show_hidden,
+            folders_first: self.folders_first,
+            columns: self.columns.clone(),
+            ..self.settings.clone()
+        };
+        if current != self.saved_settings {
+            current.save();
+            self.saved_settings = current;
+        }
+    }
+
+    fn installed_apps(&mut self) -> &[AppEntry] {
+        self.apps.get_or_insert_with(apps::load_apps)
     }
 
     fn set_toast(&mut self, message: impl Into<String>) {
@@ -213,13 +613,14 @@ impl SkiApp {
         } else {
             self.items.clear();
             self.selected_index = None;
+            self.sync_selection(true);
             self.error_message = None;
             let root = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
             self.search.start(ctx, root, self.search_query.trim().to_owned(), self.show_hidden);
         }
     }
 
-    fn move_selection(&mut self, delta: isize) {
+    fn move_selection(&mut self, delta: isize, extend: bool) {
         if self.items.is_empty() {
             self.selected_index = None;
             return;
@@ -245,7 +646,15 @@ impl SkiApp {
             }
         };
 
-        self.selected_index = Some(new_idx);
+        if extend {
+            let anchor = self.anchor.or(self.selected_index).unwrap_or(new_idx);
+            self.selection = (anchor.min(new_idx)..=anchor.max(new_idx)).collect();
+            self.anchor = Some(anchor);
+            self.selected_index = Some(new_idx);
+            self.last_cursor = Some(new_idx);
+        } else {
+            self.selected_index = Some(new_idx);
+        }
         self.scroll_to_selected = true;
     }
 
@@ -262,6 +671,15 @@ impl SkiApp {
     }
 
     fn handle_keyboard_inputs(&mut self, ctx: &egui::Context) {
+        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            if self.dialog.take().is_some() || self.menu.take().is_some() {
+                return;
+            }
+        }
+        if self.dialog.is_some() {
+            return;
+        }
+
         if ctx.egui_wants_keyboard_input() {
             if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
                 self.is_editing_path = false;
@@ -291,12 +709,17 @@ impl SkiApp {
         }
 
         // Vim & Arrow Keys
-        if ctx.input(|i| i.key_pressed(egui::Key::ArrowDown) || i.key_pressed(egui::Key::J)) {
-            self.move_selection(1);
+        let shift = ctx.input(|i| i.modifiers.shift);
+        if ctx.input(|i| i.key_pressed(egui::Key::ArrowDown)) {
+            self.move_selection(1, shift);
+        } else if ctx.input(|i| i.key_pressed(egui::Key::J)) {
+            self.move_selection(1, false);
         }
 
-        if ctx.input(|i| i.key_pressed(egui::Key::ArrowUp) || i.key_pressed(egui::Key::K)) {
-            self.move_selection(-1);
+        if ctx.input(|i| i.key_pressed(egui::Key::ArrowUp)) {
+            self.move_selection(-1, shift);
+        } else if ctx.input(|i| i.key_pressed(egui::Key::K)) {
+            self.move_selection(-1, false);
         }
 
         if ctx.input(|i| i.key_pressed(egui::Key::Enter) || i.key_pressed(egui::Key::L)) {
@@ -340,6 +763,19 @@ impl SkiApp {
             self.reload_items();
         }
 
+        if ctx.input(|i| i.modifiers.command && i.key_pressed(egui::Key::D)) {
+            self.toggle_pin(self.current_path.clone());
+        }
+
+        if ctx.input(|i| i.modifiers.alt && i.key_pressed(egui::Key::Enter)) {
+            let target = self
+                .selected_index
+                .and_then(|idx| self.items.get(idx))
+                .map(|item| item.path.clone())
+                .unwrap_or_else(|| self.current_path.clone());
+            self.open_properties(&target);
+        }
+
         if ctx.input(|i| i.modifiers.command && i.key_pressed(egui::Key::L)) {
             self.is_editing_path = true;
             self.path_input = self.current_path.to_string_lossy().to_string();
@@ -349,14 +785,34 @@ impl SkiApp {
             self.refresh();
         }
 
-        if ctx.input(|i| (i.modifiers.command && i.key_pressed(egui::Key::C)) || i.key_pressed(egui::Key::Y)) {
-            if let Some(idx) = self.selected_index {
-                if let Some(item) = self.items.get(idx) {
-                    let path_str = item.path.to_string_lossy().to_string();
-                    ctx.copy_text(path_str);
-                    self.set_toast(format!("Copied: {}", item.name));
-                }
+        if ctx.input(|i| i.key_pressed(egui::Key::Y) && !i.modifiers.command) {
+            if let Some(item) = self.selected_index.and_then(|idx| self.items.get(idx)) {
+                let path_str = item.path.to_string_lossy().to_string();
+                ctx.copy_text(path_str);
+                self.set_toast(format!("Copied path: {}", item.name));
             }
+        }
+
+        // Ctrl+C / X / V arrive as dedicated events on some platforms and as key presses on others
+        let (copy, cut, paste, all) = ctx.input(|i| {
+            let event = |f: fn(&egui::Event) -> bool| i.events.iter().any(f);
+            let key = |k: egui::Key| i.modifiers.command && i.key_pressed(k);
+            (
+                event(|e| matches!(e, egui::Event::Copy)) || key(egui::Key::C),
+                event(|e| matches!(e, egui::Event::Cut)) || key(egui::Key::X),
+                event(|e| matches!(e, egui::Event::Paste(_))) || key(egui::Key::V),
+                key(egui::Key::A),
+            )
+        });
+        if copy {
+            self.set_clipboard(self.selected_paths(), false);
+        } else if cut {
+            self.set_clipboard(self.selected_paths(), true);
+        } else if paste {
+            self.paste();
+        }
+        if all {
+            self.select_all();
         }
     }
 }
@@ -368,6 +824,9 @@ impl eframe::App for SkiApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         self.handle_keyboard_inputs(&ctx);
+        self.sync_selection(false);
+        self.poll_jobs();
+        self.sync_settings(&ctx);
         self.thumbs.poll(&ctx);
 
         let found = self.search.poll();
@@ -376,7 +835,7 @@ impl eframe::App for SkiApp {
         }
 
         if let Some((_, time)) = &self.status_toast {
-            if time.elapsed().as_secs() > 3 {
+            if time.elapsed().as_secs() > 3 && !self.jobs.running() {
                 self.status_toast = None;
             }
         }
@@ -411,6 +870,13 @@ impl eframe::App for SkiApp {
                     .inner_margin(egui::Margin { left: 6, right: 6, top: 0, bottom: 6 }),
             )
             .show(ui, |ui| {
+                let background = ui.interact(ui.max_rect(), ui.make_persistent_id("list_background"), egui::Sense::click());
+                if background.secondary_clicked() && self.search_query.trim().is_empty() {
+                    if let Some(pos) = background.interact_pointer_pos() {
+                        self.menu = Some(ContextMenu { pos, target: MenuTarget::Folder, open_label: None, label_ready: false });
+                    }
+                }
+
                 if let Some(ref err) = self.error_message {
                     ui.centered_and_justified(|ui| {
                         ui.label(egui::RichText::new(err).color(self.theme.red));
@@ -434,9 +900,9 @@ impl eframe::App for SkiApp {
                 }
             });
 
-        if self.show_settings {
-            self.render_settings(&ctx);
-        }
+        self.render_settings(&ctx);
+        self.render_menu(&ctx);
+        self.render_dialog(&ctx);
         self.render_toast(&ctx);
     }
 }
@@ -498,7 +964,7 @@ impl SkiApp {
                     self.show_settings = !self.show_settings;
                 }
 
-                let close = icon_button_tinted(ui, "btn_close", icons::CLOSE, &self.theme, true, "Close", Some(self.theme.red));
+                let close = filled_icon_button(ui, "btn_close", icons::CLOSE, &self.theme, 28.0, "Close", Some(self.theme.red));
                 if close.clicked() {
                     ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
                 }
@@ -625,18 +1091,75 @@ impl SkiApp {
     }
 
     fn render_sidebar(&mut self, ui: &mut egui::Ui) {
-        // Search field on top of the places
-        let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 36.0), egui::Sense::hover());
-        let search_id = egui::Id::new("sidebar_search");
+        self.render_sidebar_search(ui);
+
+        ui.add_space(8.0);
+        ui.spacing_mut().item_spacing.y = 2.0;
+
+        let browsing = self.search_query.trim().is_empty();
+        let mut destination: Option<PathBuf> = None;
+        for (idx, place) in self.places.iter().enumerate() {
+            let selected = browsing && self.current_path == place.path;
+            if nav_item(ui, ("place", idx), place.icon, &place.name, &self.theme, selected).clicked() {
+                destination = Some(place.path.clone());
+            }
+        }
+
+        if !self.pins.is_empty() {
+            ui.add_space(10.0);
+            ui.label(egui::RichText::new("  Pinned").size(11.5).color(self.theme.subtext1));
+            ui.add_space(2.0);
+        }
+        for (idx, pin) in self.pins.iter().enumerate() {
+            let selected = browsing && self.current_path == *pin;
+            let name = pin.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| pin.display().to_string());
+            let resp = nav_item(ui, ("pin", idx), icons::FOLDER, &name, &self.theme, selected);
+            if resp.clicked() {
+                destination = Some(pin.clone());
+            }
+            if resp.secondary_clicked() {
+                if let Some(pos) = resp.interact_pointer_pos() {
+                    self.menu = Some(ContextMenu { pos, target: MenuTarget::Pin(pin.clone()), open_label: None, label_ready: false });
+                }
+            }
+        }
+
+        if let Some(dest) = destination {
+            self.close_search();
+            self.navigate_to(dest);
+        }
+    }
+
+    /// A lone search icon that grows into the search field when clicked.
+    fn render_sidebar_search(&mut self, ui: &mut egui::Ui) {
+        let open = self.show_search || !self.search_query.is_empty();
+        let open_t = ui.ctx().animate_bool_with_time_and_easing(egui::Id::unique("sidebar_search_open"), open, 0.3, material::quint_out);
+
+        if !open && open_t <= 0.0 {
+            if icon_button(ui, "sidebar_search_btn", icons::SEARCH, &self.theme, true, "Search (/)").clicked() {
+                self.show_search = true;
+                self.focus_search = true;
+            }
+            return;
+        }
+
+        let full = ui.available_width();
+        let (slot, _) = ui.allocate_exact_size(egui::vec2(full, CONTROL_HEIGHT), egui::Sense::hover());
+        let rect = egui::Rect::from_min_size(slot.min, egui::vec2(CONTROL_HEIGHT + (full - CONTROL_HEIGHT) * open_t, CONTROL_HEIGHT));
+
+        let search_id = egui::Id::unique("sidebar_search");
         let focused = ui.memory(|m| m.has_focus(search_id));
         let fill = if focused { self.theme.surface2 } else { self.theme.surface1 };
-        ui.painter().rect_filled(rect, egui::CornerRadius::same(18), fill);
-        material::paint_icon(ui.painter(), egui::pos2(rect.left() + 20.0, rect.center().y), icons::SEARCH, 16.0, self.theme.subtext1);
+        ui.painter().rect_filled(rect, egui::CornerRadius::same(17), fill);
+        material::paint_icon(ui.painter(), egui::pos2(rect.left() + 17.0, rect.center().y), icons::SEARCH, 16.0, self.theme.subtext1);
 
-        let clear_w = if self.search_query.is_empty() { 0.0 } else { 30.0 };
+        if open_t < 0.6 {
+            return;
+        }
+        let clear_rect = egui::Rect::from_center_size(egui::pos2(rect.right() - 18.0, rect.center().y), egui::vec2(26.0, 26.0));
         let edit_rect = egui::Rect::from_min_max(
             egui::pos2(rect.left() + 36.0, rect.top()),
-            egui::pos2(rect.right() - 12.0 - clear_w, rect.bottom()),
+            egui::pos2(clear_rect.left() - 4.0, rect.bottom()),
         );
         let resp = ui.put(
             edit_rect,
@@ -655,31 +1178,13 @@ impl SkiApp {
             let ctx = ui.ctx().clone();
             self.on_query_changed(&ctx);
         }
-        if clear_w > 0.0 {
-            let clear_rect = egui::Rect::from_center_size(egui::pos2(rect.right() - 20.0, rect.center().y), egui::vec2(26.0, 26.0));
-            let clear = ui.interact(clear_rect, ui.make_persistent_id("sidebar_search_clear"), egui::Sense::click());
-            let hover = ui.ctx().animate_bool_with_time(clear.id.with("h"), clear.hovered(), 0.18);
-            ui.painter().rect_filled(clear_rect, egui::CornerRadius::same(13), self.theme.with_alpha(self.theme.text, (hover * 26.0) as u8));
-            material::paint_icon(ui.painter(), clear_rect.center(), icons::CLOSE, 14.0, material::lerp_color(self.theme.subtext1, self.theme.text, hover));
-            if clear.clicked() {
-                self.close_search();
-            }
-        }
 
-        ui.add_space(8.0);
-        ui.spacing_mut().item_spacing.y = 2.0;
-
-        let mut destination: Option<PathBuf> = None;
-        for (idx, place) in self.places.iter().enumerate() {
-            let selected = self.search_query.trim().is_empty() && self.current_path == place.path;
-            if nav_item(ui, ("place", idx), place.icon, &place.name, &self.theme, selected).clicked() {
-                destination = Some(place.path.clone());
-            }
-        }
-
-        if let Some(dest) = destination {
+        let clear = ui.interact(clear_rect, ui.make_persistent_id("sidebar_search_clear"), egui::Sense::click());
+        let hover = ui.ctx().animate_bool_with_time(clear.id.with("h"), clear.hovered(), 0.18);
+        ui.painter().rect_filled(clear_rect, egui::CornerRadius::same(13), self.theme.with_alpha(self.theme.text, (hover * 26.0) as u8));
+        material::paint_icon(ui.painter(), clear_rect.center(), icons::CLOSE, 14.0, material::lerp_color(self.theme.subtext1, self.theme.text, hover));
+        if clear.clicked() {
             self.close_search();
-            self.navigate_to(dest);
         }
     }
 
@@ -707,35 +1212,45 @@ impl SkiApp {
 
     fn render_list_view(&mut self, ui: &mut egui::Ui) {
         let mut opened: Option<FileItem> = None;
-        let mut copied: Option<FileItem> = None;
         let should_scroll = std::mem::take(&mut self.scroll_to_selected);
 
+        let mut clicked: Option<(usize, egui::Modifiers)> = None;
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
             ui.spacing_mut().item_spacing.y = 1.0;
             for (idx, item) in self.items.iter().enumerate() {
-                let selected = self.selected_index == Some(idx);
+                let selected = self.selection.contains(&idx);
                 let hint = self.path_hint(item);
-                let thumb = self.thumbs.get(&item.path);
-                let resp = file_row(ui, idx, item, &self.theme, selected, should_scroll, thumb, hint.as_deref());
-                if resp.clicked() || resp.secondary_clicked() {
-                    self.selected_index = Some(idx);
+                let thumb = thumb_for(&self.thumbs, &self.folder_icons, item);
+                let resp = file_row(ui, idx, item, &self.theme, selected, should_scroll, thumb, hint.as_deref(), &self.columns);
+                if resp.clicked() {
+                    clicked = Some((idx, ui.input(|i| i.modifiers)));
+                } else if resp.secondary_clicked() && !selected {
+                    clicked = Some((idx, egui::Modifiers::NONE));
                 }
                 if resp.double_clicked() {
                     opened = Some(item.clone());
                 }
                 if resp.secondary_clicked() {
-                    copied = Some(item.clone());
+                    if let Some(pos) = resp.interact_pointer_pos() {
+                        self.menu = Some(ContextMenu { pos, target: MenuTarget::Item(item.clone()), open_label: None, label_ready: false });
+                    }
                 }
             }
         });
 
-        self.finish_item_actions(ui, opened, copied);
+        if let Some((idx, modifiers)) = clicked {
+            self.click_select(idx, modifiers);
+        }
+        if let Some(item) = opened {
+            self.open_item(item);
+        }
     }
 
     fn render_grid_view(&mut self, ui: &mut egui::Ui) {
         let mut opened: Option<FileItem> = None;
         let should_scroll = std::mem::take(&mut self.scroll_to_selected);
 
+        let mut clicked: Option<(usize, egui::Modifiers)> = None;
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
             let cell = material::GRID_CELL;
             let spacing = 4.0;
@@ -746,36 +1261,38 @@ impl SkiApp {
                 ui.horizontal(|ui| {
                     for (col_idx, item) in row.iter().enumerate() {
                         let idx = row_idx * cols + col_idx;
-                        let selected = self.selected_index == Some(idx);
-                        let thumb = self.thumbs.get(&item.path);
+                        let selected = self.selection.contains(&idx);
+                        let thumb = thumb_for(&self.thumbs, &self.folder_icons, item);
                         let resp = file_tile(ui, idx, item, &self.theme, selected, should_scroll, thumb);
                         if resp.clicked() {
-                            self.selected_index = Some(idx);
+                            clicked = Some((idx, ui.input(|i| i.modifiers)));
+                        } else if resp.secondary_clicked() && !selected {
+                            clicked = Some((idx, egui::Modifiers::NONE));
                         }
                         if resp.double_clicked() {
                             opened = Some(item.clone());
+                        }
+                        if resp.secondary_clicked() {
+                            if let Some(pos) = resp.interact_pointer_pos() {
+                                self.menu = Some(ContextMenu { pos, target: MenuTarget::Item(item.clone()), open_label: None, label_ready: false });
+                            }
                         }
                     }
                 });
             }
         });
 
-        self.finish_item_actions(ui, opened, None);
-    }
-
-    fn finish_item_actions(&mut self, ui: &egui::Ui, opened: Option<FileItem>, copied: Option<FileItem>) {
+        if let Some((idx, modifiers)) = clicked {
+            self.click_select(idx, modifiers);
+        }
         if let Some(item) = opened {
             self.open_item(item);
-        }
-        if let Some(item) = copied {
-            ui.ctx().copy_text(item.path.to_string_lossy().to_string());
-            self.set_toast(format!("Copied path of {}", item.name));
         }
     }
 
     fn render_toast(&mut self, ctx: &egui::Context) {
         let Some((msg, _)) = &self.status_toast else { return };
-        egui::Area::new(egui::Id::new("toast"))
+        egui::Area::new(egui::Id::unique("toast"))
             .order(egui::Order::Tooltip)
             .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -20.0))
             .interactable(false)
@@ -792,15 +1309,23 @@ impl SkiApp {
     }
 
     fn render_settings(&mut self, ctx: &egui::Context) {
+        let t = ctx.animate_bool_with_time_and_easing(egui::Id::unique("settings_anim"), self.show_settings, 0.32, material::quint_out);
+        if t <= 0.0 {
+            return;
+        }
+
         let screen = ctx.content_rect();
         let width = (screen.width() - 24.0).clamp(240.0, 340.0);
         let max_height = (screen.height() - 80.0).max(160.0);
         let mut reload = false;
 
-        let area = egui::Area::new(egui::Id::new("settings_popup"))
+        // Fades in while sliding down from the button; closing plays the same motion backwards.
+        let area = egui::Area::new(egui::Id::unique("settings_popup"))
             .order(egui::Order::Foreground)
-            .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-10.0, 52.0))
+            .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-10.0, 52.0 - (1.0 - t) * 14.0))
+            .interactable(self.show_settings)
             .show(ctx, |ui| {
+                ui.set_opacity(t);
                 egui::Frame::new()
                     .fill(self.theme.mantle)
                     .corner_radius(egui::CornerRadius::same(22))
@@ -816,12 +1341,13 @@ impl SkiApp {
 
         // Click outside closes the popup (the settings button handles its own toggle).
         let rect = area.response.rect;
-        let outside_press = ctx.input(|i| {
-            i.pointer.any_pressed()
-                && i.pointer
-                    .interact_pos()
-                    .is_some_and(|p| !rect.contains(p) && !self.settings_button_rect.contains(p))
-        });
+        let outside_press = self.show_settings
+            && ctx.input(|i| {
+                i.pointer.any_pressed()
+                    && i.pointer
+                        .interact_pos()
+                        .is_some_and(|p| !rect.contains(p) && !self.settings_button_rect.contains(p))
+            });
         if outside_press {
             self.show_settings = false;
         }
@@ -840,13 +1366,10 @@ impl SkiApp {
         ui.add_space(2.0);
     }
 
+    /// View, sorting, visibility and column options; shared by the popup and the settings dialog.
     /// Returns true when a setting that affects the file listing changed.
-    fn settings_contents(&mut self, ui: &mut egui::Ui) -> bool {
+    fn file_options(&mut self, ui: &mut egui::Ui) -> bool {
         let mut reload = false;
-        ui.spacing_mut().item_spacing = egui::vec2(6.0, 8.0);
-
-        ui.label(egui::RichText::new("Settings").size(16.0).color(self.theme.text));
-
         self.section_title(ui, "View");
         ui.horizontal_wrapped(|ui| {
             if chip(ui, "set_list", Some(icons::VIEW_LIST), "List", &self.theme, self.view_mode == ViewMode::List).clicked() {
@@ -891,6 +1414,19 @@ impl SkiApp {
             }
         });
 
+        self.section_title(ui, "List columns");
+        ui.horizontal_wrapped(|ui| {
+            for column in Column::ALL {
+                let on = self.columns.contains(&column);
+                if chip(ui, ("set_col", column.label()), None, column.label(), &self.theme, on).clicked() {
+                    self.columns = Column::ALL
+                        .into_iter()
+                        .filter(|c| (*c == column) != self.columns.contains(c))
+                        .collect();
+                }
+            }
+        });
+
         self.section_title(ui, "File type");
         ui.horizontal_wrapped(|ui| {
             for filter in TypeFilter::ALL {
@@ -900,6 +1436,30 @@ impl SkiApp {
                 }
             }
         });
+
+        reload
+    }
+
+    fn apply_listing_change(&mut self, ctx: &egui::Context) {
+        if self.search_query.trim().is_empty() {
+            self.reload_items();
+        } else {
+            self.on_query_changed(ctx);
+        }
+    }
+
+    /// Returns true when a setting that affects the file listing changed.
+    fn settings_contents(&mut self, ui: &mut egui::Ui) -> bool {
+        let mut reload = false;
+        ui.spacing_mut().item_spacing = egui::vec2(6.0, 8.0);
+
+        ui.label(egui::RichText::new("Settings").size(16.0).color(self.theme.text));
+
+        reload |= self.file_options(ui);
+        if chip(ui, "set_all", Some(icons::SETTINGS), "All settings…", &self.theme, false).clicked() {
+            self.open_settings_dialog();
+            self.show_settings = false;
+        }
 
         self.section_title(ui, "Shortcuts");
         egui::Grid::new("shortcuts_grid").num_columns(2).spacing([16.0, 6.0]).show(ui, |ui| {
@@ -912,6 +1472,11 @@ impl SkiApp {
                 ("Ctrl + L", "Edit path"),
                 ("Ctrl + H", "Hidden files"),
                 ("Ctrl + 1 / 2", "List / grid"),
+                ("Ctrl + D", "Pin folder"),
+                ("Alt + Enter", "Properties"),
+                ("Ctrl + C / X / V", "Copy / cut / paste"),
+                ("Ctrl + A", "Select all"),
+                ("Shift / Ctrl + click", "Select several"),
                 ("y", "Copy path"),
                 ("F5", "Refresh"),
             ] {
@@ -928,4 +1493,1299 @@ impl SkiApp {
 
         reload
     }
+}
+
+/// Context menu, pinning, file creation and the properties dialog.
+impl SkiApp {
+    fn toggle_pin(&mut self, path: PathBuf) {
+        let path = path.canonicalize().unwrap_or(path);
+        if let Some(idx) = self.pins.iter().position(|p| *p == path) {
+            self.pins.remove(idx);
+            self.set_toast("Unpinned from sidebar");
+        } else if self.places.iter().any(|p| p.path == path) {
+            self.set_toast("Already in the sidebar");
+            return;
+        } else {
+            self.pins.push(path);
+            self.set_toast("Pinned to sidebar");
+        }
+        Place::save_pins(&self.pins);
+    }
+
+    fn open_properties(&mut self, path: &Path) {
+        match Properties::load(path) {
+            Some(props) => {
+                let scan = props.item.is_dir.then(|| FolderScan::start(path.to_path_buf()));
+                self.dialog = Some(Dialog::Properties { props: Box::new(props), scan });
+            }
+            None => self.set_toast("Could not read properties"),
+        }
+    }
+
+    fn open_create_dialog(&mut self, is_dir: bool) {
+        let base = if is_dir { "New Folder" } else { "Untitled" };
+        let mut name = base.to_owned();
+        let mut n = 2;
+        while self.current_path.join(&name).exists() {
+            name = format!("{base} {n}");
+            n += 1;
+        }
+        self.dialog = Some(Dialog::Create { is_dir, name, error: None, first_frame: true });
+    }
+
+    fn create_entry(&mut self, is_dir: bool, name: &str) -> Result<(), String> {
+        let name = name.trim();
+        if name.is_empty() || name == "." || name == ".." || name.contains('/') {
+            return Err("Enter a valid name".to_owned());
+        }
+        let path = self.current_path.join(name);
+        let result = if is_dir {
+            std::fs::create_dir(&path)
+        } else {
+            std::fs::OpenOptions::new().write(true).create_new(true).open(&path).map(|_| ())
+        };
+        result.map_err(|err| match err.kind() {
+            std::io::ErrorKind::AlreadyExists => format!("“{name}” already exists"),
+            _ => err.to_string(),
+        })?;
+
+        self.reload_items();
+        if let Some(idx) = self.items.iter().position(|i| i.name == name) {
+            self.selected_index = Some(idx);
+            self.scroll_to_selected = true;
+        }
+        self.set_toast(format!("Created {name}"));
+        Ok(())
+    }
+
+    fn run_action(&mut self, ctx: &egui::Context, action: MenuAction) {
+        match action {
+            MenuAction::Open(item) => self.open_item(item),
+            MenuAction::OpenPath(path) => self.navigate_to(path),
+            MenuAction::CopyPath(path) => {
+                ctx.copy_text(path.to_string_lossy().to_string());
+                self.set_toast("Copied path");
+            }
+            MenuAction::Properties(path) => self.open_properties(&path),
+            MenuAction::OpenWith(path) => self.open_open_with(path),
+            MenuAction::SetIcon(folder) => self.open_icon_dialog(folder),
+            MenuAction::UseAsIcon(image) => {
+                let folder = self.current_path.clone();
+                self.apply_folder_icon(&folder, Some(&image));
+            }
+            MenuAction::Pin(path) | MenuAction::Unpin(path) => self.toggle_pin(path),
+            MenuAction::NewFile => self.open_create_dialog(false),
+            MenuAction::NewFolder => self.open_create_dialog(true),
+            MenuAction::Refresh => self.refresh(),
+            MenuAction::Copy(paths) => self.set_clipboard(paths, false),
+            MenuAction::Cut(paths) => self.set_clipboard(paths, true),
+            MenuAction::Paste => self.paste(),
+            MenuAction::SelectAll => self.select_all(),
+            MenuAction::CopyTo(paths) => self.open_pick_folder(TransferOp::Copy, paths),
+            MenuAction::MoveTo(paths) => self.open_pick_folder(TransferOp::Move, paths),
+            MenuAction::Compress(paths) => self.open_compress_dialog(paths),
+            MenuAction::ExtractHere(paths) => self.extract_beside(paths),
+            MenuAction::ExtractTo(paths) => {
+                let archives: Vec<PathBuf> = paths.into_iter().filter(|p| ops::is_archive(p)).collect();
+                self.open_pick_folder(TransferOp::Extract, archives);
+            }
+        }
+    }
+
+    fn menu_entries(&self, target: &MenuTarget) -> Vec<Vec<(&'static str, &'static str, MenuAction)>> {
+        let pin_entry = |path: &PathBuf| {
+            if self.pins.contains(path) {
+                (icons::PIN_OFF, "Unpin from sidebar", MenuAction::Unpin(path.clone()))
+            } else {
+                (icons::PIN, "Pin to sidebar", MenuAction::Pin(path.clone()))
+            }
+        };
+        let icon_entry = |path: &PathBuf| (icons::IMAGE, "Custom icon…", MenuAction::SetIcon(path.clone()));
+        // Clipboard / transfer / archive entries shared by every selection
+        let file_groups = |paths: Vec<PathBuf>, archives: bool| {
+            let mut groups = vec![
+                vec![
+                    (icons::COPY, "Copy", MenuAction::Copy(paths.clone())),
+                    (icons::CUT, "Cut", MenuAction::Cut(paths.clone())),
+                ],
+                vec![
+                    (icons::FOLDER_COPY, "Copy to…", MenuAction::CopyTo(paths.clone())),
+                    (icons::FOLDER_MOVE, "Move to…", MenuAction::MoveTo(paths.clone())),
+                ],
+            ];
+            let mut pack = vec![(icons::COMPRESS, "Compress…", MenuAction::Compress(paths.clone()))];
+            if archives {
+                pack.push((icons::EXTRACT, "Extract here", MenuAction::ExtractHere(paths.clone())));
+                pack.push((icons::EXTRACT, "Extract to…", MenuAction::ExtractTo(paths)));
+            }
+            groups.push(pack);
+            groups
+        };
+        match target {
+            MenuTarget::Item(item) if self.menu_group(item).len() > 1 => {
+                let group = self.menu_group(item);
+                let paths: Vec<PathBuf> = group.iter().map(|i| i.path.clone()).collect();
+                let archives = group.iter().any(|i| !i.is_dir && ops::is_archive(&i.path));
+                let mut groups = file_groups(paths, archives);
+                groups.push(vec![(icons::INFO, "Properties", MenuAction::Properties(item.path.clone()))]);
+                groups
+            }
+            MenuTarget::Item(item) if item.is_dir => {
+                let mut groups = vec![
+                    vec![(icons::OPEN, "Open", MenuAction::Open(item.clone()))],
+                    vec![pin_entry(&item.path), icon_entry(&item.path)],
+                ];
+                groups.extend(file_groups(vec![item.path.clone()], false));
+                groups.push(vec![
+                    (icons::COPY, "Copy path", MenuAction::CopyPath(item.path.clone())),
+                    (icons::INFO, "Properties", MenuAction::Properties(item.path.clone())),
+                ]);
+                groups
+            }
+            MenuTarget::Item(item) => {
+                let mut groups = vec![vec![
+                    (icons::OPEN, "Open", MenuAction::Open(item.clone())),
+                    (icons::APPS, "Open with…", MenuAction::OpenWith(item.path.clone())),
+                ]];
+                if crate::thumbs::is_image(&item.path) {
+                    groups.push(vec![(icons::IMAGE, "Use as folder icon", MenuAction::UseAsIcon(item.path.clone()))]);
+                }
+                groups.extend(file_groups(vec![item.path.clone()], ops::is_archive(&item.path)));
+                groups.push(vec![
+                    (icons::COPY, "Copy path", MenuAction::CopyPath(item.path.clone())),
+                    (icons::INFO, "Properties", MenuAction::Properties(item.path.clone())),
+                ]);
+                groups
+            }
+            MenuTarget::Folder => vec![
+                vec![
+                    (icons::FILE_PLUS, "New file", MenuAction::NewFile),
+                    (icons::FOLDER_PLUS, "New folder", MenuAction::NewFolder),
+                ],
+                {
+                    let mut edit = vec![(icons::SELECT_ALL, "Select all", MenuAction::SelectAll)];
+                    if self.clipboard.is_some() {
+                        edit.insert(0, (icons::PASTE, "Paste", MenuAction::Paste));
+                    }
+                    edit
+                },
+                vec![pin_entry(&self.current_path), icon_entry(&self.current_path)],
+                vec![(icons::REFRESH, "Refresh", MenuAction::Refresh)],
+                vec![
+                    (icons::COPY, "Copy path", MenuAction::CopyPath(self.current_path.clone())),
+                    (icons::INFO, "Properties", MenuAction::Properties(self.current_path.clone())),
+                ],
+            ],
+            MenuTarget::Pin(path) => vec![
+                vec![(icons::OPEN, "Open", MenuAction::OpenPath(path.clone()))],
+                vec![(icons::PIN_OFF, "Unpin from sidebar", MenuAction::Unpin(path.clone())), icon_entry(path)],
+                vec![(icons::INFO, "Properties", MenuAction::Properties(path.clone()))],
+            ],
+        }
+    }
+
+    fn render_menu(&mut self, ctx: &egui::Context) {
+        let t = ctx.animate_bool_with_time_and_easing(egui::Id::unique("menu_anim"), self.menu.is_some(), 0.2, material::quint_out);
+        if self.menu.as_ref().is_some_and(|m| !m.label_ready) {
+            let target = self.menu.as_ref().map(|m| m.target.clone());
+            let label = target.as_ref().and_then(|t| self.open_label_for(t));
+            if let Some(menu) = self.menu.as_mut() {
+                menu.open_label = label;
+                menu.label_ready = true;
+            }
+        }
+        let Some(menu) = self.menu.as_ref() else { return };
+        let (pos, groups, open_label) = (menu.pos, self.menu_entries(&menu.target), menu.open_label.clone());
+
+        let count: usize = groups.iter().map(Vec::len).sum();
+        let screen = ctx.content_rect();
+        let size = egui::vec2(250.0, count as f32 * 36.0 + groups.len().saturating_sub(1) as f32 * 11.0 + 16.0);
+        let origin = egui::pos2(
+            pos.x.min(screen.right() - size.x - 8.0).max(8.0),
+            pos.y.min(screen.bottom() - size.y - 8.0).max(8.0),
+        );
+
+        let mut chosen = None;
+        let area = egui::Area::new(egui::Id::unique("context_menu"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(origin + egui::vec2(0.0, (1.0 - t) * -8.0))
+            .show(ctx, |ui| {
+                ui.set_opacity(t);
+                egui::Frame::new()
+                    .fill(self.theme.mantle)
+                    .corner_radius(egui::CornerRadius::same(22))
+                    .shadow(ctx.global_style().visuals.window_shadow)
+                    .inner_margin(egui::Margin::same(8))
+                    .show(ui, |ui| {
+                        ui.set_width(size.x - 16.0);
+                        ui.spacing_mut().item_spacing.y = 2.0;
+                        for (g, group) in groups.iter().enumerate() {
+                            if g > 0 {
+                                let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 7.0), egui::Sense::hover());
+                                let line = egui::Rect::from_center_size(rect.center(), egui::vec2(rect.width() - 24.0, 1.0));
+                                ui.painter().rect_filled(line, 0, self.theme.with_alpha(self.theme.text, 28));
+                            }
+                            for (idx, (icon, label, action)) in group.iter().enumerate() {
+                                let shown = match action {
+                                    MenuAction::Open(item) if !item.is_dir => open_label.as_deref().unwrap_or(label),
+                                    _ => label,
+                                };
+                                if menu_item(ui, ("menu", g, idx), icon, shown, &self.theme).clicked() {
+                                    chosen = Some(action.clone());
+                                }
+                            }
+                        }
+                    });
+            });
+
+        let rect = area.response.rect;
+        let outside_press = ctx.input(|i| i.pointer.any_pressed() && i.pointer.interact_pos().is_some_and(|p| !rect.contains(p)));
+        if chosen.is_some() || outside_press {
+            self.menu = None;
+        }
+        if let Some(action) = chosen {
+            self.run_action(ctx, action);
+        }
+    }
+
+    fn render_dialog(&mut self, ctx: &egui::Context) {
+        let t = ctx.animate_bool_with_time_and_easing(egui::Id::unique("dialog_anim"), self.dialog.is_some(), 0.25, material::quint_out);
+        let Some(mut dialog) = self.dialog.take() else { return };
+
+        if let Dialog::Icon { input, error, .. } = &mut dialog {
+            if let Some(path) = ctx.input(|i| i.raw.dropped_files.first().map(|f| f.path().to_path_buf())) {
+                *input = path.to_string_lossy().into_owned();
+                *error = None;
+            }
+        }
+
+        // Dimmed backdrop; clicking it dismisses the dialog.
+        let screen = ctx.content_rect();
+        let mut close = false;
+        egui::Area::new(egui::Id::unique("dialog_scrim"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(screen.min)
+            .show(ctx, |ui| {
+                let (rect, resp) = ui.allocate_exact_size(screen.size(), egui::Sense::click());
+                ui.painter().rect_filled(rect, 0, egui::Color32::from_black_alpha((110.0 * t) as u8));
+                close |= resp.clicked();
+            });
+
+        let preferred = match &dialog {
+            Dialog::Settings { .. } => 640.0,
+            Dialog::OpenWith { .. } | Dialog::PickFolder { .. } => 480.0,
+            _ => 440.0,
+        };
+        let width = (screen.width() - 32.0).clamp(240.0, preferred);
+        egui::Area::new(egui::Id::unique("dialog"))
+            .order(egui::Order::Foreground)
+            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, (1.0 - t) * 14.0))
+            .show(ctx, |ui| {
+                ui.set_opacity(t);
+                egui::Frame::new()
+                    .fill(self.theme.mantle)
+                    .corner_radius(egui::CornerRadius::same(26))
+                    .shadow(ctx.global_style().visuals.window_shadow)
+                    .inner_margin(egui::Margin::same(20))
+                    .show(ui, |ui| {
+                        ui.set_width(width - 40.0);
+                        ui.spacing_mut().item_spacing = egui::vec2(6.0, 8.0);
+                        close |= match &mut dialog {
+                            Dialog::Create { .. } => self.create_dialog_contents(ui, &mut dialog),
+                            Dialog::Properties { .. } => self.properties_contents(ui, &mut dialog),
+                            Dialog::Icon { .. } => self.icon_dialog_contents(ui, &mut dialog),
+                            Dialog::OpenWith { .. } => self.open_with_contents(ui, &mut dialog),
+                            Dialog::Settings { .. } => self.settings_dialog_contents(ui, &mut dialog),
+                            Dialog::PickFolder { .. } => self.pick_folder_contents(ui, &mut dialog),
+                            Dialog::Compress { .. } => self.compress_contents(ui, &mut dialog),
+                        };
+                    });
+            });
+
+        // A dialog opened from inside this one (e.g. Properties -> Custom icon) replaces it
+        if !close && self.dialog.is_none() {
+            self.dialog = Some(dialog);
+        }
+    }
+
+    /// Returns true when the dialog should close.
+    fn create_dialog_contents(&mut self, ui: &mut egui::Ui, dialog: &mut Dialog) -> bool {
+        let Dialog::Create { is_dir, name, error, first_frame } = dialog else { return false };
+        let title = if *is_dir { "New folder" } else { "New file" };
+        ui.label(egui::RichText::new(title).size(16.0).color(self.theme.text));
+        ui.add_space(4.0);
+
+        let mut submit = false;
+        egui::Frame::new()
+            .fill(self.theme.surface1)
+            .corner_radius(egui::CornerRadius::same(18))
+            .inner_margin(egui::Margin::symmetric(14, 8))
+            .show(ui, |ui| {
+                let output = egui::TextEdit::singleline(name)
+                    .frame(egui::Frame::NONE)
+                    .desired_width(f32::INFINITY)
+                    .font(egui::FontId::proportional(14.0))
+                    .show(ui);
+                if *first_frame {
+                    output.response.request_focus();
+                    let mut state = output.state.clone();
+                    let end = egui::text::CCursor::new(name.chars().count());
+                    state.cursor.set_char_range(Some(egui::text::CCursorRange::two(egui::text::CCursor::new(0), end)));
+                    state.store(ui.ctx(), output.response.id);
+                    *first_frame = false;
+                }
+                if output.response.changed() {
+                    *error = None;
+                }
+                if output.response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                    submit = true;
+                }
+            });
+
+        if let Some(err) = error.as_ref() {
+            ui.label(egui::RichText::new(err).size(12.5).color(self.theme.red));
+        }
+
+        let mut close = false;
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            if chip(ui, "dlg_create", Some(icons::CHECK), "Create", &self.theme, true).clicked() {
+                submit = true;
+            }
+            if chip(ui, "dlg_cancel", None, "Cancel", &self.theme, false).clicked() {
+                close = true;
+            }
+        });
+
+        if submit {
+            match self.create_entry(*is_dir, name) {
+                Ok(()) => close = true,
+                Err(err) => *error = Some(err),
+            }
+        }
+        close
+    }
+
+    /// Folder chooser for Copy to / Move to / Extract to. Returns true when the dialog should close.
+    fn pick_folder_contents(&mut self, ui: &mut egui::Ui, dialog: &mut Dialog) -> bool {
+        let Dialog::PickFolder { op, items, dir, path_input } = dialog else { return false };
+        let theme = self.theme;
+        let mut close = false;
+        let (title, action) = match op {
+            TransferOp::Copy => ("Copy to…", "Copy here"),
+            TransferOp::Move => ("Move to…", "Move here"),
+            TransferOp::Extract => ("Extract to…", "Extract here"),
+        };
+        ui.horizontal(|ui| {
+            ui.vertical(|ui| {
+                ui.label(egui::RichText::new(title).size(16.0).color(theme.text));
+                ui.label(egui::RichText::new(Self::describe_count(items)).size(12.5).color(theme.subtext1));
+            });
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+                if filled_icon_button(ui, "pf_close", icons::CLOSE, &theme, 30.0, "Close", Some(theme.red)).clicked() {
+                    close = true;
+                }
+            });
+        });
+
+        let mut goto: Option<PathBuf> = None;
+        ui.horizontal_wrapped(|ui| {
+            for (idx, place) in self.places.iter().enumerate() {
+                if chip(ui, ("pf_place", idx), Some(place.icon), &place.name, &theme, *dir == place.path).clicked() {
+                    goto = Some(place.path.clone());
+                }
+            }
+        });
+
+        egui::Frame::new().fill(theme.surface1).corner_radius(egui::CornerRadius::same(18)).inner_margin(egui::Margin::symmetric(14, 6)).show(ui, |ui| {
+            let resp = ui.add(
+                egui::TextEdit::singleline(path_input)
+                    .frame(egui::Frame::NONE)
+                    .desired_width(f32::INFINITY)
+                    .hint_text("Folder path")
+                    .font(egui::FontId::proportional(13.5)),
+            );
+            if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                let typed = PathBuf::from(path_input.trim());
+                if typed.is_dir() {
+                    goto = Some(typed);
+                } else {
+                    self.status_toast = Some(("That folder does not exist".to_owned(), std::time::Instant::now()));
+                }
+            }
+        });
+
+        let mut folders: Vec<PathBuf> = std::fs::read_dir(&*dir)
+            .map(|rd| {
+                rd.flatten()
+                    .filter(|e| !e.file_name().to_string_lossy().starts_with('.'))
+                    .map(|e| e.path())
+                    .filter(|p| p.is_dir())
+                    .collect()
+            })
+            .unwrap_or_default();
+        folders.sort_by_key(|p| p.file_name().map(|n| n.to_string_lossy().to_lowercase()));
+        let max_height = (ui.ctx().content_rect().height() - 320.0).clamp(140.0, 300.0);
+        egui::ScrollArea::vertical().max_height(max_height).auto_shrink([false, true]).id_salt("pf_scroll").show(ui, |ui| {
+            ui.spacing_mut().item_spacing.y = 2.0;
+            if let Some(parent) = dir.parent() {
+                if nav_item(ui, "pf_up", icons::ARROW_UP, "..", &theme, false).clicked() {
+                    goto = Some(parent.to_path_buf());
+                }
+            }
+            for (idx, folder) in folders.iter().enumerate() {
+                let label = folder.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                if nav_item(ui, ("pf_folder", idx), icons::FOLDER, &label, &theme, false).clicked() {
+                    goto = Some(folder.clone());
+                }
+            }
+            if folders.is_empty() {
+                ui.label(egui::RichText::new("No subfolders").size(12.5).color(theme.subtext1));
+            }
+        });
+        if let Some(target) = goto {
+            *path_input = target.to_string_lossy().into_owned();
+            *dir = target;
+        }
+
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            if chip(ui, "pf_go", Some(icons::CHECK), action, &theme, true).clicked() {
+                self.transfer(*op, items.clone(), dir.clone());
+                close = true;
+            }
+            if chip(ui, "pf_cancel", None, "Cancel", &theme, false).clicked() {
+                close = true;
+            }
+        });
+        close
+    }
+
+    /// Returns true when the dialog should close.
+    fn compress_contents(&mut self, ui: &mut egui::Ui, dialog: &mut Dialog) -> bool {
+        let Dialog::Compress { sources, name, format, first_frame } = dialog else { return false };
+        let theme = self.theme;
+        let mut close = false;
+        ui.horizontal(|ui| {
+            ui.vertical(|ui| {
+                ui.label(egui::RichText::new("Compress").size(16.0).color(theme.text));
+                ui.label(egui::RichText::new(Self::describe_count(sources)).size(12.5).color(theme.subtext1));
+            });
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+                if filled_icon_button(ui, "cz_close", icons::CLOSE, &theme, 30.0, "Close", Some(theme.red)).clicked() {
+                    close = true;
+                }
+            });
+        });
+        ui.add_space(2.0);
+
+        let mut submit = false;
+        egui::Frame::new().fill(theme.surface1).corner_radius(egui::CornerRadius::same(18)).inner_margin(egui::Margin::symmetric(14, 8)).show(ui, |ui| {
+            ui.horizontal(|ui| {
+                let output = egui::TextEdit::singleline(name)
+                    .frame(egui::Frame::NONE)
+                    .desired_width(ui.available_width() - 80.0)
+                    .font(egui::FontId::proportional(14.0))
+                    .show(ui);
+                if *first_frame {
+                    output.response.request_focus();
+                    *first_frame = false;
+                }
+                if output.response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                    submit = true;
+                }
+                ui.label(egui::RichText::new(format.extension()).size(14.0).color(theme.subtext1));
+            });
+        });
+        ui.horizontal_wrapped(|ui| {
+            for candidate in ArchiveFormat::ALL {
+                if !candidate.available() {
+                    continue;
+                }
+                if chip(ui, ("cz_format", candidate.extension()), None, candidate.extension(), &theme, *format == candidate).clicked() {
+                    *format = candidate;
+                }
+            }
+        });
+
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            if chip(ui, "cz_go", Some(icons::COMPRESS), "Compress", &theme, true).clicked() {
+                submit = true;
+            }
+            if chip(ui, "cz_cancel", None, "Cancel", &theme, false).clicked() {
+                close = true;
+            }
+        });
+
+        if submit && !name.trim().is_empty() {
+            let file_name = format!("{}{}", name.trim().replace('/', "_"), format.extension());
+            let out = ops::unique_path(&self.current_path, std::ffi::OsStr::new(&file_name), "copy");
+            let (sources, format) = (sources.clone(), *format);
+            let shown = out.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            self.set_toast(format!("Compressing into {shown}…"));
+            self.jobs.spawn(move || {
+                ops::compress(&sources, &out, format).map(|_| format!("Created “{shown}”")).map_err(|e| e.to_string())
+            });
+            close = true;
+        }
+        close
+    }
+
+    fn open_settings_dialog(&mut self) {
+        let defaults = apps::CATEGORIES.iter().map(|c| apps::default_for(c.mimes[0])).collect();
+        self.system_fonts.get_or_insert_with(crate::ui::fonts::system_fonts);
+        self.dialog = Some(Dialog::Settings {
+            tab: 0,
+            font_query: String::new(),
+            hex: self.settings.accent.clone().unwrap_or_default(),
+            picking: None,
+            defaults,
+        });
+    }
+
+    /// Returns true when the dialog should close.
+    fn settings_dialog_contents(&mut self, ui: &mut egui::Ui, dialog: &mut Dialog) -> bool {
+        let Dialog::Settings { tab, font_query, hex, picking, defaults } = dialog else { return false };
+        let ctx = ui.ctx().clone();
+        let theme = self.theme;
+        let mut close = false;
+
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new("Settings").size(16.0).color(theme.text));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if filled_icon_button(ui, "set_close", icons::CLOSE, &theme, 30.0, "Close", Some(theme.red)).clicked() {
+                    close = true;
+                }
+            });
+        });
+        ui.horizontal(|ui| {
+            for (idx, (icon, label)) in [(icons::SETTINGS, "Appearance"), (icons::VIEW_LIST, "Files"), (icons::APPS, "Applications")].into_iter().enumerate() {
+                if chip(ui, ("set_tab", idx), Some(icon), label, &theme, *tab == idx).clicked() {
+                    *tab = idx;
+                }
+            }
+        });
+        ui.add_space(2.0);
+
+        let max_height = (ctx.content_rect().height() - 220.0).clamp(200.0, 520.0);
+        egui::ScrollArea::vertical().max_height(max_height).auto_shrink([false, true]).id_salt(("set_scroll", *tab)).show(ui, |ui| {
+            ui.spacing_mut().item_spacing = egui::vec2(6.0, 8.0);
+            match *tab {
+                0 => self.appearance_tab(ui, font_query, hex),
+                1 => {
+                    if self.file_options(ui) {
+                        self.apply_listing_change(&ctx);
+                    }
+                }
+                _ => self.applications_tab(ui, picking, defaults),
+            }
+        });
+        close
+    }
+
+    fn appearance_tab(&mut self, ui: &mut egui::Ui, font_query: &mut String, hex: &mut String) {
+        let theme = self.theme;
+
+        self.section_title(ui, "Theme");
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing = egui::vec2(10.0, 10.0);
+            let mut choices: Vec<(&str, &str, SerpantinumTheme)> = vec![("system", "System", self.system_theme)];
+            for (id, label, ..) in crate::ui::theme::PRESETS.iter() {
+                let preset = Settings { theme: (*id).to_owned(), accent: None, ..Settings::default() };
+                choices.push((id, label, SerpantinumTheme::from_settings(&preset)));
+            }
+            for (id, label, preview) in choices {
+                if theme_card(ui, ("theme_card", id), label, &preview, &theme, self.settings.theme == id).clicked() {
+                    self.settings.theme = id.to_owned();
+                    self.rebuild_theme();
+                }
+            }
+        });
+
+        self.section_title(ui, "Accent color");
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing = egui::vec2(8.0, 8.0);
+            if chip(ui, "accent_default", None, "Theme default", &theme, self.settings.accent.is_none()).clicked() {
+                self.settings.accent = None;
+                hex.clear();
+                self.rebuild_theme();
+            }
+            for color in crate::ui::theme::ACCENTS {
+                let c = crate::ui::theme::parse_hex(color).unwrap_or(egui::Color32::GRAY);
+                let on = self.settings.accent.as_deref().is_some_and(|a| a.eq_ignore_ascii_case(color));
+                if swatch(ui, ("accent", color), c, &theme, on).clicked() {
+                    self.settings.accent = Some(color.to_owned());
+                    *hex = color.to_owned();
+                    self.rebuild_theme();
+                }
+            }
+        });
+        ui.horizontal(|ui| {
+            egui::Frame::new().fill(theme.surface1).corner_radius(egui::CornerRadius::same(18)).inner_margin(egui::Margin::symmetric(14, 6)).show(ui, |ui| {
+                ui.set_width(130.0);
+                let resp = ui.add(
+                    egui::TextEdit::singleline(hex)
+                        .frame(egui::Frame::NONE)
+                        .desired_width(f32::INFINITY)
+                        .hint_text("#rrggbb")
+                        .font(egui::FontId::proportional(13.5)),
+                );
+                if resp.changed() {
+                    let text = hex.trim().to_owned();
+                    if text.len() == 7 && crate::ui::theme::parse_hex(&text).is_some() {
+                        self.settings.accent = Some(text.to_lowercase());
+                        self.rebuild_theme();
+                    }
+                }
+            });
+            ui.label(egui::RichText::new("Custom color").size(12.0).color(theme.subtext1));
+        });
+
+        self.section_title(ui, "Interface size");
+        ui.horizontal_wrapped(|ui| {
+            for (scale, label) in [(0.85, "Compact"), (1.0, "Default"), (1.15, "Large"), (1.3, "Larger")] {
+                if chip(ui, ("scale", label), None, label, &theme, (self.settings.scale - scale).abs() < 0.01).clicked() {
+                    self.settings.scale = scale;
+                }
+            }
+        });
+
+        self.section_title(ui, "Font");
+        let current = self.settings.font_name.clone().unwrap_or_else(|| "Adwaita Sans (default)".to_owned());
+        ui.label(egui::RichText::new(format!("Current: {current}")).size(12.5).color(theme.subtext0));
+        egui::Frame::new().fill(theme.surface1).corner_radius(egui::CornerRadius::same(18)).inner_margin(egui::Margin::symmetric(14, 6)).show(ui, |ui| {
+            ui.add(
+                egui::TextEdit::singleline(font_query)
+                    .frame(egui::Frame::NONE)
+                    .desired_width(f32::INFINITY)
+                    .hint_text("Search installed fonts")
+                    .font(egui::FontId::proportional(13.5)),
+            );
+        });
+        let needle = font_query.trim().to_lowercase();
+        let fonts: Vec<SystemFont> = self
+            .system_fonts
+            .get_or_insert_with(crate::ui::fonts::system_fonts)
+            .iter()
+            .filter(|f| needle.is_empty() || f.family.to_lowercase().contains(&needle))
+            .cloned()
+            .collect();
+        let show_default = needle.is_empty() || "adwaita sans".contains(&needle);
+        let total = fonts.len() + usize::from(show_default);
+        let mut picked: Option<Option<SystemFont>> = None;
+        egui::ScrollArea::vertical().max_height(190.0).auto_shrink([false, true]).id_salt("font_list").show_rows(ui, 38.0, total, |ui, range| {
+            ui.spacing_mut().item_spacing.y = 2.0;
+            for row in range {
+                if show_default && row == 0 {
+                    if nav_item(ui, "font_default", icons::DOCUMENT, "Adwaita Sans (default)", &theme, self.settings.font.is_none()).clicked() {
+                        picked = Some(None);
+                    }
+                    continue;
+                }
+                let font = &fonts[row - usize::from(show_default)];
+                let on = self.settings.font.as_deref() == Some(font.path.as_path());
+                if nav_item(ui, ("font_row", row), icons::DOCUMENT, &font.family, &theme, on).clicked() {
+                    picked = Some(Some(font.clone()));
+                }
+            }
+        });
+        if let Some(choice) = picked {
+            self.settings.font = choice.as_ref().map(|f| f.path.clone());
+            self.settings.font_name = choice.map(|f| f.family);
+            self.fonts_dirty = true;
+        }
+    }
+
+    fn applications_tab(&mut self, ui: &mut egui::Ui, picking: &mut Option<usize>, defaults: &mut [Option<String>]) {
+        let theme = self.theme;
+        ui.label(egui::RichText::new("Default application for each kind of file. This changes the system-wide defaults.").size(12.5).color(theme.subtext1));
+        ui.spacing_mut().item_spacing.y = 2.0;
+        let installed: Vec<AppEntry> = self.installed_apps().to_vec();
+        for (idx, category) in apps::CATEGORIES.iter().enumerate() {
+            let current = defaults[idx].as_deref().and_then(|id| installed.iter().find(|a| a.id == id));
+            let value = current.map_or("Not set", |a| a.name.as_str());
+            if category_row(ui, ("cat_row", idx), category.icon, category.label, value, &theme, *picking == Some(idx)).clicked() {
+                *picking = if *picking == Some(idx) { None } else { Some(idx) };
+            }
+            if *picking != Some(idx) {
+                continue;
+            }
+            let candidates = apps::apps_for(&installed, category.mimes[0], defaults[idx].as_deref());
+            let mut chosen: Option<&AppEntry> = None;
+            for (row, app) in candidates.iter().enumerate() {
+                let probe = egui::Rect::from_min_size(ui.cursor().min, egui::vec2(ui.available_width(), 44.0));
+                let tex = if ui.is_rect_visible(probe) {
+                    self.app_icons
+                        .entry(app.id.clone())
+                        .or_insert_with(|| {
+                            let image = app.icon.as_deref().and_then(apps::resolve_icon).and_then(|p| apps::load_icon_image(&p, 64))?;
+                            Some(ui.ctx().load_texture(format!("app_icon_{}", app.id), image, egui::TextureOptions::LINEAR))
+                        })
+                        .clone()
+                } else {
+                    None
+                };
+                let on = defaults[idx].as_deref() == Some(app.id.as_str());
+                if app_row(ui, ("cat_app", idx, row), tex.as_ref(), &app.name, &theme, on).clicked() {
+                    chosen = Some(app);
+                }
+            }
+            if candidates.is_empty() {
+                ui.label(egui::RichText::new("No installed application handles these files.").size(12.5).color(theme.subtext0));
+            }
+            if let Some(app) = chosen {
+                apps::set_category_default(category, &app.id);
+                defaults[idx] = Some(app.id.clone());
+                self.set_toast(format!("{} is now the default for {}", app.name, category.label.to_lowercase()));
+                *picking = None;
+            }
+            ui.add_space(4.0);
+        }
+    }
+
+    fn open_open_with(&mut self, path: PathBuf) {
+        let mime = apps::mime_of(&path);
+        let default_id = apps::default_for(&mime);
+        let installed: Vec<AppEntry> = self.installed_apps().to_vec();
+        let current = self.open_overrides.get(&path).cloned().or(default_id.clone());
+        let default = current.as_deref().and_then(|id| installed.iter().position(|a| a.id == id));
+        let recommended: Vec<usize> = apps::apps_for(&installed, &mime, None)
+            .into_iter()
+            .filter_map(|a| installed.iter().position(|b| b.id == a.id))
+            .filter(|i| Some(*i) != default)
+            .collect();
+        let others: Vec<usize> = (0..installed.len()).filter(|i| Some(*i) != default && !recommended.contains(i)).collect();
+        self.dialog = Some(Dialog::OpenWith {
+            path,
+            mime,
+            apps: installed,
+            default,
+            recommended,
+            others,
+            selected: default,
+            query: String::new(),
+            first_frame: true,
+            for_file: false,
+            for_type: false,
+        });
+    }
+
+    /// Returns true when the dialog should close.
+    fn open_with_contents(&mut self, ui: &mut egui::Ui, dialog: &mut Dialog) -> bool {
+        let Dialog::OpenWith { path, mime, apps: listed, default, recommended, others, selected, query, first_frame, for_file, for_type } = dialog else { return false };
+        let theme = self.theme;
+        let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let mut close = false;
+        ui.horizontal(|ui| {
+            ui.vertical(|ui| {
+                ui.label(egui::RichText::new("Open with").size(16.0).color(theme.text));
+                ui.label(egui::RichText::new(format!("{name} · {mime}")).size(12.5).color(theme.subtext1));
+            });
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+                if filled_icon_button(ui, "ow_close", icons::CLOSE, &theme, 30.0, "Close", Some(theme.red)).clicked() {
+                    close = true;
+                }
+            });
+        });
+        ui.add_space(2.0);
+
+        // Search over every installed application
+        egui::Frame::new().fill(theme.surface1).corner_radius(egui::CornerRadius::same(18)).inner_margin(egui::Margin::symmetric(14, 6)).show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new(icons::SEARCH).font(icons::font(15.0)).color(theme.subtext1));
+                let resp = ui.add(
+                    egui::TextEdit::singleline(query)
+                        .frame(egui::Frame::NONE)
+                        .desired_width(f32::INFINITY)
+                        .hint_text("Search applications")
+                        .font(egui::FontId::proportional(13.5)),
+                );
+                if *first_frame {
+                    resp.request_focus();
+                    *first_frame = false;
+                }
+            });
+        });
+        ui.add_space(2.0);
+
+        let needle = query.trim().to_lowercase();
+        let matches = |i: &usize| needle.is_empty() || listed[*i].name.to_lowercase().contains(&needle);
+        let sections: [(&str, Vec<usize>); 3] = [
+            ("Default", default.iter().copied().filter(matches).collect()),
+            ("Recommended", recommended.iter().copied().filter(matches).collect()),
+            ("Other applications", others.iter().copied().filter(matches).collect()),
+        ];
+        if sections.iter().all(|(_, rows)| rows.is_empty()) {
+            ui.label(egui::RichText::new("No applications found.").size(13.0).color(theme.subtext0));
+        }
+
+        let max_height = (ui.ctx().content_rect().height() - 300.0).clamp(160.0, 400.0);
+        let mut launch = false;
+        egui::ScrollArea::vertical().max_height(max_height).auto_shrink([false, true]).id_salt("ow_scroll").show(ui, |ui| {
+            ui.spacing_mut().item_spacing.y = 2.0;
+            for (title, rows) in &sections {
+                if rows.is_empty() {
+                    continue;
+                }
+                ui.add_space(4.0);
+                ui.label(egui::RichText::new(format!("  {title}")).size(11.5).color(theme.subtext1));
+                for &idx in rows {
+                    let app = &listed[idx];
+                    let is_pinned = self.open_overrides.get(path.as_path()) == Some(&app.id);
+                    let label = if is_pinned { format!("{}  ·  this file", app.name) } else { app.name.clone() };
+                    // Icons are only resolved and decoded for rows that are actually on screen
+                    let probe = egui::Rect::from_min_size(ui.cursor().min, egui::vec2(ui.available_width(), 44.0));
+                    let tex = if ui.is_rect_visible(probe) {
+                        self.app_icons
+                            .entry(app.id.clone())
+                            .or_insert_with(|| {
+                                let image = app.icon.as_deref().and_then(apps::resolve_icon).and_then(|p| apps::load_icon_image(&p, 64))?;
+                                Some(ui.ctx().load_texture(format!("app_icon_{}", app.id), image, egui::TextureOptions::LINEAR))
+                            })
+                            .clone()
+                    } else {
+                        None
+                    };
+                    let resp = app_row(ui, ("open_with_app", idx), tex.as_ref(), &label, &theme, *selected == Some(idx));
+                    if resp.clicked() {
+                        *selected = Some(idx);
+                    }
+                    if resp.double_clicked() {
+                        launch = true;
+                    }
+                }
+            }
+        });
+
+        ui.add_space(4.0);
+        ui.horizontal_wrapped(|ui| {
+            if chip(ui, "ow_file", Some(icons::FILE), "Always for this file", &theme, *for_file).clicked() {
+                *for_file = !*for_file;
+            }
+            if chip(ui, "ow_type", Some(icons::APPS), "Always for this file type", &theme, *for_type).clicked() {
+                *for_type = !*for_type;
+            }
+        });
+
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            let can_open = selected.is_some();
+            if chip(ui, "ow_open", Some(icons::OPEN), "Open", &theme, can_open).clicked() && can_open {
+                launch = true;
+            }
+            if self.open_overrides.contains_key(path.as_path()) && chip(ui, "ow_forget", None, "Forget file choice", &theme, false).clicked() {
+                self.open_overrides.remove(path.as_path());
+                apps::save_overrides(&self.open_overrides);
+                self.set_toast("File choice removed");
+                close = true;
+            }
+            if chip(ui, "ow_cancel", None, "Cancel", &theme, false).clicked() {
+                close = true;
+            }
+        });
+
+        if launch {
+            if let Some(app) = selected.and_then(|i| listed.get(i)) {
+                match apps::launch(app, path) {
+                    Ok(()) => {
+                        recent::record(path);
+                        if *for_file {
+                            self.open_overrides.insert(path.clone(), app.id.clone());
+                            apps::save_overrides(&self.open_overrides);
+                        }
+                        if *for_type {
+                            if apps::set_default(mime, &app.id) {
+                                self.set_toast(format!("{} is now the default for {mime}", app.name));
+                            } else {
+                                self.set_toast("Could not change the default application");
+                            }
+                        }
+                        close = true;
+                    }
+                    Err(err) => self.set_toast(format!("Failed to start {}: {err}", app.name)),
+                }
+            }
+        }
+        close
+    }
+
+    fn open_icon_dialog(&mut self, folder: PathBuf) {
+        let candidates = std::fs::read_dir(&folder)
+            .map(|rd| {
+                let mut images: Vec<PathBuf> = rd.flatten().map(|e| e.path()).filter(|p| crate::thumbs::is_image(p)).collect();
+                images.sort();
+                images.truncate(6);
+                images
+            })
+            .unwrap_or_default();
+        let input = self.folder_icons.get(&folder).map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
+        self.dialog = Some(Dialog::Icon { folder, input, error: None, candidates, browse: None });
+    }
+
+    /// Set (or with `None` remove) the custom icon of a folder.
+    fn apply_folder_icon(&mut self, folder: &Path, image: Option<&Path>) {
+        match image {
+            Some(img) => {
+                self.thumbs.ensure(img);
+                self.folder_icons.insert(folder.to_path_buf(), img.to_path_buf());
+                self.set_toast("Folder icon set");
+            }
+            None => {
+                self.folder_icons.remove(folder);
+                self.set_toast("Folder icon reset");
+            }
+        }
+        save_folder_icons(&self.folder_icons);
+    }
+
+    /// Returns true when the dialog should close.
+    fn icon_dialog_contents(&mut self, ui: &mut egui::Ui, dialog: &mut Dialog) -> bool {
+        let Dialog::Icon { folder, input, error, candidates, browse } = dialog else { return false };
+        let name = folder.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "Computer".to_owned());
+        ui.label(egui::RichText::new("Folder icon").size(16.0).color(self.theme.text));
+        ui.label(egui::RichText::new(format!("Choose an image for “{name}”. You can also drop a file here.")).size(12.5).color(self.theme.subtext1));
+        ui.add_space(4.0);
+
+        let mut apply = false;
+        egui::Frame::new()
+            .fill(self.theme.surface1)
+            .corner_radius(egui::CornerRadius::same(18))
+            .inner_margin(egui::Margin::symmetric(14, 8))
+            .show(ui, |ui| {
+                let resp = ui.add(
+                    egui::TextEdit::singleline(input)
+                        .frame(egui::Frame::NONE)
+                        .desired_width(f32::INFINITY)
+                        .hint_text("No image chosen")
+                        .font(egui::FontId::proportional(13.5)),
+                );
+                if resp.changed() {
+                    *error = None;
+                }
+                if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                    apply = true;
+                }
+            });
+
+        ui.horizontal(|ui| {
+            if chip(ui, "icon_browse", Some(icons::FOLDER), "Choose image…", &self.theme, browse.is_some()).clicked() {
+                *browse = match browse {
+                    Some(_) => None,
+                    None => {
+                        let typed = PathBuf::from(input.trim());
+                        let start = typed.parent().filter(|p| p.is_dir()).map(Path::to_path_buf);
+                        Some(start.unwrap_or_else(|| if folder.is_dir() { folder.clone() } else { self.current_path.clone() }))
+                    }
+                };
+            }
+        });
+        if let Some(dir) = browse.clone() {
+            let mut entries: Vec<(PathBuf, bool)> = std::fs::read_dir(&dir)
+                .map(|rd| {
+                    rd.flatten()
+                        .filter(|e| !e.file_name().to_string_lossy().starts_with('.'))
+                        .map(|e| e.path())
+                        .filter_map(|p| if p.is_dir() { Some((p, true)) } else { crate::thumbs::is_image(&p).then_some((p, false)) })
+                        .collect()
+                })
+                .unwrap_or_default();
+            entries.sort_by_key(|(p, is_dir)| (!*is_dir, p.file_name().map(|n| n.to_string_lossy().to_lowercase())));
+            ui.label(egui::RichText::new(dir.to_string_lossy()).size(11.5).color(self.theme.subtext1));
+            egui::ScrollArea::vertical().max_height(220.0).auto_shrink([false, true]).id_salt("icon_browser").show(ui, |ui| {
+                ui.spacing_mut().item_spacing.y = 2.0;
+                if let Some(parent) = dir.parent() {
+                    if nav_item(ui, "icon_browse_up", icons::ARROW_UP, "..", &self.theme, false).clicked() {
+                        *browse = Some(parent.to_path_buf());
+                    }
+                }
+                for (idx, (path, is_dir)) in entries.iter().enumerate() {
+                    let label = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                    let glyph = if *is_dir { icons::FOLDER } else { icons::IMAGE };
+                    let on = !*is_dir && *input == path.to_string_lossy();
+                    if nav_item(ui, ("icon_browse_entry", idx), glyph, &label, &self.theme, on).clicked() {
+                        if *is_dir {
+                            *browse = Some(path.clone());
+                        } else {
+                            *input = path.to_string_lossy().into_owned();
+                            *error = None;
+                            *browse = None;
+                        }
+                    }
+                }
+            });
+        } else if !candidates.is_empty() {
+            ui.add_space(2.0);
+            ui.label(egui::RichText::new("Images in this folder").size(11.5).color(self.theme.subtext1));
+            ui.horizontal_wrapped(|ui| {
+                for (idx, path) in candidates.iter().enumerate() {
+                    let label = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                    let on = *input == path.to_string_lossy();
+                    if chip(ui, ("icon_candidate", idx), None, &label, &self.theme, on).clicked() {
+                        *input = path.to_string_lossy().into_owned();
+                        *error = None;
+                    }
+                }
+            });
+        }
+        if let Some(err) = error.as_ref() {
+            ui.label(egui::RichText::new(err).size(12.5).color(self.theme.red));
+        }
+
+        let mut close = false;
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            if chip(ui, "icon_apply", Some(icons::CHECK), "Apply", &self.theme, true).clicked() {
+                apply = true;
+            }
+            if self.folder_icons.contains_key(folder.as_path())
+                && chip(ui, "icon_reset", None, "Reset", &self.theme, false).clicked()
+            {
+                self.apply_folder_icon(folder, None);
+                close = true;
+            }
+            if chip(ui, "icon_cancel", None, "Cancel", &self.theme, false).clicked() {
+                close = true;
+            }
+        });
+
+        if apply {
+            let path = PathBuf::from(input.trim().trim_matches('\''));
+            if path.is_file() && crate::thumbs::is_image(&path) {
+                self.apply_folder_icon(folder, Some(&path));
+                close = true;
+            } else {
+                *error = Some("Pick an existing png, jpg, gif, webp or bmp image".to_owned());
+            }
+        }
+        close
+    }
+
+    /// Nautilus-style properties: a centered header, then grouped cards of label / value rows.
+    /// Returns true when the dialog should close.
+    fn properties_contents(&mut self, ui: &mut egui::Ui, dialog: &mut Dialog) -> bool {
+        let Dialog::Properties { props, scan } = dialog else { return false };
+        let ctx = ui.ctx().clone();
+        let item = &props.item;
+        let theme = self.theme.clone();
+        let mut groups = props.groups();
+
+        // Folder totals come from the background scan
+        let mut subtitle = props.kind.clone();
+        if let Some(scan) = scan.as_ref() {
+            use std::sync::atomic::Ordering::Relaxed;
+            let s = &scan.state;
+            let (size, files, folders, done) = (s.size.load(Relaxed), s.files.load(Relaxed), s.folders.load(Relaxed), s.done.load(Relaxed));
+            let total = format!("{}{}", crate::fs::file_item::format_bytes(size), if done { "" } else { " so far…" });
+            groups[0].1.push(("Total size", format!("{total} · {files} files, {folders} folders")));
+            subtitle = format!("{} · {total}", props.kind);
+            if !done {
+                ctx.request_repaint();
+            }
+        } else if !item.is_dir {
+            subtitle = format!("{} · {}", props.kind, item.formatted_size());
+        }
+
+        let mut copied: Option<String> = None;
+        let mut change_icon = false;
+        let mut close = false;
+
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new("Properties").size(16.0).color(theme.text));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if filled_icon_button(ui, "dlg_close", icons::CLOSE, &theme, 30.0, "Close", Some(theme.red)).clicked() {
+                    close = true;
+                }
+            });
+        });
+        ui.add_space(2.0);
+
+        egui::ScrollArea::vertical()
+            .max_height((ctx.content_rect().height() - 150.0).max(160.0))
+            .auto_shrink([true, true])
+            .show(ui, |ui| {
+                let full = ui.available_width();
+                ui.spacing_mut().item_spacing.y = 4.0;
+
+                // Header: icon tile, name, one-line summary
+                ui.vertical_centered(|ui| {
+                    let (tile, _) = ui.allocate_exact_size(egui::vec2(88.0, 88.0), egui::Sense::hover());
+                    ui.painter().rect_filled(tile, egui::CornerRadius::same(26), theme.surface1);
+                    match thumb_for(&self.thumbs, &self.folder_icons, item) {
+                        Some(tex) => {
+                            egui::Image::from_texture(egui::load::SizedTexture::new(tex.id(), egui::vec2(64.0, 64.0)))
+                                .corner_radius(egui::CornerRadius::same(14))
+                                .paint_at(ui, egui::Rect::from_center_size(tile.center(), egui::vec2(64.0, 64.0)));
+                        }
+                        None => {
+                            let color = if item.is_dir { theme.blue } else { theme.subtext0 };
+                            let glyph = if item.is_symlink { icons::SYMLINK } else { item.file_type.icon() };
+                            material::paint_icon(ui.painter(), tile.center(), glyph, 44.0, color);
+                        }
+                    }
+                    ui.add_space(6.0);
+                    let mut job = egui::text::LayoutJob::simple_singleline(item.name.clone(), egui::FontId::proportional(17.0), theme.text);
+                    job.wrap = egui::text::TextWrapping::truncate_at_width(full - 16.0);
+                    ui.label(job);
+                    ui.label(egui::RichText::new(subtitle).size(12.5).color(theme.subtext1));
+                    if item.is_dir {
+                        ui.add_space(4.0);
+                        if chip(ui, "props_icon", Some(icons::IMAGE), "Custom icon…", &theme, false).clicked() {
+                            change_icon = true;
+                        }
+                    }
+                });
+                ui.add_space(8.0);
+
+                for (title, rows) in &groups {
+                    ui.label(egui::RichText::new(format!("  {title}")).size(11.5).color(theme.subtext1));
+                    egui::Frame::new().fill(theme.surface1).corner_radius(egui::CornerRadius::same(20)).show(ui, |ui| {
+                        ui.set_width(full);
+                        ui.spacing_mut().item_spacing.y = 0.0;
+                        for (idx, (label, value)) in rows.iter().enumerate() {
+                            let (rect, resp) = ui.allocate_exact_size(egui::vec2(full, 38.0), egui::Sense::click());
+                            let fx = material::fx(ui, resp.id, &resp, true, &material::FxSpec::ROW);
+                            let painter = ui.painter();
+                            let inner = rect.shrink2(egui::vec2(4.0, 2.0));
+                            painter.rect_filled(inner, egui::CornerRadius::same(16), theme.with_alpha(theme.text, (fx.hover * 16.0) as u8));
+                            if idx > 0 {
+                                let line = egui::Rect::from_min_size(egui::pos2(rect.left() + 16.0, rect.top()), egui::vec2(full - 32.0, 1.0));
+                                painter.rect_filled(line, 0, theme.with_alpha(theme.text, 14));
+                            }
+                            painter.text(egui::pos2(rect.left() + 16.0, rect.center().y), egui::Align2::LEFT_CENTER, *label, egui::FontId::proportional(12.5), theme.subtext1);
+                            let mut job = egui::text::LayoutJob::simple_singleline(value.clone(), egui::FontId::proportional(13.5), theme.text);
+                            job.wrap = egui::text::TextWrapping::truncate_at_width((full - 140.0 - 36.0).max(20.0));
+                            let galley = painter.layout_job(job);
+                            painter.galley(egui::pos2(rect.left() + 118.0, rect.center().y - galley.size().y / 2.0), galley, theme.text);
+                            material::paint_icon(painter, egui::pos2(rect.right() - 22.0, rect.center().y), icons::COPY, 14.0, theme.with_alpha(theme.subtext1, (fx.hover * 255.0) as u8));
+                            if resp.on_hover_text("Click to copy").clicked() {
+                                copied = Some(value.clone());
+                            }
+                        }
+                    });
+                    ui.add_space(6.0);
+                }
+            });
+
+        ui.add_space(2.0);
+        ui.horizontal(|ui| {
+            if chip(ui, "dlg_copy_path", Some(icons::COPY), "Copy path", &theme, false).clicked() {
+                copied = Some(props.item.path.to_string_lossy().into_owned());
+            }
+        });
+
+        let folder = props.item.path.clone();
+        if let Some(text) = copied {
+            ctx.copy_text(text);
+            self.set_toast("Copied to clipboard");
+        }
+        if change_icon {
+            self.open_icon_dialog(folder);
+            return false;
+        }
+        close
+    }
+}
+
+/// Thumbnail for a row: the image itself, or a folder's custom icon.
+fn thumb_for<'a>(
+    thumbs: &'a Thumbnails,
+    icons: &HashMap<PathBuf, PathBuf>,
+    item: &FileItem,
+) -> Option<&'a egui::TextureHandle> {
+    if item.is_dir {
+        icons.get(&item.path).and_then(|img| thumbs.get(img))
+    } else {
+        thumbs.get(&item.path)
+    }
+}
+
+/// "Open with" list row: the application's own icon (or a generic glyph) and its name.
+fn app_row(
+    ui: &mut egui::Ui,
+    id_source: impl std::hash::Hash + std::fmt::Debug,
+    icon: Option<&egui::TextureHandle>,
+    label: &str,
+    theme: &SerpantinumTheme,
+    selected: bool,
+) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 44.0), egui::Sense::click());
+    let id = ui.make_persistent_id(id_source);
+    let fx = material::fx(ui, id, &resp, true, &material::FxSpec::ROW);
+    let sel = ui.ctx().animate_bool_with_time_and_easing(id.with("sel"), selected, 0.25, material::quint_out);
+    let bg = material::lerp_color(theme.with_alpha(theme.text, (fx.hover * 16.0) as u8), theme.with_alpha(theme.mauve, 52), sel);
+    ui.painter().rect_filled(rect, egui::CornerRadius::same(18), bg);
+
+    let icon_rect = egui::Rect::from_center_size(egui::pos2(rect.left() + 26.0, rect.center().y), egui::vec2(28.0, 28.0));
+    match icon {
+        Some(tex) => {
+            egui::Image::from_texture(egui::load::SizedTexture::new(tex.id(), icon_rect.size())).paint_at(ui, icon_rect);
+        }
+        None => material::paint_icon(ui.painter(), icon_rect.center(), icons::EXECUTABLE, 22.0, theme.subtext0),
+    }
+    let color = material::lerp_color(theme.text, theme.mauve, sel);
+    let mut job = egui::text::LayoutJob::simple_singleline(label.to_owned(), egui::FontId::proportional(13.5), color);
+    job.wrap = egui::text::TextWrapping::truncate_at_width((rect.width() - 64.0).max(20.0));
+    let galley = ui.painter().layout_job(job);
+    ui.painter().galley(egui::pos2(rect.left() + 48.0, rect.center().y - galley.size().y / 2.0), galley, color);
+    resp
+}
+
+/// Round color swatch; the selected one carries a check mark.
+fn swatch(ui: &mut egui::Ui, id_source: impl std::hash::Hash + std::fmt::Debug, color: egui::Color32, theme: &SerpantinumTheme, selected: bool) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(30.0, 30.0), egui::Sense::click());
+    let id = ui.make_persistent_id(id_source);
+    let fx = material::fx(ui, id, &resp, true, &material::FxSpec::ICON);
+    let r = egui::Rect::from_center_size(rect.center(), rect.size() * fx.scale);
+    ui.painter().circle_filled(r.center(), r.width() / 2.0, color);
+    if fx.flash > 0.0 {
+        ui.painter().circle_filled(r.center(), r.width() / 2.0, egui::Color32::from_white_alpha((fx.flash * 120.0) as u8));
+    }
+    if selected {
+        let on_color = if (color.r() as u32 + color.g() as u32 + color.b() as u32) > 380 { theme.crust } else { egui::Color32::WHITE };
+        material::paint_icon(ui.painter(), r.center(), icons::CHECK, 17.0, on_color);
+    }
+    resp
+}
+
+/// Theme preview tile: the palette's surfaces and accent, with its name underneath.
+fn theme_card(ui: &mut egui::Ui, id_source: impl std::hash::Hash + std::fmt::Debug, label: &str, preview: &SerpantinumTheme, theme: &SerpantinumTheme, selected: bool) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(104.0, 82.0), egui::Sense::click());
+    let id = ui.make_persistent_id(id_source);
+    let fx = material::fx(ui, id, &resp, true, &material::FxSpec::CLICK);
+    let sel = ui.ctx().animate_bool_with_time_and_easing(id.with("sel"), selected, 0.25, material::quint_out);
+    let r = egui::Rect::from_center_size(rect.center(), rect.size() * fx.scale);
+
+    let back = material::lerp_color(theme.surface1, theme.with_alpha(theme.mauve, 255), 0.0);
+    let back = material::lerp_color(back, material::lerp_color(theme.surface1, theme.mauve, 0.35), sel);
+    ui.painter().rect_filled(r, egui::CornerRadius::same(18), back);
+    let swatch_rect = egui::Rect::from_min_size(r.min + egui::vec2(8.0, 8.0), egui::vec2(r.width() - 16.0, 46.0));
+    let painter = ui.painter();
+    painter.rect_filled(swatch_rect, egui::CornerRadius::same(12), preview.base);
+    let bar = egui::Rect::from_min_size(swatch_rect.min + egui::vec2(6.0, 6.0), egui::vec2(swatch_rect.width() * 0.5, 34.0));
+    painter.rect_filled(bar, egui::CornerRadius::same(8), preview.surface1);
+    painter.rect_filled(egui::Rect::from_min_size(bar.min + egui::vec2(6.0, 6.0), egui::vec2(bar.width() - 12.0, 6.0)), egui::CornerRadius::same(3), preview.text);
+    painter.rect_filled(egui::Rect::from_min_size(bar.min + egui::vec2(6.0, 16.0), egui::vec2((bar.width() - 12.0) * 0.6, 6.0)), egui::CornerRadius::same(3), preview.subtext1);
+    painter.circle_filled(egui::pos2(swatch_rect.right() - 16.0, swatch_rect.center().y), 9.0, preview.mauve);
+    painter.text(egui::pos2(r.center().x, r.bottom() - 13.0), egui::Align2::CENTER_CENTER, label, egui::FontId::proportional(12.5), material::lerp_color(theme.subtext0, theme.text, sel));
+    if fx.flash > 0.0 {
+        painter.rect_filled(r, egui::CornerRadius::same(18), egui::Color32::from_white_alpha((fx.flash * 60.0) as u8));
+    }
+    resp
+}
+
+/// Settings list row: icon, label, and the current value on the right.
+fn category_row(ui: &mut egui::Ui, id_source: impl std::hash::Hash + std::fmt::Debug, icon: &str, label: &str, value: &str, theme: &SerpantinumTheme, open: bool) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 44.0), egui::Sense::click());
+    let id = ui.make_persistent_id(id_source);
+    let fx = material::fx(ui, id, &resp, true, &material::FxSpec::ROW);
+    let sel = ui.ctx().animate_bool_with_time_and_easing(id.with("open"), open, 0.25, material::quint_out);
+    let fill = material::lerp_color(theme.surface1, theme.surface2, fx.hover.max(sel));
+    ui.painter().rect_filled(rect, egui::CornerRadius::same(18), fill);
+    material::paint_icon(ui.painter(), egui::pos2(rect.left() + 24.0, rect.center().y), icon, 18.0, material::lerp_color(theme.subtext0, theme.mauve, sel));
+    ui.painter().text(egui::pos2(rect.left() + 46.0, rect.center().y), egui::Align2::LEFT_CENTER, label, egui::FontId::proportional(13.5), theme.text);
+    let chevron = if open { icons::ARROW_UP } else { icons::CHEVRON_RIGHT };
+    material::paint_icon(ui.painter(), egui::pos2(rect.right() - 20.0, rect.center().y), chevron, 16.0, theme.subtext1);
+    ui.painter().text(egui::pos2(rect.right() - 40.0, rect.center().y), egui::Align2::RIGHT_CENTER, value, egui::FontId::proportional(12.5), theme.subtext1);
+    resp
 }

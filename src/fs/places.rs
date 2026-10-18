@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
 use crate::ui::icons;
 
@@ -14,6 +15,25 @@ impl Place {
             name: name.into(),
             path,
             icon,
+        }
+    }
+
+    /// Pinned folders, saved in `~/.config/ski/pins.json`.
+    pub fn load_pins() -> Vec<PathBuf> {
+        pins_file()
+            .and_then(|f| std::fs::read_to_string(f).ok())
+            .and_then(|s| serde_json::from_str::<Vec<PathBuf>>(&s).ok())
+            .map(|pins| pins.into_iter().filter(|p| p.is_dir()).collect())
+            .unwrap_or_default()
+    }
+
+    pub fn save_pins(pins: &[PathBuf]) {
+        let Some(file) = pins_file() else { return };
+        if let Some(dir) = file.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        if let Ok(json) = serde_json::to_string_pretty(pins) {
+            let _ = std::fs::write(file, json);
         }
     }
 
@@ -62,6 +82,38 @@ impl Place {
 
         places.push(Place::new("Computer", PathBuf::from("/"), icons::STORAGE));
 
+        // Compare against canonical paths so symlinked folders still highlight
+        for place in &mut places {
+            if let Ok(canonical) = place.path.canonicalize() {
+                place.path = canonical;
+            }
+        }
         places
     }
+}
+
+fn pins_file() -> Option<PathBuf> {
+    dirs::config_dir().map(|d| d.join("ski").join("pins.json"))
+}
+
+/// Custom folder icons: folder path -> image path, saved in `~/.config/ski/folder_icons.json`.
+pub fn load_folder_icons() -> HashMap<PathBuf, PathBuf> {
+    config_file("folder_icons.json")
+        .and_then(|f| std::fs::read_to_string(f).ok())
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default()
+}
+
+pub fn save_folder_icons(icons: &HashMap<PathBuf, PathBuf>) {
+    let Some(file) = config_file("folder_icons.json") else { return };
+    if let Some(dir) = file.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    if let Ok(json) = serde_json::to_string_pretty(icons) {
+        let _ = std::fs::write(file, json);
+    }
+}
+
+fn config_file(name: &str) -> Option<PathBuf> {
+    dirs::config_dir().map(|d| d.join("ski").join(name))
 }
