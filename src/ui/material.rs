@@ -10,6 +10,29 @@ use crate::ui::icons;
 /// Height shared by every control in the header so the row always lines up.
 pub const CONTROL_HEIGHT: f32 = 34.0;
 
+/// Shared Corner Radii (Material 3 scale)
+pub const RADIUS_SM: u8 = 8;         // Small elements, previews, thumbnails, chips
+pub const RADIUS_MD: u8 = 12;        // Rows, cards, list items
+pub const RADIUS_LG: u8 = 18;        // Tiles, input fields, badges, large controls
+pub const RADIUS_CONTAINER: u8 = 22; // Menus, popups, sub-panels, scroll boxes
+pub const RADIUS_WINDOW: u8 = 26;    // Dialogs and modal frames
+
+/// Shared Font Sizes
+pub const FONT_SECTION: f32 = 12.0;
+pub const FONT_CAPTION: f32 = 12.5;
+pub const FONT_CHIP: f32 = 13.0;
+pub const FONT_BODY: f32 = 13.5;
+pub const FONT_SUBTITLE: f32 = 14.0;
+pub const FONT_TITLE: f32 = 16.0;
+
+/// Shared State Layer / Tonal Fill Alphas
+pub const ALPHA_HOVER: u8 = 16;
+pub const ALPHA_PRESS: u8 = 32;
+pub const ALPHA_SEL_BG: u8 = 85;
+pub const ALPHA_SEL_HOVER: u8 = 110;
+pub const ALPHA_SEL_OUTLINE: u8 = 120;
+pub const ALPHA_DIVIDER: u8 = 24;
+
 pub fn quint_out(t: f32) -> f32 {
     1.0 - (1.0 - t).powi(5)
 }
@@ -113,8 +136,8 @@ fn truncated(ui: &egui::Ui, text: &str, size: f32, color: Color32, max_width: f3
 }
 
 fn state_layer(theme: &SerpantinumTheme, fx: &Fx) -> Color32 {
-    let hover = theme.with_alpha(theme.text, 22);
-    let press = theme.with_alpha(theme.text, 40);
+    let hover = theme.with_alpha(theme.text, ALPHA_HOVER);
+    let press = theme.with_alpha(theme.text, ALPHA_PRESS);
     lerp_color(lerp_color(Color32::TRANSPARENT, hover, fx.hover), press, fx.press)
 }
 
@@ -216,7 +239,7 @@ pub fn chip(
     selected: bool,
 ) -> egui::Response {
     let height = 30.0;
-    let galley = ui.painter().layout_no_wrap(label.to_owned(), egui::FontId::proportional(13.0), theme.text);
+    let galley = ui.painter().layout_no_wrap(label.to_owned(), egui::FontId::proportional(FONT_CHIP), theme.text);
     let icon_w = if icon.is_some() { 22.0 } else { 0.0 };
     let width = galley.size().x + 24.0 + icon_w;
 
@@ -227,8 +250,17 @@ pub fn chip(
     let r = scaled(rect, fx.scale);
 
     let idle = lerp_color(theme.surface1, theme.surface2, fx.hover);
-    let active = blend_over(theme.surface1, theme.with_alpha(theme.mauve, 60 + (fx.hover * 25.0) as u8));
+    let active = blend_over(theme.surface1, theme.with_alpha(theme.mauve, 70 + (fx.hover * 25.0) as u8));
     paint_fill(ui.painter(), r, 15, lerp_color(idle, active, sel_t), &fx);
+
+    if sel_t > 0.001 {
+        ui.painter().rect_stroke(
+            r,
+            CornerRadius::same(15),
+            egui::Stroke::new(1.0, theme.with_alpha(theme.mauve, (90.0 * sel_t) as u8)),
+            egui::StrokeKind::Inside,
+        );
+    }
 
     let color = lerp_color(lerp_color(theme.subtext0, theme.text, fx.hover), theme.mauve, sel_t);
     let mut x = r.left() + 12.0;
@@ -236,7 +268,7 @@ pub fn chip(
         paint_icon(ui.painter(), Pos2::new(x + 7.0, r.center().y), ic, 15.0, color);
         x += 22.0;
     }
-    ui.painter().text(Pos2::new(x, r.center().y), Align2::LEFT_CENTER, label, egui::FontId::proportional(13.0), color);
+    ui.painter().text(Pos2::new(x, r.center().y), Align2::LEFT_CENTER, label, egui::FontId::proportional(FONT_CHIP), color);
     response
 }
 
@@ -259,21 +291,42 @@ pub fn nav_item(
     let sel_t = ui.ctx().animate_bool_with_time_and_easing(id.with("sel"), selected, 0.25, quint_out);
     let r = scaled(rect, fx.scale);
 
-    let bg = lerp_color(
-        lerp_color(
-            lerp_color(Color32::TRANSPARENT, theme.with_alpha(theme.text, 16), fx.hover),
-            theme.with_alpha(theme.text, 30),
-            fx.press,
-        ),
-        theme.with_alpha(theme.mauve, 52),
-        sel_t,
+    let idle_bg = lerp_color(
+        lerp_color(Color32::TRANSPARENT, theme.with_alpha(theme.text, ALPHA_HOVER), fx.hover),
+        theme.with_alpha(theme.text, ALPHA_PRESS),
+        fx.press,
     );
-    paint_fill(ui.painter(), r, 18, bg, &fx);
+    let active_bg = theme.with_alpha(theme.mauve, ALPHA_SEL_BG + (fx.hover * 20.0) as u8);
+    let bg = lerp_color(idle_bg, active_bg, sel_t);
+    paint_fill(ui.painter(), r, RADIUS_LG, bg, &fx);
 
-    let color = lerp_color(lerp_color(theme.subtext0, theme.text, fx.hover), theme.mauve, sel_t);
+    if sel_t > 0.001 {
+        ui.painter().rect_stroke(
+            r,
+            CornerRadius::same(RADIUS_LG),
+            egui::Stroke::new(1.5, theme.with_alpha(theme.mauve, (ALPHA_SEL_OUTLINE as f32 * sel_t) as u8)),
+            egui::StrokeKind::Inside,
+        );
+        let bar_rect = Rect::from_center_size(
+            Pos2::new(r.left() + 4.0, r.center().y),
+            Vec2::new(3.0, 18.0 * sel_t),
+        );
+        ui.painter().rect_filled(
+            bar_rect,
+            CornerRadius::same(2),
+            theme.with_alpha(theme.mauve, (230.0 * sel_t) as u8),
+        );
+    }
+
+    let active_color = if theme.light {
+        theme.mauve
+    } else {
+        lerp_color(theme.mauve, Color32::WHITE, 0.25)
+    };
+    let color = lerp_color(lerp_color(theme.subtext0, theme.text, fx.hover), active_color, sel_t);
     paint_icon(ui.painter(), Pos2::new(r.left() + 22.0, r.center().y), icon, 17.0, color);
 
-    let galley = truncated(ui, label, 13.5, color, r.width() - 56.0);
+    let galley = truncated(ui, label, FONT_BODY, color, r.width() - 56.0);
     let pos = Pos2::new(r.left() + 42.0, r.center().y - galley.size().y / 2.0);
     ui.painter().galley(pos, galley, color);
     response
@@ -321,6 +374,7 @@ fn paint_thumb(ui: &egui::Ui, tex: &egui::TextureHandle, rect: Rect, radius: u8)
         .paint_at(ui, shown);
 }
 
+#[allow(dead_code)]
 pub const ROW_HEIGHT: f32 = 44.0;
 
 /// One row of the list view. Columns drop out as the row gets narrower.
@@ -335,40 +389,62 @@ pub fn file_row(
     thumb: Option<&egui::TextureHandle>,
     path_hint: Option<&str>,
     columns: &[Column],
+    row_height: f32,
 ) -> egui::Response {
-    let (rect, response) = ui.allocate_exact_size(Vec2::new(ui.available_width(), ROW_HEIGHT), egui::Sense::click());
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(ui.available_width(), row_height), egui::Sense::click());
     let id = ui.make_persistent_id(("row", idx));
     let fx = fx(ui, id, &response, true, &FxSpec::ROW);
     let sel_t = ui.ctx().animate_bool_with_time_and_easing(id.with("sel"), selected, 0.25, quint_out);
     let r = scaled(rect, fx.scale);
 
-    let bg = lerp_color(
-        lerp_color(
-            lerp_color(Color32::TRANSPARENT, theme.with_alpha(theme.text, 14), fx.hover),
-            theme.with_alpha(theme.text, 28),
-            fx.press,
-        ),
-        theme.with_alpha(theme.mauve, 48),
-        sel_t,
+    let idle_bg = lerp_color(
+        lerp_color(Color32::TRANSPARENT, theme.with_alpha(theme.text, ALPHA_HOVER), fx.hover),
+        theme.with_alpha(theme.text, ALPHA_PRESS),
+        fx.press,
     );
-    paint_fill(ui.painter(), r, 12, bg, &fx);
+    let active_bg = theme.with_alpha(theme.mauve, ALPHA_SEL_BG + (fx.hover * 25.0) as u8);
+    let bg = lerp_color(idle_bg, active_bg, sel_t);
+    paint_fill(ui.painter(), r, RADIUS_MD, bg, &fx);
+
+    if sel_t > 0.001 {
+        // Subtle ~1.5px accent outline
+        ui.painter().rect_stroke(
+            r,
+            CornerRadius::same(RADIUS_MD),
+            egui::Stroke::new(1.5, theme.with_alpha(theme.mauve, (ALPHA_SEL_OUTLINE as f32 * sel_t) as u8)),
+            egui::StrokeKind::Inside,
+        );
+        // Accent left bar in list view
+        let bar_height = 22.0 * sel_t;
+        let bar_rect = Rect::from_center_size(
+            Pos2::new(r.left() + 4.0, r.center().y),
+            Vec2::new(3.5, bar_height),
+        );
+        ui.painter().rect_filled(
+            bar_rect,
+            CornerRadius::same(2),
+            theme.with_alpha(theme.mauve, (230.0 * sel_t) as u8),
+        );
+    }
 
     let icon_center = Pos2::new(r.left() + 28.0, r.center().y);
     match thumb {
-        Some(tex) => paint_thumb(ui, tex, Rect::from_center_size(icon_center, Vec2::splat(32.0)), 6),
+        Some(tex) => paint_thumb(ui, tex, Rect::from_center_size(icon_center, Vec2::splat(32.0)), RADIUS_SM),
         None => {
-            let (glyph, color) = item_icon(item, theme, selected);
-            paint_icon(ui.painter(), icon_center, glyph, 24.0, color);
+            let (glyph, base_color) = item_icon(item, theme, selected);
+            let icon_color = lerp_color(base_color, theme.mauve, sel_t * 0.7);
+            paint_icon(ui.painter(), icon_center, glyph, 24.0, icon_color);
         }
     }
 
     let mut right = r.right() - 16.0;
-    let small = egui::FontId::proportional(12.5);
+    let small = egui::FontId::proportional(FONT_CAPTION);
+    let subtext_color = lerp_color(theme.subtext1, theme.subtext0, sel_t);
     if let Some(hint) = path_hint {
-        let galley = truncated(ui, hint, 12.5, theme.subtext1, (r.width() * 0.4).min(260.0));
+        let galley = truncated(ui, hint, FONT_CAPTION, subtext_color, (r.width() * 0.4).min(260.0));
         let pos = Pos2::new(right - galley.size().x, r.center().y - galley.size().y / 2.0);
         right = pos.x - 12.0;
-        ui.painter().galley(pos, galley, theme.subtext1);
+        ui.painter().galley(pos, galley, subtext_color);
     } else {
         // Columns that don't fit next to a readable name are dropped, rightmost first
         let budget = r.width() - 54.0 - 16.0 - 160.0;
@@ -382,13 +458,17 @@ pub fn file_row(
             })
             .collect();
         for column in fitting.iter().rev() {
-            ui.painter().text(Pos2::new(right, r.center().y), Align2::RIGHT_CENTER, column.value(item), small.clone(), theme.subtext1);
+            ui.painter().text(Pos2::new(right, r.center().y), Align2::RIGHT_CENTER, column.value(item), small.clone(), subtext_color);
             right -= column.width();
         }
     }
 
-    let name_color = theme.text;
-    let galley = truncated(ui, &item.name, 14.0, name_color, right - r.left() - 60.0);
+    let name_color = if theme.light {
+        lerp_color(theme.text, theme.mauve, sel_t * 0.3)
+    } else {
+        lerp_color(theme.text, Color32::WHITE, sel_t * 0.6)
+    };
+    let galley = truncated(ui, item.display_name(), FONT_SUBTITLE, name_color, right - r.left() - 60.0);
     let pos = Pos2::new(r.left() + 54.0, r.center().y - galley.size().y / 2.0);
     ui.painter().galley(pos, galley, name_color);
 
@@ -464,14 +544,20 @@ pub fn menu_item(
     let id = ui.make_persistent_id(id_source);
     let fx = fx(ui, id, &response, true, &FxSpec::ROW);
     let r = scaled(rect, fx.scale);
-    paint_fill(ui.painter(), r, 17, lerp_color(Color32::TRANSPARENT, theme.with_alpha(theme.text, 18), fx.hover), &fx);
+    let fill = lerp_color(
+        lerp_color(Color32::TRANSPARENT, theme.with_alpha(theme.text, ALPHA_HOVER), fx.hover),
+        theme.with_alpha(theme.text, ALPHA_PRESS),
+        fx.press,
+    );
+    paint_fill(ui.painter(), r, 17, fill, &fx);
 
     let color = lerp_color(theme.subtext0, theme.text, fx.hover);
     paint_icon(ui.painter(), Pos2::new(r.left() + 20.0, r.center().y), icon, 16.0, color);
-    ui.painter().text(Pos2::new(r.left() + 40.0, r.center().y), Align2::LEFT_CENTER, label, egui::FontId::proportional(13.5), color);
+    ui.painter().text(Pos2::new(r.left() + 40.0, r.center().y), Align2::LEFT_CENTER, label, egui::FontId::proportional(FONT_BODY), color);
     response
 }
 
+#[allow(dead_code)]
 pub const GRID_CELL: Vec2 = Vec2::new(116.0, 128.0);
 
 /// One cell of the grid view.
@@ -483,36 +569,56 @@ pub fn file_tile(
     selected: bool,
     should_scroll: bool,
     thumb: Option<&egui::TextureHandle>,
+    grid_size: crate::settings::GridSize,
+    max_name_lines: usize,
 ) -> egui::Response {
-    let (rect, response) = ui.allocate_exact_size(GRID_CELL, egui::Sense::click());
+    let (cell_w, cell_h) = grid_size.cell_size();
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(cell_w, cell_h), egui::Sense::click());
     let id = ui.make_persistent_id(("tile", idx));
     let fx = fx(ui, id, &response, true, &FxSpec::CLICK);
     let sel_t = ui.ctx().animate_bool_with_time_and_easing(id.with("sel"), selected, 0.25, quint_out);
     let r = scaled(rect, fx.scale);
 
-    let bg = lerp_color(
-        lerp_color(Color32::TRANSPARENT, theme.with_alpha(theme.text, 14), fx.hover),
-        theme.with_alpha(theme.mauve, 48),
-        sel_t,
-    );
-    paint_fill(ui.painter(), r, 18, bg, &fx);
+    let idle_bg = lerp_color(Color32::TRANSPARENT, theme.with_alpha(theme.text, ALPHA_HOVER), fx.hover);
+    let active_bg = theme.with_alpha(theme.mauve, ALPHA_SEL_BG + (fx.hover * 25.0) as u8);
+    let bg = lerp_color(idle_bg, active_bg, sel_t);
+    paint_fill(ui.painter(), r, RADIUS_LG, bg, &fx);
 
-    let picture = Rect::from_center_size(Pos2::new(r.center().x, r.top() + 48.0), Vec2::splat(72.0));
+    if sel_t > 0.001 {
+        ui.painter().rect_stroke(
+            r,
+            CornerRadius::same(RADIUS_LG),
+            egui::Stroke::new(1.5, theme.with_alpha(theme.mauve, (ALPHA_SEL_OUTLINE as f32 * sel_t) as u8)),
+            egui::StrokeKind::Inside,
+        );
+    }
+
+    let pic_sz = grid_size.picture_size();
+    let picture = Rect::from_center_size(Pos2::new(r.center().x, r.top() + pic_sz * 0.5 + 12.0), Vec2::splat(pic_sz));
     match thumb {
-        Some(tex) => paint_thumb(ui, tex, picture, 8),
+        Some(tex) => paint_thumb(ui, tex, picture, RADIUS_SM),
         None => {
-            let (glyph, color) = item_icon(item, theme, selected);
-            paint_icon(ui.painter(), picture.center(), glyph, 48.0, color);
+            let (glyph, base_color) = item_icon(item, theme, selected);
+            let icon_color = lerp_color(base_color, theme.mauve, sel_t * 0.7);
+            paint_icon(ui.painter(), picture.center(), glyph, grid_size.icon_size(), icon_color);
         }
     }
 
-    // Names wrap over two lines and are centered under the picture, like Nautilus
-    let mut job = LayoutJob::simple(item.name.clone(), egui::FontId::proportional(12.5), theme.text, r.width() - 14.0);
-    job.wrap = TextWrapping { max_width: r.width() - 14.0, max_rows: 2, break_anywhere: true, overflow_character: Some('…') };
+    let name_color = if theme.light {
+        lerp_color(theme.text, theme.mauve, sel_t * 0.3)
+    } else {
+        lerp_color(theme.text, Color32::WHITE, sel_t * 0.6)
+    };
+
+    // Names wrap over configured lines and are centered under the picture, like Nautilus.
+    // Fixed: halign Center centers lines around 0 in the galley, so painting at r.center().x
+    // positions the text exactly centered without any leftward offset subtraction.
+    let mut job = LayoutJob::simple(item.display_name().to_string(), egui::FontId::proportional(FONT_CAPTION), name_color, r.width() - 14.0);
+    job.wrap = TextWrapping { max_width: r.width() - 14.0, max_rows: max_name_lines, break_anywhere: true, overflow_character: Some('…') };
     job.halign = egui::Align::Center;
     let galley = ui.painter().layout_job(job);
-    let pos = Pos2::new(r.center().x, r.top() + 94.0);
-    ui.painter().galley(pos - egui::vec2(galley.size().x / 2.0, 0.0), galley, theme.text);
+    let pos = Pos2::new(r.center().x, picture.bottom() + 8.0);
+    ui.painter().galley(pos, galley, name_color);
 
     if selected && should_scroll {
         response.scroll_to_me(Some(egui::Align::Center));
@@ -533,10 +639,15 @@ pub fn switch_row(
     let id = ui.make_persistent_id(id_source);
     let fx = fx(ui, id, &response, true, &FxSpec::ROW);
     let t = ui.ctx().animate_bool_with_time_and_easing(id.with("on"), on, 0.25, quint_out);
-    paint_fill(ui.painter(), rect, 18, lerp_color(Color32::TRANSPARENT, theme.with_alpha(theme.text, 16), fx.hover), &fx);
+    let fill = lerp_color(
+        lerp_color(Color32::TRANSPARENT, theme.with_alpha(theme.text, ALPHA_HOVER), fx.hover),
+        theme.with_alpha(theme.text, ALPHA_PRESS),
+        fx.press,
+    );
+    paint_fill(ui.painter(), rect, RADIUS_LG, fill, &fx);
 
     paint_icon(ui.painter(), Pos2::new(rect.left() + 24.0, rect.center().y), icon, 18.0, lerp_color(theme.subtext0, theme.mauve, t));
-    ui.painter().text(Pos2::new(rect.left() + 46.0, rect.center().y), Align2::LEFT_CENTER, label, egui::FontId::proportional(13.5), theme.text);
+    ui.painter().text(Pos2::new(rect.left() + 46.0, rect.center().y), Align2::LEFT_CENTER, label, egui::FontId::proportional(FONT_BODY), theme.text);
 
     let track = Rect::from_center_size(Pos2::new(rect.right() - 36.0, rect.center().y), Vec2::new(46.0, 26.0));
     let track_color = lerp_color(theme.surface2, theme.mauve, t);
@@ -551,6 +662,67 @@ pub fn switch_row(
     response
 }
 
+/// Material 3 section label with consistent padding and typography.
+pub fn section_label(ui: &mut egui::Ui, text: &str, theme: &SerpantinumTheme) {
+    ui.add_space(6.0);
+    ui.label(
+        egui::RichText::new(text)
+            .size(FONT_SECTION)
+            .color(theme.subtext1),
+    );
+    ui.add_space(2.0);
+}
+
+/// Standard dialog header with title, optional subtitle, and close button.
+/// Returns true if the close button was clicked.
+pub fn dialog_header(
+    ui: &mut egui::Ui,
+    title: &str,
+    subtitle: Option<&str>,
+    theme: &SerpantinumTheme,
+    close_id: impl std::hash::Hash + std::fmt::Debug,
+) -> bool {
+    let mut close = false;
+    ui.horizontal(|ui| {
+        ui.vertical(|ui| {
+            ui.label(egui::RichText::new(title).size(FONT_TITLE).color(theme.text));
+            if let Some(sub) = subtitle {
+                ui.label(egui::RichText::new(sub).size(FONT_CAPTION).color(theme.subtext1));
+            }
+        });
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+            if filled_icon_button(ui, close_id, icons::CLOSE, theme, 30.0, "Close", Some(theme.red)).clicked() {
+                close = true;
+            }
+        });
+    });
+    close
+}
+
+/// Standard subtle horizontal divider.
+pub fn divider(ui: &mut egui::Ui, theme: &SerpantinumTheme) {
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 7.0), egui::Sense::hover());
+    let line = egui::Rect::from_center_size(rect.center(), egui::vec2(rect.width() - 24.0, 1.0));
+    ui.painter().rect_filled(line, 0, theme.with_alpha(theme.text, ALPHA_DIVIDER));
+}
+
+/// Tonal card / subpanel frame with consistent background and corner radius.
+pub fn card_frame(theme: &SerpantinumTheme, radius: u8) -> egui::Frame {
+    egui::Frame::new()
+        .fill(theme.surface1)
+        .corner_radius(egui::CornerRadius::same(radius))
+        .inner_margin(egui::Margin::same(12))
+}
+
+/// Input field frame with consistent surface color and corner radius.
+pub fn input_frame(theme: &SerpantinumTheme) -> egui::Frame {
+    egui::Frame::new()
+        .fill(theme.surface1)
+        .corner_radius(egui::CornerRadius::same(RADIUS_LG))
+        .inner_margin(egui::Margin::symmetric(14, 6))
+}
+
 fn lerp(a: f32, b: f32, t: f32) -> f32 {
     a + (b - a) * t
 }
+

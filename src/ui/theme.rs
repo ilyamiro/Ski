@@ -18,6 +18,7 @@ pub struct SerpantinumColorsRaw {
     pub peach: Option<String>,
     pub green: Option<String>,
     pub red: Option<String>,
+    pub yellow: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -36,6 +37,7 @@ pub struct SerpantinumTheme {
     pub peach: Color32,
     pub green: Color32,
     pub red: Color32,
+    pub yellow: Color32,
     pub border_radius: f32,
     pub light: bool,
 }
@@ -57,6 +59,7 @@ impl Default for SerpantinumTheme {
             peach: parse_hex("#eeb8cb").unwrap_or(Color32::from_rgb(238, 184, 203)),
             green: parse_hex("#cac3dc").unwrap_or(Color32::from_rgb(202, 195, 220)),
             red: parse_hex("#ffb4ab").unwrap_or(Color32::from_rgb(255, 180, 171)),
+            yellow: parse_hex("#f5d76e").unwrap_or(Color32::from_rgb(245, 215, 110)),
             border_radius: 16.0,
             light: false,
         }
@@ -122,6 +125,7 @@ impl SerpantinumTheme {
                     if let Some(c) = raw.peach.and_then(|s| parse_hex(&s)) { theme.peach = c; }
                     if let Some(c) = raw.green.and_then(|s| parse_hex(&s)) { theme.green = c; }
                     if let Some(c) = raw.red.and_then(|s| parse_hex(&s)) { theme.red = c; }
+                    if let Some(c) = raw.yellow.and_then(|s| parse_hex(&s)) { theme.yellow = c; }
                     break;
                 }
             }
@@ -169,8 +173,8 @@ pub fn parse_hex(hex: &str) -> Option<Color32> {
 /// Flat Material look: no strokes anywhere, state is shown by fills only.
 pub fn apply(ctx: &egui::Context, theme: &SerpantinumTheme) {
     let mut visuals = if theme.light { egui::Visuals::light() } else { egui::Visuals::dark() };
-    visuals.window_corner_radius = egui::CornerRadius::same(24);
-    visuals.menu_corner_radius = egui::CornerRadius::same(16);
+    visuals.window_corner_radius = egui::CornerRadius::same(super::material::RADIUS_WINDOW);
+    visuals.menu_corner_radius = egui::CornerRadius::same(super::material::RADIUS_CONTAINER);
     visuals.window_stroke = egui::Stroke::NONE;
     visuals.popup_shadow = egui::Shadow::NONE;
     visuals.window_shadow = egui::Shadow {
@@ -185,7 +189,7 @@ pub fn apply(ctx: &egui::Context, theme: &SerpantinumTheme) {
         state.fg_stroke.color = theme.text;
     }
     visuals.selection.stroke = egui::Stroke::NONE;
-    visuals.selection.bg_fill = theme.with_alpha(theme.mauve, 90);
+    visuals.selection.bg_fill = theme.with_alpha(theme.mauve, super::material::ALPHA_SEL_BG);
     visuals.panel_fill = theme.base;
     visuals.window_fill = theme.mantle;
     visuals.extreme_bg_color = theme.surface1;
@@ -196,10 +200,10 @@ pub fn apply(ctx: &egui::Context, theme: &SerpantinumTheme) {
         style.spacing.item_spacing = egui::vec2(6.0, 6.0);
         style.interaction.selectable_labels = false;
         for (ts, size) in [
-            (egui::TextStyle::Body, 14.0),
-            (egui::TextStyle::Button, 14.0),
-            (egui::TextStyle::Small, 12.0),
-            (egui::TextStyle::Heading, 18.0),
+            (egui::TextStyle::Body, super::material::FONT_BODY),
+            (egui::TextStyle::Button, super::material::FONT_BODY),
+            (egui::TextStyle::Small, super::material::FONT_CAPTION),
+            (egui::TextStyle::Heading, super::material::FONT_TITLE),
         ] {
             if let Some(f) = style.text_styles.get_mut(&ts) {
                 f.size = size;

@@ -75,13 +75,13 @@ enum MenuAction {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum TransferOp {
+pub(crate) enum TransferOp {
     Copy,
     Move,
     Extract,
 }
 
-enum Dialog {
+pub(crate) enum Dialog {
     Create { is_dir: bool, name: String, error: Option<String>, first_frame: bool },
     Properties { props: Box<Properties>, scan: Option<FolderScan> },
     OpenWith {
@@ -116,6 +116,9 @@ enum Dialog {
         hex: String,
         picking: Option<usize>,
         defaults: Vec<Option<String>>,
+        keybind_search: String,
+        capture: Option<(crate::keymap::Action, Option<usize>)>,
+        conflict_warning: Option<(String, crate::keymap::Action, crate::keymap::Action, Option<usize>)>,
     },
     Shortcuts,
     Icon { folder: PathBuf, input: String, error: Option<String>, candidates: Vec<PathBuf>, browse: Option<PathBuf> },
@@ -135,7 +138,7 @@ pub struct SkiApp {
     error_message: Option<String>,
 
     // Dynamic shell theme from Serpantinum
-    theme: SerpantinumTheme,
+    pub(crate) theme: SerpantinumTheme,
 
     // Navigation history
     back_history: Vec<PathBuf>,
@@ -143,12 +146,12 @@ pub struct SkiApp {
 
     // Search and display options
     search_query: String,
-    show_hidden: bool,
-    folders_first: bool,
+    pub(crate) show_hidden: bool,
+    pub(crate) folders_first: bool,
     type_filter: TypeFilter,
-    view_mode: ViewMode,
-    sort_by: SortBy,
-    sort_order: SortOrder,
+    pub(crate) view_mode: ViewMode,
+    pub(crate) sort_by: SortBy,
+    pub(crate) sort_order: SortOrder,
 
     // Path edit mode (Ctrl+L)
     is_editing_path: bool,
@@ -168,27 +171,29 @@ pub struct SkiApp {
     main_button_rect: egui::Rect,
 
     // Optional list columns, pinned folders, context menu and modal dialog
-    columns: Vec<Column>,
+    pub(crate) columns: Vec<Column>,
     folder_icons: HashMap<PathBuf, PathBuf>,
     open_overrides: HashMap<PathBuf, String>,
-    app_icons: HashMap<String, Option<egui::TextureHandle>>,
+    pub(crate) app_icons: HashMap<String, Option<egui::TextureHandle>>,
 
     // Persisted preferences, and what the next frame has to re-apply to egui
-    settings: Settings,
-    saved_settings: Settings,
-    system_theme: SerpantinumTheme,
-    system_fonts: Option<Vec<SystemFont>>,
-    theme_dirty: bool,
-    fonts_dirty: bool,
+    pub(crate) settings: Settings,
+    pub(crate) saved_settings: Settings,
+    pub(crate) system_theme: SerpantinumTheme,
+    pub(crate) system_fonts: Option<Vec<SystemFont>>,
+    pub(crate) theme_dirty: bool,
+    pub(crate) fonts_dirty: bool,
     pins: Vec<PathBuf>,
     menu: Option<ContextMenu>,
-    dialog: Option<Dialog>,
+    pub(crate) dialog: Option<Dialog>,
 
     // Status toast message (text, timestamp)
     status_toast: Option<(String, std::time::Instant)>,
 
     // Flag to scroll to selected item on next frame
     scroll_to_selected: bool,
+
+    pub(crate) capturing_key: bool,
 }
 
 impl SkiApp {
@@ -196,6 +201,16 @@ impl SkiApp {
         apps::preload();
         let places = Place::default_places();
         let canonical_path = initial_path.canonicalize().unwrap_or(initial_path);
+
+        let mut settings = settings;
+        settings.last_dir = Some(canonical_path.clone());
+        crate::fs::file_item::set_format_options(settings.decimal_units, settings.relative_dates);
+        crate::fs::file_item::set_show_extensions(settings.show_extensions);
+        let view_mode = if settings.remember_view_per_folder {
+            settings.folder_views.get(&canonical_path).copied().unwrap_or(settings.view_mode)
+        } else {
+            settings.view_mode
+        };
 
         let mut app = Self {
             current_path: canonical_path.clone(),
@@ -214,7 +229,7 @@ impl SkiApp {
             show_hidden: settings.show_hidden,
             folders_first: settings.folders_first,
             type_filter: TypeFilter::All,
-            view_mode: settings.view_mode,
+            view_mode,
             sort_by: settings.sort_by,
             sort_order: settings.sort_order,
             is_editing_path: false,
@@ -242,6 +257,7 @@ impl SkiApp {
             dialog: None,
             status_toast: None,
             scroll_to_selected: false,
+            capturing_key: false,
         };
 
         app.reload_items();
@@ -259,6 +275,12 @@ impl SkiApp {
             self.forward_history.clear();
             recent::record(&canonical);
             self.current_path = canonical;
+            self.settings.last_dir = Some(self.current_path.clone());
+            if self.settings.remember_view_per_folder {
+                if let Some(&saved_mode) = self.settings.folder_views.get(&self.current_path) {
+                    self.view_mode = saved_mode;
+                }
+            }
             self.path_input = self.current_path.to_string_lossy().to_string();
             self.selected_index = None;
             self.search_query.clear();
@@ -275,6 +297,12 @@ impl SkiApp {
         if let Some(prev) = self.back_history.pop() {
             self.forward_history.push(self.current_path.clone());
             self.current_path = prev;
+            self.settings.last_dir = Some(self.current_path.clone());
+            if self.settings.remember_view_per_folder {
+                if let Some(&saved_mode) = self.settings.folder_views.get(&self.current_path) {
+                    self.view_mode = saved_mode;
+                }
+            }
             self.path_input = self.current_path.to_string_lossy().to_string();
             self.selected_index = None;
             self.reload_items();
@@ -285,6 +313,12 @@ impl SkiApp {
         if let Some(next) = self.forward_history.pop() {
             self.back_history.push(self.current_path.clone());
             self.current_path = next;
+            self.settings.last_dir = Some(self.current_path.clone());
+            if self.settings.remember_view_per_folder {
+                if let Some(&saved_mode) = self.settings.folder_views.get(&self.current_path) {
+                    self.view_mode = saved_mode;
+                }
+            }
             self.path_input = self.current_path.to_string_lossy().to_string();
             self.selected_index = None;
             self.reload_items();
@@ -317,7 +351,9 @@ impl SkiApp {
             Ok(items) => {
                 self.items = items;
                 self.error_message = None;
-                self.thumbs.preload(self.items.iter().map(|i| i.path.as_path()));
+                if self.settings.show_thumbnails {
+                    self.thumbs.preload(self.items.iter().map(|i| i.path.as_path()));
+                }
                 for item in self.items.iter().filter(|i| i.is_dir) {
                     if let Some(icon) = self.folder_icons.get(&item.path) {
                         self.thumbs.ensure(icon);
@@ -584,7 +620,7 @@ impl SkiApp {
         }
     }
 
-    fn rebuild_theme(&mut self) {
+    pub(crate) fn rebuild_theme(&mut self) {
         let mut theme = SerpantinumTheme::from_settings(&self.settings);
         if self.settings.theme == "system" {
             let accent = self.settings.accent.as_deref().and_then(crate::ui::theme::parse_hex);
@@ -611,6 +647,14 @@ impl SkiApp {
         if (ctx.zoom_factor() - self.settings.scale).abs() > f32::EPSILON {
             ctx.set_zoom_factor(self.settings.scale);
         }
+        ctx.all_styles_mut(|s| s.animation_time = if self.settings.animations { 0.25 } else { 0.0 });
+        crate::fs::file_item::set_format_options(self.settings.decimal_units, self.settings.relative_dates);
+        crate::fs::file_item::set_show_extensions(self.settings.show_extensions);
+
+        if self.settings.remember_view_per_folder {
+            self.settings.folder_views.insert(self.current_path.clone(), self.view_mode);
+        }
+
         let current = Settings {
             view_mode: self.view_mode,
             sort_by: self.sort_by,
@@ -626,11 +670,19 @@ impl SkiApp {
         }
     }
 
-    fn installed_apps(&self) -> &'static [AppEntry] {
+    pub fn anim_time(&self, d: f32) -> f32 {
+        if self.settings.animations { d } else { 0.0 }
+    }
+
+    fn is_act_pressed(&self, ctx: &egui::Context, act: crate::keymap::Action) -> bool {
+        crate::keymap::is_action_pressed(ctx, &self.settings.keybinds, act, self.settings.vim_keys)
+    }
+
+    pub(crate) fn installed_apps(&self) -> &'static [AppEntry] {
         apps::installed()
     }
 
-    fn set_toast(&mut self, message: impl Into<String>) {
+    pub(crate) fn set_toast(&mut self, message: impl Into<String>) {
         self.status_toast = Some((message.into(), std::time::Instant::now()));
     }
 
@@ -699,16 +751,16 @@ impl SkiApp {
     fn open_selected(&mut self) {
         if let Some(idx) = self.selected_index {
             if let Some(item) = self.items.get(idx).cloned() {
-                if item.is_dir {
-                    self.navigate_to(item.path);
-                } else {
-                    self.open_file(&item.path);
-                }
+                self.open_item(item);
             }
         }
     }
 
     fn handle_keyboard_inputs(&mut self, ctx: &egui::Context) {
+        if self.capturing_key {
+            return;
+        }
+
         if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
             if self.dialog.take().is_some() || self.menu.take().is_some() {
                 return;
@@ -740,120 +792,176 @@ impl SkiApp {
             }
         }
 
-        if ctx.input(|i| i.key_pressed(egui::Key::Questionmark)) {
+        let mut handled = false;
+
+        if self.is_act_pressed(ctx, crate::keymap::Action::ShowShortcuts) {
             self.dialog = Some(Dialog::Shortcuts);
+            handled = true;
         }
 
-        if ctx.input(|i| i.key_pressed(egui::Key::Slash) || (i.modifiers.command && i.key_pressed(egui::Key::F))) {
+        if self.is_act_pressed(ctx, crate::keymap::Action::Filter) {
             self.show_search = true;
             self.focus_search = true;
+            handled = true;
         }
 
-        // Vim & Arrow Keys
         let shift = ctx.input(|i| i.modifiers.shift);
-        if ctx.input(|i| i.key_pressed(egui::Key::ArrowDown)) {
+        if self.is_act_pressed(ctx, crate::keymap::Action::MoveDown) {
             self.move_selection(1, shift);
-        } else if ctx.input(|i| i.key_pressed(egui::Key::J)) {
-            self.move_selection(1, false);
+            handled = true;
         }
 
-        if ctx.input(|i| i.key_pressed(egui::Key::ArrowUp)) {
+        if self.is_act_pressed(ctx, crate::keymap::Action::MoveUp) {
             self.move_selection(-1, shift);
-        } else if ctx.input(|i| i.key_pressed(egui::Key::K)) {
-            self.move_selection(-1, false);
+            handled = true;
         }
 
-        if ctx.input(|i| i.key_pressed(egui::Key::Enter) || i.key_pressed(egui::Key::L)) {
+        if self.is_act_pressed(ctx, crate::keymap::Action::Open) {
             self.open_selected();
+            handled = true;
         }
 
-        if ctx.input(|i| i.key_pressed(egui::Key::Backspace) || i.key_pressed(egui::Key::H)) {
+        if self.is_act_pressed(ctx, crate::keymap::Action::ParentFolder) {
             self.go_up();
+            handled = true;
         }
 
-        if ctx.input(|i| i.key_pressed(egui::Key::Home) || (i.key_pressed(egui::Key::G) && !i.modifiers.shift)) {
+        if self.is_act_pressed(ctx, crate::keymap::Action::First) {
             if !self.items.is_empty() {
                 self.selected_index = Some(0);
                 self.scroll_to_selected = true;
             }
+            handled = true;
         }
 
-        if ctx.input(|i| i.key_pressed(egui::Key::End) || (i.key_pressed(egui::Key::G) && i.modifiers.shift)) {
+        if self.is_act_pressed(ctx, crate::keymap::Action::Last) {
             if !self.items.is_empty() {
                 self.selected_index = Some(self.items.len() - 1);
                 self.scroll_to_selected = true;
             }
+            handled = true;
         }
 
-        if ctx.input(|i| i.modifiers.alt && i.key_pressed(egui::Key::ArrowLeft)) {
+        if self.is_act_pressed(ctx, crate::keymap::Action::Back) {
             self.go_back();
+            handled = true;
         }
-        if ctx.input(|i| i.modifiers.alt && i.key_pressed(egui::Key::ArrowRight)) {
+        if self.is_act_pressed(ctx, crate::keymap::Action::Forward) {
             self.go_forward();
+            handled = true;
         }
 
-        if ctx.input(|i| i.modifiers.command && i.key_pressed(egui::Key::Num1)) {
+        if self.is_act_pressed(ctx, crate::keymap::Action::ListView) {
             self.view_mode = ViewMode::List;
+            handled = true;
         }
-        if ctx.input(|i| i.modifiers.command && i.key_pressed(egui::Key::Num2)) {
+        if self.is_act_pressed(ctx, crate::keymap::Action::GridView) {
             self.view_mode = ViewMode::Grid;
+            handled = true;
         }
 
-        if ctx.input(|i| i.modifiers.command && i.key_pressed(egui::Key::H)) {
+        if self.is_act_pressed(ctx, crate::keymap::Action::ToggleHidden) {
             self.show_hidden = !self.show_hidden;
             self.reload_items();
+            handled = true;
         }
 
-        if ctx.input(|i| i.modifiers.command && i.key_pressed(egui::Key::D)) {
+        if self.is_act_pressed(ctx, crate::keymap::Action::PinFolder) {
             self.toggle_pin(self.current_path.clone());
+            handled = true;
         }
 
-        if ctx.input(|i| i.modifiers.alt && i.key_pressed(egui::Key::Enter)) {
+        if self.is_act_pressed(ctx, crate::keymap::Action::Properties) {
             let target = self
                 .selected_index
                 .and_then(|idx| self.items.get(idx))
                 .map(|item| item.path.clone())
                 .unwrap_or_else(|| self.current_path.clone());
             self.open_properties(&target);
+            handled = true;
         }
 
-        if ctx.input(|i| i.modifiers.command && i.key_pressed(egui::Key::L)) {
+        if self.is_act_pressed(ctx, crate::keymap::Action::EditPath) {
             self.is_editing_path = true;
             self.path_input = self.current_path.to_string_lossy().to_string();
+            handled = true;
         }
 
-        if ctx.input(|i| i.key_pressed(egui::Key::F5) || (i.modifiers.command && i.key_pressed(egui::Key::R))) {
+        if self.is_act_pressed(ctx, crate::keymap::Action::Refresh) {
             self.refresh();
+            handled = true;
         }
 
-        if ctx.input(|i| i.key_pressed(egui::Key::Y) && !i.modifiers.command) {
+        if self.is_act_pressed(ctx, crate::keymap::Action::CopyPath) {
             if let Some(item) = self.selected_index.and_then(|idx| self.items.get(idx)) {
                 let path_str = item.path.to_string_lossy().to_string();
                 ctx.copy_text(path_str);
                 self.set_toast(format!("Copied path: {}", item.name));
             }
+            handled = true;
+        }
+
+        if self.is_act_pressed(ctx, crate::keymap::Action::NewFolder) {
+            self.open_create_dialog(true);
+            handled = true;
+        }
+
+        if self.is_act_pressed(ctx, crate::keymap::Action::NewWindow) {
+            self.new_window();
+            handled = true;
+        }
+
+        if self.is_act_pressed(ctx, crate::keymap::Action::Settings) {
+            self.open_settings_dialog();
+            handled = true;
         }
 
         // Ctrl+C / X / V arrive as dedicated events on some platforms and as key presses on others
-        let (copy, cut, paste, all) = ctx.input(|i| {
+        let (ev_copy, ev_cut, ev_paste) = ctx.input(|i| {
             let event = |f: fn(&egui::Event) -> bool| i.events.iter().any(f);
-            let key = |k: egui::Key| i.modifiers.command && i.key_pressed(k);
             (
-                event(|e| matches!(e, egui::Event::Copy)) || key(egui::Key::C),
-                event(|e| matches!(e, egui::Event::Cut)) || key(egui::Key::X),
-                event(|e| matches!(e, egui::Event::Paste(_))) || key(egui::Key::V),
-                key(egui::Key::A),
+                event(|e| matches!(e, egui::Event::Copy)),
+                event(|e| matches!(e, egui::Event::Cut)),
+                event(|e| matches!(e, egui::Event::Paste(_))),
             )
         });
-        if copy {
+        if ev_copy || self.is_act_pressed(ctx, crate::keymap::Action::Copy) {
             self.set_clipboard(self.selected_paths(), false);
-        } else if cut {
+            handled = true;
+        } else if ev_cut || self.is_act_pressed(ctx, crate::keymap::Action::Cut) {
             self.set_clipboard(self.selected_paths(), true);
-        } else if paste {
+            handled = true;
+        } else if ev_paste || self.is_act_pressed(ctx, crate::keymap::Action::Paste) {
             self.paste();
+            handled = true;
         }
-        if all {
+        if self.is_act_pressed(ctx, crate::keymap::Action::SelectAll) {
             self.select_all();
+            handled = true;
+        }
+
+        // type_to_filter: when on, printable key with no ctrl/alt and nothing focused opens the filter field with it
+        if !handled && self.settings.type_to_filter && ctx.input(|i| !i.modifiers.command && !i.modifiers.alt) {
+            let typed = ctx.input(|i| {
+                i.events.iter().find_map(|e| {
+                    if let egui::Event::Text(text) = e {
+                        let printable: String = text.chars().filter(|c| !c.is_control()).collect();
+                        if !printable.is_empty() {
+                            Some(printable)
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                })
+            });
+            if let Some(text) = typed {
+                self.show_search = true;
+                self.focus_search = true;
+                self.search_query.push_str(&text);
+                self.on_query_changed(ctx);
+            }
         }
     }
 }
@@ -882,7 +990,7 @@ impl eframe::App for SkiApp {
         }
 
         let window_width = ui.available_width();
-        let sidebar_visible = window_width >= SIDEBAR_BREAKPOINT;
+        let sidebar_visible = self.settings.show_sidebar && (window_width >= SIDEBAR_BREAKPOINT);
 
         if sidebar_visible {
             egui::Panel::left("sidebar_places")
@@ -1190,7 +1298,7 @@ impl SkiApp {
     /// Search icon (growing into the search field when clicked) with the main menu button at the right.
     fn render_sidebar_search(&mut self, ui: &mut egui::Ui) {
         let open = self.show_search || !self.search_query.is_empty();
-        let open_t = ui.ctx().animate_bool_with_time_and_easing(egui::Id::unique("sidebar_search_open"), open, 0.3, material::quint_out);
+        let open_t = ui.ctx().animate_bool_with_time_and_easing(egui::Id::unique("sidebar_search_open"), open, self.anim_time(0.3), material::quint_out);
 
         let (row, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), CONTROL_HEIGHT), egui::Sense::hover());
         let menu_rect = egui::Rect::from_min_size(egui::pos2(row.right() - CONTROL_HEIGHT, row.top()), egui::vec2(CONTROL_HEIGHT, CONTROL_HEIGHT));
@@ -1262,7 +1370,15 @@ impl SkiApp {
 
     fn open_item(&mut self, item: FileItem) {
         if item.is_dir {
-            self.navigate_to(item.path);
+            if self.settings.open_in_new_window {
+                let started = std::env::current_exe()
+                    .and_then(|exe| std::process::Command::new(exe).arg(&item.path).spawn());
+                if let Err(err) = started {
+                    self.set_toast(format!("Could not open a new window: {err}"));
+                }
+            } else {
+                self.navigate_to(item.path);
+            }
         } else {
             self.open_file(&item.path);
         }
@@ -1285,6 +1401,8 @@ impl SkiApp {
     fn render_list_view(&mut self, ui: &mut egui::Ui) {
         let mut opened: Option<FileItem> = None;
         let should_scroll = std::mem::take(&mut self.scroll_to_selected);
+        let row_height = self.settings.density.row_height();
+        let show_thumbs = self.settings.show_thumbnails;
 
         let mut clicked: Option<(usize, egui::Modifiers)> = None;
         let mut menu_at: Option<(egui::Pos2, MenuTarget)> = None;
@@ -1293,10 +1411,15 @@ impl SkiApp {
             for (idx, item) in self.items.iter().enumerate() {
                 let selected = self.selection.contains(&idx);
                 let hint = self.path_hint(item);
-                let thumb = thumb_for(&self.thumbs, &self.folder_icons, item);
-                let resp = file_row(ui, idx, item, &self.theme, selected, should_scroll, thumb, hint.as_deref(), &self.columns);
+                let thumb = thumb_for(&self.thumbs, &self.folder_icons, item, show_thumbs);
+                let resp = file_row(ui, idx, item, &self.theme, selected, should_scroll, thumb, hint.as_deref(), &self.columns, row_height);
+                let mods = ui.input(|i| i.modifiers);
                 if resp.clicked() {
-                    clicked = Some((idx, ui.input(|i| i.modifiers)));
+                    if self.settings.single_click_open && !mods.command && !mods.shift {
+                        opened = Some(item.clone());
+                    } else {
+                        clicked = Some((idx, mods));
+                    }
                 } else if resp.secondary_clicked() && !selected {
                     clicked = Some((idx, egui::Modifiers::NONE));
                 }
@@ -1325,11 +1448,15 @@ impl SkiApp {
     fn render_grid_view(&mut self, ui: &mut egui::Ui) {
         let mut opened: Option<FileItem> = None;
         let should_scroll = std::mem::take(&mut self.scroll_to_selected);
+        let (cell_w, cell_h) = self.settings.grid_size.cell_size();
+        let cell = egui::vec2(cell_w, cell_h);
+        let grid_size = self.settings.grid_size;
+        let grid_lines = self.settings.grid_name_lines as usize;
+        let show_thumbs = self.settings.show_thumbnails;
 
         let mut clicked: Option<(usize, egui::Modifiers)> = None;
         let mut menu_at: Option<(egui::Pos2, MenuTarget)> = None;
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-            let cell = material::GRID_CELL;
             let spacing = 4.0;
             let cols = ((ui.available_width() + spacing) / (cell.x + spacing)).floor().max(1.0) as usize;
             ui.spacing_mut().item_spacing = egui::vec2(spacing, spacing);
@@ -1339,10 +1466,15 @@ impl SkiApp {
                     for (col_idx, item) in row.iter().enumerate() {
                         let idx = row_idx * cols + col_idx;
                         let selected = self.selection.contains(&idx);
-                        let thumb = thumb_for(&self.thumbs, &self.folder_icons, item);
-                        let resp = file_tile(ui, idx, item, &self.theme, selected, should_scroll, thumb);
+                        let thumb = thumb_for(&self.thumbs, &self.folder_icons, item, show_thumbs);
+                        let resp = file_tile(ui, idx, item, &self.theme, selected, should_scroll, thumb, grid_size, grid_lines);
+                        let mods = ui.input(|i| i.modifiers);
                         if resp.clicked() {
-                            clicked = Some((idx, ui.input(|i| i.modifiers)));
+                            if self.settings.single_click_open && !mods.command && !mods.shift {
+                                opened = Some(item.clone());
+                            } else {
+                                clicked = Some((idx, mods));
+                            }
                         } else if resp.secondary_clicked() && !selected {
                             clicked = Some((idx, egui::Modifiers::NONE));
                         }
@@ -1389,7 +1521,7 @@ impl SkiApp {
     }
 
     fn render_settings(&mut self, ctx: &egui::Context) {
-        let t = ctx.animate_bool_with_time_and_easing(egui::Id::unique("settings_anim"), self.show_settings, 0.32, material::quint_out);
+        let t = ctx.animate_bool_with_time_and_easing(egui::Id::unique("settings_anim"), self.show_settings, self.anim_time(0.32), material::quint_out);
         if t <= 0.0 {
             return;
         }
@@ -1408,7 +1540,7 @@ impl SkiApp {
                 ui.set_opacity(t);
                 egui::Frame::new()
                     .fill(self.theme.mantle)
-                    .corner_radius(egui::CornerRadius::same(22))
+                    .corner_radius(egui::CornerRadius::same(material::RADIUS_CONTAINER))
                     .shadow(ctx.global_style().visuals.window_shadow)
                     .inner_margin(egui::Margin::same(16))
                     .show(ui, |ui| {
@@ -1441,9 +1573,7 @@ impl SkiApp {
     }
 
     fn section_title(&self, ui: &mut egui::Ui, text: &str) {
-        ui.add_space(6.0);
-        ui.label(egui::RichText::new(text).size(11.5).color(self.theme.subtext1));
-        ui.add_space(2.0);
+        material::section_label(ui, text, &self.theme);
     }
 
     /// View, sorting, visibility and column options; shared by the popup and the settings dialog.
@@ -1532,7 +1662,7 @@ impl SkiApp {
         let theme = self.theme;
         let mut close = false;
         ui.horizontal(|ui| {
-            ui.label(egui::RichText::new("Keyboard shortcuts").size(16.0).color(theme.text));
+            ui.label(egui::RichText::new("Keyboard shortcuts").size(material::FONT_TITLE).color(theme.text));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if filled_icon_button(ui, "sc_close", icons::CLOSE, &theme, 30.0, "Close", Some(theme.red)).clicked() {
                     close = true;
@@ -1541,29 +1671,25 @@ impl SkiApp {
         });
         let max_height = (ui.ctx().content_rect().height() - 220.0).clamp(200.0, 520.0);
         egui::ScrollArea::vertical().max_height(max_height).auto_shrink([false, true]).show(ui, |ui| {
-            egui::Grid::new("shortcuts_grid").num_columns(2).spacing([24.0, 8.0]).show(ui, |ui| {
-                for (key, desc) in [
-                    ("j / k", "Move selection"),
-                    ("Enter / l", "Open"),
-                    ("Backspace / h", "Parent folder"),
-                    ("Alt + Left / Right", "History"),
-                    ("/", "Filter by name"),
-                    ("Ctrl + L", "Edit path"),
-                    ("Ctrl + H", "Hidden files"),
-                    ("Ctrl + 1 / 2", "List / grid"),
-                    ("Ctrl + D", "Pin folder"),
-                    ("Alt + Enter", "Properties"),
-                    ("Ctrl + C / X / V", "Copy / cut / paste"),
-                    ("Ctrl + A", "Select all"),
-                    ("Shift / Ctrl + click", "Select several"),
-                    ("y", "Copy path"),
-                    ("F5", "Refresh"),
-                ] {
-                    ui.label(egui::RichText::new(key).size(13.0).color(theme.mauve));
-                    ui.label(egui::RichText::new(desc).size(13.0).color(theme.subtext0));
-                    ui.end_row();
-                }
-            });
+            for group in ["Navigation", "Files", "View"] {
+                ui.add_space(8.0);
+                material::section_label(ui, group, &theme);
+                egui::Grid::new(format!("shortcuts_grid_{group}")).num_columns(2).spacing([24.0, 6.0]).show(ui, |ui| {
+                    for action in crate::keymap::Action::ALL {
+                        if action.group() != group {
+                            continue;
+                        }
+                        let bindings = crate::keymap::bindings(&self.settings.keybinds, action);
+                        if bindings.is_empty() {
+                            continue;
+                        }
+                        let key_str = bindings.join(" / ");
+                        ui.label(egui::RichText::new(key_str).size(material::FONT_CHIP).color(theme.mauve));
+                        ui.label(egui::RichText::new(action.label()).size(material::FONT_CHIP).color(theme.subtext0));
+                        ui.end_row();
+                    }
+                });
+            }
         });
         close
     }
@@ -1795,7 +1921,7 @@ impl SkiApp {
             .show(ctx, |ui| {
                 egui::Frame::new()
                     .fill(self.theme.mantle)
-                    .corner_radius(egui::CornerRadius::same(22))
+                    .corner_radius(egui::CornerRadius::same(material::RADIUS_CONTAINER))
                     .shadow(ctx.global_style().visuals.window_shadow)
                     .inner_margin(egui::Margin::same(8))
                     .show(ui, |ui| {
@@ -1803,9 +1929,7 @@ impl SkiApp {
                         ui.spacing_mut().item_spacing.y = 2.0;
                         for (g, group) in groups.iter().enumerate() {
                             if g > 0 {
-                                let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 7.0), egui::Sense::hover());
-                                let line = egui::Rect::from_center_size(rect.center(), egui::vec2(rect.width() - 24.0, 1.0));
-                                ui.painter().rect_filled(line, 0, self.theme.with_alpha(self.theme.text, 28));
+                                material::divider(ui, &self.theme);
                             }
                             for (idx, (icon, label, action)) in group.iter().enumerate() {
                                 let shown = match action {
@@ -1835,7 +1959,7 @@ impl SkiApp {
     }
 
     fn render_dialog(&mut self, ctx: &egui::Context) {
-        let t = ctx.animate_bool_with_time_and_easing(egui::Id::unique("dialog_anim"), self.dialog.is_some(), 0.25, material::quint_out);
+        let t = ctx.animate_bool_with_time_and_easing(egui::Id::unique("dialog_anim"), self.dialog.is_some(), self.anim_time(0.25), material::quint_out);
         let Some(mut dialog) = self.dialog.take() else { return };
 
         if let Dialog::Icon { input, error, .. } = &mut dialog {
@@ -1858,7 +1982,7 @@ impl SkiApp {
             });
 
         let preferred = match &dialog {
-            Dialog::Settings { .. } => 640.0,
+            Dialog::Settings { .. } => 720.0,
             Dialog::OpenWith { .. } | Dialog::PickFolder { .. } => 480.0,
             _ => 440.0,
         };
@@ -1870,7 +1994,7 @@ impl SkiApp {
                 ui.set_opacity(t);
                 egui::Frame::new()
                     .fill(self.theme.mantle)
-                    .corner_radius(egui::CornerRadius::same(26))
+                    .corner_radius(egui::CornerRadius::same(material::RADIUS_WINDOW))
                     .shadow(ctx.global_style().visuals.window_shadow)
                     .inner_margin(egui::Margin::same(20))
                     .show(ui, |ui| {
@@ -2119,213 +2243,6 @@ impl SkiApp {
         close
     }
 
-    fn open_settings_dialog(&mut self) {
-        let defaults = apps::CATEGORIES.iter().map(|c| apps::default_for(c.mimes[0])).collect();
-        self.system_fonts.get_or_insert_with(crate::ui::fonts::system_fonts);
-        self.dialog = Some(Dialog::Settings {
-            tab: 0,
-            font_query: String::new(),
-            hex: self.settings.accent.clone().unwrap_or_default(),
-            picking: None,
-            defaults,
-        });
-    }
-
-    /// Returns true when the dialog should close.
-    fn settings_dialog_contents(&mut self, ui: &mut egui::Ui, dialog: &mut Dialog) -> bool {
-        let Dialog::Settings { tab, font_query, hex, picking, defaults } = dialog else { return false };
-        let ctx = ui.ctx().clone();
-        let theme = self.theme;
-        let mut close = false;
-
-        ui.horizontal(|ui| {
-            ui.label(egui::RichText::new("Settings").size(16.0).color(theme.text));
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if filled_icon_button(ui, "set_close", icons::CLOSE, &theme, 30.0, "Close", Some(theme.red)).clicked() {
-                    close = true;
-                }
-            });
-        });
-        ui.horizontal(|ui| {
-            for (idx, (icon, label)) in [(icons::SETTINGS, "Appearance"), (icons::APPS, "Applications")].into_iter().enumerate() {
-                if chip(ui, ("set_tab", idx), Some(icon), label, &theme, *tab == idx).clicked() {
-                    *tab = idx;
-                }
-            }
-        });
-        ui.add_space(2.0);
-
-        let max_height = (ctx.content_rect().height() - 220.0).clamp(200.0, 520.0);
-        egui::ScrollArea::vertical().max_height(max_height).auto_shrink([false, true]).id_salt(("set_scroll", *tab)).show(ui, |ui| {
-            ui.spacing_mut().item_spacing = egui::vec2(6.0, 8.0);
-            match *tab {
-                0 => self.appearance_tab(ui, font_query, hex),
-                _ => self.applications_tab(ui, picking, defaults),
-            }
-        });
-        close
-    }
-
-    fn appearance_tab(&mut self, ui: &mut egui::Ui, font_query: &mut String, hex: &mut String) {
-        let theme = self.theme;
-
-        self.section_title(ui, "Theme");
-        ui.horizontal_wrapped(|ui| {
-            ui.spacing_mut().item_spacing = egui::vec2(10.0, 10.0);
-            let mut choices: Vec<(&str, &str, SerpantinumTheme)> = vec![("system", "System", self.system_theme)];
-            for (id, label, ..) in crate::ui::theme::PRESETS.iter() {
-                let preset = Settings { theme: (*id).to_owned(), accent: None, ..Settings::default() };
-                choices.push((id, label, SerpantinumTheme::from_settings(&preset)));
-            }
-            for (id, label, preview) in choices {
-                if theme_card(ui, ("theme_card", id), label, &preview, &theme, self.settings.theme == id).clicked() {
-                    self.settings.theme = id.to_owned();
-                    self.rebuild_theme();
-                }
-            }
-        });
-
-        self.section_title(ui, "Accent color");
-        ui.horizontal_wrapped(|ui| {
-            ui.spacing_mut().item_spacing = egui::vec2(8.0, 8.0);
-            if chip(ui, "accent_default", None, "Theme default", &theme, self.settings.accent.is_none()).clicked() {
-                self.settings.accent = None;
-                hex.clear();
-                self.rebuild_theme();
-            }
-            for color in crate::ui::theme::ACCENTS {
-                let c = crate::ui::theme::parse_hex(color).unwrap_or(egui::Color32::GRAY);
-                let on = self.settings.accent.as_deref().is_some_and(|a| a.eq_ignore_ascii_case(color));
-                if swatch(ui, ("accent", color), c, &theme, on).clicked() {
-                    self.settings.accent = Some(color.to_owned());
-                    *hex = color.to_owned();
-                    self.rebuild_theme();
-                }
-            }
-        });
-        ui.horizontal(|ui| {
-            egui::Frame::new().fill(theme.surface1).corner_radius(egui::CornerRadius::same(18)).inner_margin(egui::Margin::symmetric(14, 6)).show(ui, |ui| {
-                ui.set_width(130.0);
-                let resp = ui.add(
-                    egui::TextEdit::singleline(hex)
-                        .frame(egui::Frame::NONE)
-                        .desired_width(f32::INFINITY)
-                        .hint_text("#rrggbb")
-                        .font(egui::FontId::proportional(13.5)),
-                );
-                if resp.changed() {
-                    let text = hex.trim().to_owned();
-                    if text.len() == 7 && crate::ui::theme::parse_hex(&text).is_some() {
-                        self.settings.accent = Some(text.to_lowercase());
-                        self.rebuild_theme();
-                    }
-                }
-            });
-            ui.label(egui::RichText::new("Custom color").size(12.0).color(theme.subtext1));
-        });
-
-        self.section_title(ui, "Interface size");
-        ui.horizontal_wrapped(|ui| {
-            for (scale, label) in [(0.85, "Compact"), (1.0, "Default"), (1.15, "Large"), (1.3, "Larger")] {
-                if chip(ui, ("scale", label), None, label, &theme, (self.settings.scale - scale).abs() < 0.01).clicked() {
-                    self.settings.scale = scale;
-                }
-            }
-        });
-
-        self.section_title(ui, "Font");
-        let current = self.settings.font_name.clone().unwrap_or_else(|| "Adwaita Sans (default)".to_owned());
-        ui.label(egui::RichText::new(format!("Current: {current}")).size(12.5).color(theme.subtext0));
-        egui::Frame::new().fill(theme.surface1).corner_radius(egui::CornerRadius::same(18)).inner_margin(egui::Margin::symmetric(14, 6)).show(ui, |ui| {
-            ui.add(
-                egui::TextEdit::singleline(font_query)
-                    .frame(egui::Frame::NONE)
-                    .desired_width(f32::INFINITY)
-                    .hint_text("Search installed fonts")
-                    .font(egui::FontId::proportional(13.5)),
-            );
-        });
-        let needle = font_query.trim().to_lowercase();
-        let fonts: Vec<SystemFont> = self
-            .system_fonts
-            .get_or_insert_with(crate::ui::fonts::system_fonts)
-            .iter()
-            .filter(|f| needle.is_empty() || f.family.to_lowercase().contains(&needle))
-            .cloned()
-            .collect();
-        let show_default = needle.is_empty() || "adwaita sans".contains(&needle);
-        let total = fonts.len() + usize::from(show_default);
-        let mut picked: Option<Option<SystemFont>> = None;
-        egui::ScrollArea::vertical().max_height(190.0).auto_shrink([false, true]).id_salt("font_list").show_rows(ui, 38.0, total, |ui, range| {
-            ui.spacing_mut().item_spacing.y = 2.0;
-            for row in range {
-                if show_default && row == 0 {
-                    if nav_item(ui, "font_default", icons::DOCUMENT, "Adwaita Sans (default)", &theme, self.settings.font.is_none()).clicked() {
-                        picked = Some(None);
-                    }
-                    continue;
-                }
-                let font = &fonts[row - usize::from(show_default)];
-                let on = self.settings.font.as_deref() == Some(font.path.as_path());
-                if nav_item(ui, ("font_row", row), icons::DOCUMENT, &font.family, &theme, on).clicked() {
-                    picked = Some(Some(font.clone()));
-                }
-            }
-        });
-        if let Some(choice) = picked {
-            self.settings.font = choice.as_ref().map(|f| f.path.clone());
-            self.settings.font_name = choice.map(|f| f.family);
-            self.fonts_dirty = true;
-        }
-    }
-
-    fn applications_tab(&mut self, ui: &mut egui::Ui, picking: &mut Option<usize>, defaults: &mut [Option<String>]) {
-        let theme = self.theme;
-        ui.label(egui::RichText::new("Default application for each kind of file. This changes the system-wide defaults.").size(12.5).color(theme.subtext1));
-        ui.spacing_mut().item_spacing.y = 2.0;
-        let installed: Vec<AppEntry> = self.installed_apps().to_vec();
-        for (idx, category) in apps::CATEGORIES.iter().enumerate() {
-            let current = defaults[idx].as_deref().and_then(|id| installed.iter().find(|a| a.id == id));
-            let value = current.map_or("Not set", |a| a.name.as_str());
-            if category_row(ui, ("cat_row", idx), category.icon, category.label, value, &theme, *picking == Some(idx)).clicked() {
-                *picking = if *picking == Some(idx) { None } else { Some(idx) };
-            }
-            if *picking != Some(idx) {
-                continue;
-            }
-            let candidates = apps::apps_for(&installed, category.mimes[0], defaults[idx].as_deref());
-            let mut chosen: Option<&AppEntry> = None;
-            for (row, app) in candidates.iter().enumerate() {
-                let probe = egui::Rect::from_min_size(ui.cursor().min, egui::vec2(ui.available_width(), 44.0));
-                let tex = if ui.is_rect_visible(probe) {
-                    self.app_icons
-                        .entry(app.id.clone())
-                        .or_insert_with(|| {
-                            let image = app.icon.as_deref().and_then(apps::resolve_icon).and_then(|p| apps::load_icon_image(&p, 64))?;
-                            Some(ui.ctx().load_texture(format!("app_icon_{}", app.id), image, egui::TextureOptions::LINEAR))
-                        })
-                        .clone()
-                } else {
-                    None
-                };
-                let on = defaults[idx].as_deref() == Some(app.id.as_str());
-                if app_row(ui, ("cat_app", idx, row), tex.as_ref(), &app.name, &theme, on).clicked() {
-                    chosen = Some(app);
-                }
-            }
-            if candidates.is_empty() {
-                ui.label(egui::RichText::new("No installed application handles these files.").size(12.5).color(theme.subtext0));
-            }
-            if let Some(app) = chosen {
-                apps::set_category_default(category, &app.id);
-                defaults[idx] = Some(app.id.clone());
-                self.set_toast(format!("{} is now the default for {}", app.name, category.label.to_lowercase()));
-                *picking = None;
-            }
-            ui.add_space(4.0);
-        }
-    }
-
     fn open_open_with(&mut self, path: PathBuf) {
         let mime = apps::mime_of(&path);
         let default_id = apps::default_for(&mime);
@@ -2405,15 +2322,14 @@ impl SkiApp {
         let max_height = (ui.ctx().content_rect().height() - 300.0).clamp(160.0, 400.0);
         let mut launch = false;
         // The application list sits in a box of its own
-        egui::Frame::new().fill(theme.surface0).corner_radius(egui::CornerRadius::same(22)).inner_margin(egui::Margin::same(6)).show(ui, |ui| {
+        egui::Frame::new().fill(theme.surface0).corner_radius(egui::CornerRadius::same(material::RADIUS_CONTAINER)).inner_margin(egui::Margin::same(6)).show(ui, |ui| {
         egui::ScrollArea::vertical().max_height(max_height).auto_shrink([false, true]).id_salt("ow_scroll").show(ui, |ui| {
             ui.spacing_mut().item_spacing.y = 2.0;
             for (title, rows) in &sections {
                 if rows.is_empty() {
                     continue;
                 }
-                ui.add_space(4.0);
-                ui.label(egui::RichText::new(format!("  {title}")).size(11.5).color(theme.subtext1));
+                material::section_label(ui, title, &theme);
                 for &idx in rows {
                     let app = &listed[idx];
                     let is_pinned = self.open_overrides.get(path.as_path()) == Some(&app.id);
@@ -2601,8 +2517,7 @@ impl SkiApp {
                 }
             });
         } else if !candidates.is_empty() {
-            ui.add_space(2.0);
-            ui.label(egui::RichText::new("Images in this folder").size(11.5).color(self.theme.subtext1));
+            material::section_label(ui, "Images in this folder", &self.theme);
             ui.horizontal_wrapped(|ui| {
                 for (idx, path) in candidates.iter().enumerate() {
                     let label = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
@@ -2697,7 +2612,7 @@ impl SkiApp {
                 ui.vertical_centered(|ui| {
                     let (tile, _) = ui.allocate_exact_size(egui::vec2(88.0, 88.0), egui::Sense::hover());
                     ui.painter().rect_filled(tile, egui::CornerRadius::same(26), theme.surface1);
-                    match thumb_for(&self.thumbs, &self.folder_icons, item) {
+                    match thumb_for(&self.thumbs, &self.folder_icons, item, self.settings.show_thumbnails) {
                         Some(tex) => {
                             egui::Image::from_texture(egui::load::SizedTexture::new(tex.id(), egui::vec2(64.0, 64.0)))
                                 .corner_radius(egui::CornerRadius::same(14))
@@ -2724,8 +2639,8 @@ impl SkiApp {
                 ui.add_space(8.0);
 
                 for (title, rows) in &groups {
-                    ui.label(egui::RichText::new(format!("  {title}")).size(11.5).color(theme.subtext1));
-                    egui::Frame::new().fill(theme.surface1).corner_radius(egui::CornerRadius::same(20)).show(ui, |ui| {
+                    material::section_label(ui, title, &theme);
+                    egui::Frame::new().fill(theme.surface1).corner_radius(egui::CornerRadius::same(material::RADIUS_CONTAINER)).show(ui, |ui| {
                         ui.set_width(full);
                         ui.spacing_mut().item_spacing.y = 0.0;
                         for (idx, (label, value)) in rows.iter().enumerate() {
@@ -2778,16 +2693,19 @@ fn thumb_for<'a>(
     thumbs: &'a Thumbnails,
     icons: &HashMap<PathBuf, PathBuf>,
     item: &FileItem,
+    show_thumbnails: bool,
 ) -> Option<&'a egui::TextureHandle> {
     if item.is_dir {
         icons.get(&item.path).and_then(|img| thumbs.get(img))
-    } else {
+    } else if show_thumbnails {
         thumbs.get(&item.path)
+    } else {
+        None
     }
 }
 
 /// "Open with" list row: the application's own icon (or a generic glyph) and its name.
-fn app_row(
+pub(crate) fn app_row(
     ui: &mut egui::Ui,
     id_source: impl std::hash::Hash + std::fmt::Debug,
     icon: Option<&egui::TextureHandle>,
@@ -2814,64 +2732,5 @@ fn app_row(
     job.wrap = egui::text::TextWrapping::truncate_at_width((rect.width() - 64.0).max(20.0));
     let galley = ui.painter().layout_job(job);
     ui.painter().galley(egui::pos2(rect.left() + 48.0, rect.center().y - galley.size().y / 2.0), galley, color);
-    resp
-}
-
-/// Round color swatch; the selected one carries a check mark.
-fn swatch(ui: &mut egui::Ui, id_source: impl std::hash::Hash + std::fmt::Debug, color: egui::Color32, theme: &SerpantinumTheme, selected: bool) -> egui::Response {
-    let (rect, resp) = ui.allocate_exact_size(egui::vec2(30.0, 30.0), egui::Sense::click());
-    let id = ui.make_persistent_id(id_source);
-    let fx = material::fx(ui, id, &resp, true, &material::FxSpec::ICON);
-    let r = egui::Rect::from_center_size(rect.center(), rect.size() * fx.scale);
-    ui.painter().circle_filled(r.center(), r.width() / 2.0, color);
-    if fx.flash > 0.0 {
-        ui.painter().circle_filled(r.center(), r.width() / 2.0, egui::Color32::from_white_alpha((fx.flash * 120.0) as u8));
-    }
-    if selected {
-        let on_color = if (color.r() as u32 + color.g() as u32 + color.b() as u32) > 380 { theme.crust } else { egui::Color32::WHITE };
-        material::paint_icon(ui.painter(), r.center(), icons::CHECK, 17.0, on_color);
-    }
-    resp
-}
-
-/// Theme preview tile: the palette's surfaces and accent, with its name underneath.
-fn theme_card(ui: &mut egui::Ui, id_source: impl std::hash::Hash + std::fmt::Debug, label: &str, preview: &SerpantinumTheme, theme: &SerpantinumTheme, selected: bool) -> egui::Response {
-    let (rect, resp) = ui.allocate_exact_size(egui::vec2(104.0, 82.0), egui::Sense::click());
-    let id = ui.make_persistent_id(id_source);
-    let fx = material::fx(ui, id, &resp, true, &material::FxSpec::CLICK);
-    let sel = ui.ctx().animate_bool_with_time_and_easing(id.with("sel"), selected, 0.25, material::quint_out);
-    let r = egui::Rect::from_center_size(rect.center(), rect.size() * fx.scale);
-
-    let back = material::lerp_color(theme.surface1, theme.with_alpha(theme.mauve, 255), 0.0);
-    let back = material::lerp_color(back, material::lerp_color(theme.surface1, theme.mauve, 0.35), sel);
-    ui.painter().rect_filled(r, egui::CornerRadius::same(18), back);
-    let swatch_rect = egui::Rect::from_min_size(r.min + egui::vec2(8.0, 8.0), egui::vec2(r.width() - 16.0, 46.0));
-    let painter = ui.painter();
-    painter.rect_filled(swatch_rect, egui::CornerRadius::same(12), preview.base);
-    let bar = egui::Rect::from_min_size(swatch_rect.min + egui::vec2(6.0, 6.0), egui::vec2(swatch_rect.width() * 0.5, 34.0));
-    painter.rect_filled(bar, egui::CornerRadius::same(8), preview.surface1);
-    painter.rect_filled(egui::Rect::from_min_size(bar.min + egui::vec2(6.0, 6.0), egui::vec2(bar.width() - 12.0, 6.0)), egui::CornerRadius::same(3), preview.text);
-    painter.rect_filled(egui::Rect::from_min_size(bar.min + egui::vec2(6.0, 16.0), egui::vec2((bar.width() - 12.0) * 0.6, 6.0)), egui::CornerRadius::same(3), preview.subtext1);
-    painter.circle_filled(egui::pos2(swatch_rect.right() - 16.0, swatch_rect.center().y), 9.0, preview.mauve);
-    painter.text(egui::pos2(r.center().x, r.bottom() - 13.0), egui::Align2::CENTER_CENTER, label, egui::FontId::proportional(12.5), material::lerp_color(theme.subtext0, theme.text, sel));
-    if fx.flash > 0.0 {
-        painter.rect_filled(r, egui::CornerRadius::same(18), egui::Color32::from_white_alpha((fx.flash * 60.0) as u8));
-    }
-    resp
-}
-
-/// Settings list row: icon, label, and the current value on the right.
-fn category_row(ui: &mut egui::Ui, id_source: impl std::hash::Hash + std::fmt::Debug, icon: &str, label: &str, value: &str, theme: &SerpantinumTheme, open: bool) -> egui::Response {
-    let (rect, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 44.0), egui::Sense::click());
-    let id = ui.make_persistent_id(id_source);
-    let fx = material::fx(ui, id, &resp, true, &material::FxSpec::ROW);
-    let sel = ui.ctx().animate_bool_with_time_and_easing(id.with("open"), open, 0.25, material::quint_out);
-    let fill = material::lerp_color(theme.surface1, theme.surface2, fx.hover.max(sel));
-    ui.painter().rect_filled(rect, egui::CornerRadius::same(18), fill);
-    material::paint_icon(ui.painter(), egui::pos2(rect.left() + 24.0, rect.center().y), icon, 18.0, material::lerp_color(theme.subtext0, theme.mauve, sel));
-    ui.painter().text(egui::pos2(rect.left() + 46.0, rect.center().y), egui::Align2::LEFT_CENTER, label, egui::FontId::proportional(13.5), theme.text);
-    let chevron = if open { icons::ARROW_UP } else { icons::CHEVRON_RIGHT };
-    material::paint_icon(ui.painter(), egui::pos2(rect.right() - 20.0, rect.center().y), chevron, 16.0, theme.subtext1);
-    ui.painter().text(egui::pos2(rect.right() - 40.0, rect.center().y), egui::Align2::RIGHT_CENTER, value, egui::FontId::proportional(12.5), theme.subtext1);
     resp
 }

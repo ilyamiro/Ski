@@ -1,6 +1,8 @@
 mod app;
 mod fs;
+mod keymap;
 mod settings;
+mod settings_ui;
 mod thumbs;
 mod ui;
 
@@ -11,13 +13,27 @@ use eframe::egui;
 use ui::theme::SerpantinumTheme;
 
 fn main() -> eframe::Result {
-    let initial_path = env::args()
-        .nth(1)
-        .map(PathBuf::from)
-        .unwrap_or_else(|| env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
-
     let settings = settings::Settings::load();
     let theme = SerpantinumTheme::from_settings(&settings);
+
+    let initial_path = if let Some(arg) = env::args().nth(1) {
+        PathBuf::from(arg)
+    } else {
+        match settings.start_location {
+            settings::StartLocation::Launch => env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+            settings::StartLocation::Home => dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")),
+            settings::StartLocation::LastVisited => settings
+                .last_dir
+                .clone()
+                .filter(|p| p.is_dir())
+                .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"))),
+            settings::StartLocation::Custom => settings
+                .start_path
+                .clone()
+                .filter(|p| p.is_dir())
+                .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"))),
+        }
+    };
 
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()

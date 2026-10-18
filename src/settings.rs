@@ -25,6 +25,92 @@ pub struct Settings {
     pub show_hidden: bool,
     pub folders_first: bool,
     pub columns: Vec<Column>,
+
+    // Startup
+    pub start_location: StartLocation,
+    pub start_path: Option<PathBuf>,
+    pub last_dir: Option<PathBuf>,
+    // Behavior
+    pub single_click_open: bool,
+    pub vim_keys: bool,
+    pub open_in_new_window: bool,
+    pub confirm_overwrite: bool,
+    pub type_to_filter: bool,
+    // View
+    pub density: Density,
+    pub grid_size: GridSize,
+    pub grid_name_lines: u8,
+    pub show_sidebar: bool,
+    pub show_thumbnails: bool,
+    pub show_extensions: bool,
+    pub relative_dates: bool,
+    pub decimal_units: bool,
+    pub animations: bool,
+    pub remember_view_per_folder: bool,
+    pub folder_views: std::collections::HashMap<PathBuf, ViewMode>,
+    // Keybindings: overrides only; missing actions use `Action::default_binding`.
+    pub keybinds: std::collections::BTreeMap<String, Vec<String>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum StartLocation {
+    #[default]
+    Launch,
+    Home,
+    LastVisited,
+    Custom,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum Density {
+    Compact,
+    #[default]
+    Comfortable,
+    Spacious,
+}
+
+impl Density {
+    pub fn row_height(self) -> f32 {
+        match self {
+            Density::Compact => 34.0,
+            Density::Comfortable => 44.0,
+            Density::Spacious => 54.0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum GridSize {
+    Small,
+    #[default]
+    Medium,
+    Large,
+}
+
+impl GridSize {
+    pub fn cell_size(self) -> (f32, f32) {
+        match self {
+            GridSize::Small => (92.0, 104.0),
+            GridSize::Medium => (116.0, 128.0),
+            GridSize::Large => (144.0, 156.0),
+        }
+    }
+
+    pub fn icon_size(self) -> f32 {
+        match self {
+            GridSize::Small => 36.0,
+            GridSize::Medium => 48.0,
+            GridSize::Large => 64.0,
+        }
+    }
+
+    pub fn picture_size(self) -> f32 {
+        match self {
+            GridSize::Small => 56.0,
+            GridSize::Medium => 72.0,
+            GridSize::Large => 96.0,
+        }
+    }
 }
 
 impl Default for Settings {
@@ -41,6 +127,26 @@ impl Default for Settings {
             show_hidden: false,
             folders_first: true,
             columns: vec![Column::Size, Column::Modified],
+            start_location: StartLocation::Launch,
+            start_path: None,
+            last_dir: None,
+            single_click_open: false,
+            vim_keys: true,
+            open_in_new_window: false,
+            confirm_overwrite: true,
+            type_to_filter: false,
+            density: Density::Comfortable,
+            grid_size: GridSize::Medium,
+            grid_name_lines: 2,
+            show_sidebar: true,
+            show_thumbnails: true,
+            show_extensions: true,
+            relative_dates: false,
+            decimal_units: false,
+            animations: true,
+            remember_view_per_folder: false,
+            folder_views: Default::default(),
+            keybinds: Default::default(),
         }
     }
 }

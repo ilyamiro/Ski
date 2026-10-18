@@ -1,6 +1,32 @@
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::SystemTime;
 use crate::ui::icons;
+
+static DECIMAL_UNITS: AtomicBool = AtomicBool::new(false);
+static RELATIVE_DATES: AtomicBool = AtomicBool::new(false);
+static SHOW_EXTENSIONS: AtomicBool = AtomicBool::new(true);
+
+pub fn set_format_options(decimal_units: bool, relative_dates: bool) {
+    DECIMAL_UNITS.store(decimal_units, Ordering::Relaxed);
+    RELATIVE_DATES.store(relative_dates, Ordering::Relaxed);
+}
+
+pub fn set_show_extensions(show: bool) {
+    SHOW_EXTENSIONS.store(show, Ordering::Relaxed);
+}
+
+pub fn decimal_units_enabled() -> bool {
+    DECIMAL_UNITS.load(Ordering::Relaxed)
+}
+
+pub fn relative_dates_enabled() -> bool {
+    RELATIVE_DATES.load(Ordering::Relaxed)
+}
+
+pub fn show_extensions_enabled() -> bool {
+    SHOW_EXTENSIONS.load(Ordering::Relaxed)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FileType {
@@ -200,6 +226,17 @@ impl FileItem {
         })
     }
 
+    pub fn display_name(&self) -> &str {
+        if self.is_dir || show_extensions_enabled() {
+            &self.name
+        } else {
+            match self.path.file_stem().and_then(|s| s.to_str()) {
+                Some(stem) if !stem.is_empty() && stem != self.name => stem,
+                _ => &self.name,
+            }
+        }
+    }
+
     pub fn formatted_size(&self) -> String {
         if self.is_dir {
             "—".to_string()
@@ -217,46 +254,56 @@ impl FileItem {
     }
 
     pub fn formatted_date(&self) -> String {
-        match self.modified {
-            Some(time) => {
-                let duration = match SystemTime::now().duration_since(time) {
-                    Ok(d) => d,
-                    Err(_) => return "In the future".to_string(),
-                };
-                let secs = duration.as_secs();
-                if secs < 60 {
-                    "Just now".to_string()
-                } else if secs < 3600 {
-                    format!("{}m ago", secs / 60)
-                } else if secs < 86400 {
-                    format!("{}h ago", secs / 3600)
-                } else if secs < 86400 * 7 {
-                    format!("{}d ago", secs / 86400)
-                } else {
-                    format!("{}w ago", secs / (86400 * 7))
+        if relative_dates_enabled() {
+            match self.modified {
+                Some(time) => {
+                    let duration = match SystemTime::now().duration_since(time) {
+                        Ok(d) => d,
+                        Err(_) => return "In the future".to_string(),
+                    };
+                    let secs = duration.as_secs();
+                    if secs < 60 {
+                        "Just now".to_string()
+                    } else if secs < 3600 {
+                        format!("{}m ago", secs / 60)
+                    } else if secs < 86400 {
+                        format!("{}h ago", secs / 3600)
+                    } else if secs < 86400 * 7 {
+                        format!("{}d ago", secs / 86400)
+                    } else {
+                        format!("{}w ago", secs / (86400 * 7))
+                    }
                 }
+                None => "Unknown".to_string(),
             }
-            None => "Unknown".to_string(),
+        } else {
+            super::props::format_datetime(self.modified)
         }
     }
 }
 
 pub fn format_bytes(bytes: u64) -> String {
-    const KB: u64 = 1024;
-    const MB: u64 = 1024 * KB;
-    const GB: u64 = 1024 * MB;
-    const TB: u64 = 1024 * GB;
+    format_bytes_ext(bytes, decimal_units_enabled())
+}
 
-    if bytes < KB {
+pub fn format_bytes_ext(bytes: u64, decimal: bool) -> String {
+    let base = if decimal { 1000.0 } else { 1024.0 };
+    let kb = base;
+    let mb = kb * base;
+    let gb = mb * base;
+    let tb = gb * base;
+    let b = bytes as f64;
+
+    if b < kb {
         format!("{bytes} B")
-    } else if bytes < MB {
-        format!("{:.1} KB", bytes as f64 / KB as f64)
-    } else if bytes < GB {
-        format!("{:.1} MB", bytes as f64 / MB as f64)
-    } else if bytes < TB {
-        format!("{:.2} GB", bytes as f64 / GB as f64)
+    } else if b < mb {
+        format!("{:.1} KB", b / kb)
+    } else if b < gb {
+        format!("{:.1} MB", b / mb)
+    } else if b < tb {
+        format!("{:.2} GB", b / gb)
     } else {
-        format!("{:.2} TB", bytes as f64 / TB as f64)
+        format!("{:.2} TB", b / tb)
     }
 }
 
@@ -277,5 +324,60 @@ fn detect_file_type(filename: &str) -> FileType {
         | "css" | "scss" | "json" | "toml" | "yaml" | "yml" | "nix" | "sh" | "bash"
         | "lua" | "go" | "java" | "kt" | "swift" | "sql" => FileType::Code,
         _ => FileType::Other,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_format_bytes_ext() {
+        assert_eq!(format_bytes_ext(500, false), "500 B");
+        assert_eq!(format_bytes_ext(500, true), "500 B");
+        assert_eq!(format_bytes_ext(1024, false), "1.0 KB");
+        assert_eq!(format_bytes_ext(1000, true), "1.0 KB");
+    }
+
+    #[test]
+    fn test_display_name_extension_toggle() {
+        let item = FileItem {
+            name: "document.pdf".to_string(),
+            path: std::path::PathBuf::from("/tmp/document.pdf"),
+            size: 1024,
+            modified: None,
+            created: None,
+            accessed: None,
+            uid: 1000,
+            mode: 0o644,
+            is_dir: false,
+            file_type: FileType::Document,
+            is_hidden: false,
+            is_symlink: false,
+        };
+        set_show_extensions(true);
+        assert_eq!(item.display_name(), "document.pdf");
+        set_show_extensions(false);
+        assert_eq!(item.display_name(), "document");
+
+        // Hidden file starting with dot
+        let dotfile = FileItem {
+            name: ".gitignore".to_string(),
+            path: std::path::PathBuf::from("/tmp/.gitignore"),
+            size: 10,
+            modified: None,
+            created: None,
+            accessed: None,
+            uid: 1000,
+            mode: 0o644,
+            is_dir: false,
+            file_type: FileType::Code,
+            is_hidden: true,
+            is_symlink: false,
+        };
+        assert_eq!(dotfile.display_name(), ".gitignore");
+
+        // Reset to default
+        set_show_extensions(true);
     }
 }
