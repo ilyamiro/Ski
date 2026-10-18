@@ -96,7 +96,7 @@ impl Search {
                         }
                     }
                 }
-                subdirs.sort_by(|a, b| b.0.cmp(&a.0));
+                subdirs.sort_by_key(|a| std::cmp::Reverse(a.0));
                 queue.extend(subdirs.into_iter().map(|(_, p)| (p, depth + 1)));
             }
             let _ = tx.send(batch);

@@ -276,11 +276,10 @@ impl SkiApp {
             recent::record(&canonical);
             self.current_path = canonical;
             self.settings.last_dir = Some(self.current_path.clone());
-            if self.settings.remember_view_per_folder {
-                if let Some(&saved_mode) = self.settings.folder_views.get(&self.current_path) {
+            if self.settings.remember_view_per_folder
+                && let Some(&saved_mode) = self.settings.folder_views.get(&self.current_path) {
                     self.view_mode = saved_mode;
                 }
-            }
             self.path_input = self.current_path.to_string_lossy().to_string();
             self.selected_index = None;
             self.search_query.clear();
@@ -298,11 +297,10 @@ impl SkiApp {
             self.forward_history.push(self.current_path.clone());
             self.current_path = prev;
             self.settings.last_dir = Some(self.current_path.clone());
-            if self.settings.remember_view_per_folder {
-                if let Some(&saved_mode) = self.settings.folder_views.get(&self.current_path) {
+            if self.settings.remember_view_per_folder
+                && let Some(&saved_mode) = self.settings.folder_views.get(&self.current_path) {
                     self.view_mode = saved_mode;
                 }
-            }
             self.path_input = self.current_path.to_string_lossy().to_string();
             self.selected_index = None;
             self.reload_items();
@@ -314,11 +312,10 @@ impl SkiApp {
             self.back_history.push(self.current_path.clone());
             self.current_path = next;
             self.settings.last_dir = Some(self.current_path.clone());
-            if self.settings.remember_view_per_folder {
-                if let Some(&saved_mode) = self.settings.folder_views.get(&self.current_path) {
+            if self.settings.remember_view_per_folder
+                && let Some(&saved_mode) = self.settings.folder_views.get(&self.current_path) {
                     self.view_mode = saved_mode;
                 }
-            }
             self.path_input = self.current_path.to_string_lossy().to_string();
             self.selected_index = None;
             self.reload_items();
@@ -361,11 +358,10 @@ impl SkiApp {
                 }
                 if self.items.is_empty() {
                     self.selected_index = None;
-                } else if let Some(idx) = self.selected_index {
-                    if idx >= self.items.len() {
+                } else if let Some(idx) = self.selected_index
+                    && idx >= self.items.len() {
                         self.selected_index = Some(self.items.len() - 1);
                     }
-                }
             }
             Err(err) => {
                 self.items.clear();
@@ -749,11 +745,10 @@ impl SkiApp {
     }
 
     fn open_selected(&mut self) {
-        if let Some(idx) = self.selected_index {
-            if let Some(item) = self.items.get(idx).cloned() {
+        if let Some(idx) = self.selected_index
+            && let Some(item) = self.items.get(idx).cloned() {
                 self.open_item(item);
             }
-        }
     }
 
     fn handle_keyboard_inputs(&mut self, ctx: &egui::Context) {
@@ -761,14 +756,13 @@ impl SkiApp {
             return;
         }
 
-        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
-            if self.dialog.is_some() || self.menu.take().is_some() {
+        if ctx.input(|i| i.key_pressed(egui::Key::Escape))
+            && (self.dialog.is_some() || self.menu.take().is_some()) {
                 if let Some(d) = self.dialog.take() {
                     self.closing_dialog = Some(d);
                 }
                 return;
             }
-        }
         if self.dialog.is_some() {
             return;
         }
@@ -986,11 +980,10 @@ impl eframe::App for SkiApp {
             self.items.extend(found);
         }
 
-        if let Some((_, time)) = &self.status_toast {
-            if time.elapsed().as_secs() > 3 && !self.jobs.running() {
+        if let Some((_, time)) = &self.status_toast
+            && time.elapsed().as_secs() > 3 && !self.jobs.running() {
                 self.status_toast = None;
             }
-        }
 
         let window_width = ui.available_width();
         let sidebar_visible = self.settings.show_sidebar && (window_width >= SIDEBAR_BREAKPOINT);
@@ -1023,11 +1016,10 @@ impl eframe::App for SkiApp {
             )
             .show(ui, |ui| {
                 let background = ui.interact(ui.max_rect(), ui.make_persistent_id("list_background"), egui::Sense::click());
-                if background.secondary_clicked() && self.search_query.trim().is_empty() {
-                    if let Some(pos) = background.interact_pointer_pos() {
+                if background.secondary_clicked() && self.search_query.trim().is_empty()
+                    && let Some(pos) = background.interact_pointer_pos() {
                         self.open_menu(ui.ctx(), pos, MenuTarget::Folder);
                     }
-                }
 
                 if let Some(ref err) = self.error_message {
                     ui.centered_and_justified(|ui| {
@@ -1229,12 +1221,11 @@ impl SkiApp {
                     ui.painter().rect_filled(r, egui::CornerRadius::same(14), self.theme.with_alpha(self.theme.text, (hover * 20.0) as u8));
                     let color = material::lerp_color(self.theme.subtext1, self.theme.text, hover);
                     ui.painter().text(egui::pos2(x, cy), egui::Align2::LEFT_CENTER, &parent, parent_font.clone(), color);
-                    if resp.clicked() {
-                        if let Some(p) = self.current_path.parent() {
+                    if resp.clicked()
+                        && let Some(p) = self.current_path.parent() {
                             let p = p.to_path_buf();
                             self.navigate_to(p);
                         }
-                    }
                     x += pw + 6.0;
                     ui.painter().text(egui::pos2(x, cy), egui::Align2::LEFT_CENTER, "/", parent_font.clone(), self.theme.surface2);
                     x += slash_w - 6.0;
@@ -1282,11 +1273,10 @@ impl SkiApp {
             if resp.clicked() {
                 destination = Some(pin.clone());
             }
-            if resp.secondary_clicked() {
-                if let Some(pos) = resp.interact_pointer_pos() {
+            if resp.secondary_clicked()
+                && let Some(pos) = resp.interact_pointer_pos() {
                     menu_at = Some((pos, MenuTarget::Pin(pin.clone())));
                 }
-            }
         }
 
         if let Some((pos, target)) = menu_at {
@@ -1429,11 +1419,10 @@ impl SkiApp {
                 if resp.double_clicked() {
                     opened = Some(item.clone());
                 }
-                if resp.secondary_clicked() {
-                    if let Some(pos) = resp.interact_pointer_pos() {
+                if resp.secondary_clicked()
+                    && let Some(pos) = resp.interact_pointer_pos() {
                         menu_at = Some((pos, MenuTarget::Item(item.clone())));
                     }
-                }
             }
         });
 
@@ -1484,11 +1473,10 @@ impl SkiApp {
                         if resp.double_clicked() {
                             opened = Some(item.clone());
                         }
-                        if resp.secondary_clicked() {
-                            if let Some(pos) = resp.interact_pointer_pos() {
+                        if resp.secondary_clicked()
+                            && let Some(pos) = resp.interact_pointer_pos() {
                                 menu_at = Some((pos, MenuTarget::Item(item.clone())));
                             }
-                        }
                     }
                 });
             }
@@ -1899,12 +1887,11 @@ impl SkiApp {
     }
 
     fn render_menu(&mut self, ctx: &egui::Context) {
-        if let Some(menu) = self.menu.as_mut() {
-            if let Some(Ok(label)) = menu.label_rx.as_ref().map(|rx| rx.try_recv()) {
+        if let Some(menu) = self.menu.as_mut()
+            && let Some(Ok(label)) = menu.label_rx.as_ref().map(|rx| rx.try_recv()) {
                 menu.open_label = label;
                 menu.label_rx = None;
             }
-        }
         let Some(menu) = self.menu.as_ref() else { return };
         let (pos, groups, open_label) = (menu.pos, self.menu_entries(&menu.target), menu.open_label.clone());
 
@@ -1983,14 +1970,12 @@ impl SkiApp {
             return;
         };
 
-        if is_open {
-            if let Dialog::Icon { input, error, .. } = &mut dialog {
-                if let Some(path) = ctx.input(|i| i.raw.dropped_files.first().map(|f| f.path().to_path_buf())) {
+        if is_open
+            && let Dialog::Icon { input, error, .. } = &mut dialog
+                && let Some(path) = ctx.input(|i| i.raw.dropped_files.first().map(|f| f.path().to_path_buf())) {
                     *input = path.to_string_lossy().into_owned();
                     *error = None;
                 }
-            }
-        }
 
         let screen = ctx.content_rect();
         let mut close = false;
@@ -2187,11 +2172,10 @@ impl SkiApp {
         let max_height = (ui.ctx().content_rect().height() - 320.0).clamp(140.0, 300.0);
         egui::ScrollArea::vertical().max_height(max_height).auto_shrink([false, true]).id_salt("pf_scroll").show(ui, |ui| {
             ui.spacing_mut().item_spacing.y = 2.0;
-            if let Some(parent) = dir.parent() {
-                if nav_item(ui, "pf_up", icons::ARROW_UP, "..", &theme, false).clicked() {
+            if let Some(parent) = dir.parent()
+                && nav_item(ui, "pf_up", icons::ARROW_UP, "..", &theme, false).clicked() {
                     goto = Some(parent.to_path_buf());
                 }
-            }
             for (idx, folder) in folders.iter().enumerate() {
                 let label = folder.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
                 if nav_item(ui, ("pf_folder", idx), icons::FOLDER, &label, &theme, false).clicked() {
@@ -2435,8 +2419,8 @@ impl SkiApp {
             }
         });
 
-        if launch {
-            if let Some(app) = selected.and_then(|i| listed.get(i)) {
+        if launch
+            && let Some(app) = selected.and_then(|i| listed.get(i)) {
                 match apps::launch(app, path) {
                     Ok(()) => {
                         recent::record(path);
@@ -2456,7 +2440,6 @@ impl SkiApp {
                     Err(err) => self.set_toast(format!("Failed to start {}: {err}", app.name)),
                 }
             }
-        }
         close
     }
 
@@ -2544,11 +2527,10 @@ impl SkiApp {
             ui.label(egui::RichText::new(dir.to_string_lossy()).size(11.5).color(self.theme.subtext1));
             egui::ScrollArea::vertical().max_height(220.0).auto_shrink([false, true]).id_salt("icon_browser").show(ui, |ui| {
                 ui.spacing_mut().item_spacing.y = 2.0;
-                if let Some(parent) = dir.parent() {
-                    if nav_item(ui, "icon_browse_up", icons::ARROW_UP, "..", &self.theme, false).clicked() {
+                if let Some(parent) = dir.parent()
+                    && nav_item(ui, "icon_browse_up", icons::ARROW_UP, "..", &self.theme, false).clicked() {
                         *browse = Some(parent.to_path_buf());
                     }
-                }
                 for (idx, (path, is_dir)) in entries.iter().enumerate() {
                     let label = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
                     let glyph = if *is_dir { icons::FOLDER } else { icons::IMAGE };
@@ -2616,7 +2598,7 @@ impl SkiApp {
         let Dialog::Properties { props, scan } = dialog else { return false };
         let ctx = ui.ctx().clone();
         let item = &props.item;
-        let theme = self.theme.clone();
+        let theme = self.theme;
         let mut groups = props.groups();
 
         // Folder totals come from the background scan

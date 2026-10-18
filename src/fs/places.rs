@@ -44,41 +44,35 @@ impl Place {
             places.push(Place::new("Home", home, icons::HOME));
         }
 
-        if let Some(desktop) = dirs::desktop_dir() {
-            if desktop.exists() {
+        if let Some(desktop) = dirs::desktop_dir()
+            && desktop.exists() {
                 places.push(Place::new("Desktop", desktop, icons::DESKTOP));
             }
-        }
 
-        if let Some(docs) = dirs::document_dir() {
-            if docs.exists() {
+        if let Some(docs) = dirs::document_dir()
+            && docs.exists() {
                 places.push(Place::new("Documents", docs, icons::DOCUMENTS));
             }
-        }
 
-        if let Some(downloads) = dirs::download_dir() {
-            if downloads.exists() {
+        if let Some(downloads) = dirs::download_dir()
+            && downloads.exists() {
                 places.push(Place::new("Downloads", downloads, icons::DOWNLOAD));
             }
-        }
 
-        if let Some(pictures) = dirs::picture_dir() {
-            if pictures.exists() {
+        if let Some(pictures) = dirs::picture_dir()
+            && pictures.exists() {
                 places.push(Place::new("Pictures", pictures, icons::IMAGE));
             }
-        }
 
-        if let Some(music) = dirs::audio_dir() {
-            if music.exists() {
+        if let Some(music) = dirs::audio_dir()
+            && music.exists() {
                 places.push(Place::new("Music", music, icons::AUDIO));
             }
-        }
 
-        if let Some(videos) = dirs::video_dir() {
-            if videos.exists() {
+        if let Some(videos) = dirs::video_dir()
+            && videos.exists() {
                 places.push(Place::new("Videos", videos, icons::VIDEO));
             }
-        }
 
         places.push(Place::new("Computer", PathBuf::from("/"), icons::STORAGE));
 

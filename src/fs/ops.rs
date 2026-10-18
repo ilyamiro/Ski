@@ -28,11 +28,10 @@ pub fn unique_path(dir: &Path, name: &std::ffi::OsStr, suffix: &str) -> PathBuf 
 /// `("archive", ".tar.gz")` / `("photo", ".png")` / `("Makefile", "")`.
 fn split_name(name: &str) -> (&str, &str) {
     for double in [".tar.gz", ".tar.xz", ".tar.bz2", ".tar.zst"] {
-        if let Some(stem) = name.strip_suffix(double) {
-            if !stem.is_empty() {
+        if let Some(stem) = name.strip_suffix(double)
+            && !stem.is_empty() {
                 return (stem, &name[stem.len()..]);
             }
-        }
     }
     match name.rfind('.') {
         Some(i) if i > 0 => (&name[..i], &name[i..]),

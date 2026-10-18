@@ -109,8 +109,8 @@ impl SerpantinumTheme {
         ];
 
         for path in candidate_paths.into_iter().flatten() {
-            if let Ok(content) = fs::read_to_string(&path) {
-                if let Ok(raw) = serde_json::from_str::<SerpantinumColorsRaw>(&content) {
+            if let Ok(content) = fs::read_to_string(&path)
+                && let Ok(raw) = serde_json::from_str::<SerpantinumColorsRaw>(&content) {
                     if let Some(c) = raw.base.and_then(|s| parse_hex(&s)) { theme.base = c; }
                     if let Some(c) = raw.mantle.and_then(|s| parse_hex(&s)) { theme.mantle = c; }
                     if let Some(c) = raw.crust.and_then(|s| parse_hex(&s)) { theme.crust = c; }
@@ -128,19 +128,16 @@ impl SerpantinumTheme {
                     if let Some(c) = raw.yellow.and_then(|s| parse_hex(&s)) { theme.yellow = c; }
                     break;
                 }
-            }
         }
 
         // 2. Try to read borderRadius from ~/.config/serpantinum/settings.json
         if let Some(home) = dirs::home_dir() {
             let settings_path = home.join(".config/serpantinum/settings.json");
-            if let Ok(content) = fs::read_to_string(settings_path) {
-                if let Ok(val) = serde_json::from_str::<serde_json::Value>(&content) {
-                    if let Some(r) = val.get("theme").and_then(|t| t.get("borderRadius")).and_then(|b| b.as_f64()) {
+            if let Ok(content) = fs::read_to_string(settings_path)
+                && let Ok(val) = serde_json::from_str::<serde_json::Value>(&content)
+                    && let Some(r) = val.get("theme").and_then(|t| t.get("borderRadius")).and_then(|b| b.as_f64()) {
                         theme.border_radius = r as f32;
                     }
-                }
-            }
         }
 
         theme

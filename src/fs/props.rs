@@ -12,11 +12,10 @@ fn id_table(path: &str) -> HashMap<u32, String> {
     if let Ok(content) = std::fs::read_to_string(path) {
         for line in content.lines() {
             let mut parts = line.split(':');
-            if let (Some(name), _, Some(id)) = (parts.next(), parts.next(), parts.next()) {
-                if let Ok(id) = id.parse::<u32>() {
+            if let (Some(name), _, Some(id)) = (parts.next(), parts.next(), parts.next())
+                && let Ok(id) = id.parse::<u32>() {
                     map.entry(id).or_insert_with(|| name.to_owned());
                 }
-            }
         }
     }
     map
@@ -246,11 +245,10 @@ fn type_details(item: &FileItem, mime: &str) -> Vec<Section> {
         if let Some(rows) = image_details(&item.path) {
             sections.push(("Image", rows));
         }
-    } else if mime.starts_with("text/") || mime.contains("json") || mime.contains("toml") || mime.contains("xml") {
-        if let Some(rows) = text_details(&item.path, item.size) {
+    } else if (mime.starts_with("text/") || mime.contains("json") || mime.contains("toml") || mime.contains("xml"))
+        && let Some(rows) = text_details(&item.path, item.size) {
             sections.push(("Text", rows));
         }
-    }
     if item.file_type == super::file_item::FileType::Executable {
         sections.push(("Program", vec![("Executable", "Yes".to_owned())]));
     }

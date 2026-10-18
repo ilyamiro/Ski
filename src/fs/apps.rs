@@ -84,11 +84,10 @@ fn parse_desktop(id: &str, path: &Path) -> Option<AppEntry> {
         let line = line.trim();
         if line.starts_with('[') {
             in_entry = line == "[Desktop Entry]";
-        } else if in_entry {
-            if let Some((k, v)) = line.split_once('=') {
+        } else if in_entry
+            && let Some((k, v)) = line.split_once('=') {
                 fields.entry(k.trim()).or_insert(v.trim());
             }
-        }
     }
     let is_true = |key: &str| fields.get(key) == Some(&"true");
     if fields.get("Type") != Some(&"Application") || is_true("NoDisplay") || is_true("Hidden") || is_true("Terminal") {
