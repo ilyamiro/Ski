@@ -83,16 +83,26 @@ pub fn move_into(src: &Path, dir: &Path) -> io::Result<PathBuf> {
     }
     let name = src.file_name().ok_or_else(|| io::Error::other("no file name"))?;
     let target = unique_path(dir, name, "moved");
-    match std::fs::rename(src, &target) {
-        Ok(()) => Ok(target),
+    move_path(src, &target)?;
+    Ok(target)
+}
+
+/// Rename `src` to the exact path `dst`, copying across filesystems when it has to.
+pub fn move_path(src: &Path, dst: &Path) -> io::Result<()> {
+    match std::fs::rename(src, dst) {
+        Ok(()) => Ok(()),
         // Different filesystem: copy, then remove the original
         Err(e) if e.raw_os_error() == Some(libc::EXDEV) => {
-            copy_tree(src, &target)?;
-            if src.is_dir() && !src.is_symlink() { std::fs::remove_dir_all(src)? } else { std::fs::remove_file(src)? }
-            Ok(target)
+            copy_tree(src, dst)?;
+            remove_tree(src)
         }
         Err(e) => Err(e),
     }
+}
+
+/// Delete a file, symlink or whole folder.
+pub fn remove_tree(path: &Path) -> io::Result<()> {
+    if path.is_dir() && !path.is_symlink() { std::fs::remove_dir_all(path) } else { std::fs::remove_file(path) }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

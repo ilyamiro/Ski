@@ -9,7 +9,7 @@ use crate::keymap::{self, Action};
 use crate::settings::{Density, GridSize, Settings, StartLocation};
 use crate::ui::fonts::SystemFont;
 use crate::ui::icons;
-use crate::ui::material::{self, chip, filled_icon_button, nav_item, switch_row, Column};
+use crate::ui::material::{self, button, chip, choice_row, filled_icon_button, group_card, nav_item, switch_row_with, ButtonKind, Column};
 use crate::ui::theme::{self, SerpantinumTheme, ACCENTS, PRESETS};
 
 impl SkiApp {
@@ -38,7 +38,6 @@ impl SkiApp {
         self.saved_settings = self.settings.clone();
     }
 
-    /// Returns true when the dialog should close.
     pub(crate) fn settings_dialog_contents(&mut self, ui: &mut egui::Ui, dialog: &mut Dialog) -> bool {
         let Dialog::Settings {
             tab,
@@ -58,13 +57,16 @@ impl SkiApp {
         let close = material::dialog_header(ui, "Settings", None, &theme, "set_close");
         ui.add_space(4.0);
 
-        let max_height = (ctx.content_rect().height() - 160.0).clamp(320.0, 560.0);
+        let max_height = (ctx.content_rect().height() - 160.0).clamp(320.0, 540.0);
 
-        ui.horizontal(|ui| {
-            // Left pane: Categories navigation
+        ui.horizontal_top(|ui| {
+            ui.spacing_mut().item_spacing.x = 16.0;
+            // The dialog keeps one height for every category
+            ui.set_min_height(max_height);
+            // Left pane: categories
             ui.vertical(|ui| {
-                ui.set_width(165.0);
-                ui.spacing_mut().item_spacing = egui::vec2(0.0, 3.0);
+                ui.set_width(168.0);
+                ui.spacing_mut().item_spacing = egui::vec2(0.0, 2.0);
 
                 let categories = [
                     (0, icons::COG, "General"),
@@ -87,15 +89,7 @@ impl SkiApp {
                 }
             });
 
-            // Divider between panes
-            let (sep_rect, _) = ui.allocate_exact_size(egui::vec2(12.0, max_height), egui::Sense::hover());
-            ui.painter().vline(
-                sep_rect.center().x,
-                sep_rect.min.y + 4.0..=sep_rect.max.y - 4.0,
-                egui::Stroke::new(1.0, theme.surface2),
-            );
-
-            // Right pane: Settings content
+            // Right pane: the settings of the chosen category
             ui.vertical(|ui| {
                 ui.set_width(ui.available_width());
                 egui::ScrollArea::vertical()
@@ -127,60 +121,54 @@ impl SkiApp {
         let theme = self.theme;
 
         material::section_label(ui, "Startup", &theme);
-        ui.label(egui::RichText::new("Choose where Ski opens on launch").size(12.5).color(theme.subtext1));
-        ui.horizontal_wrapped(|ui| {
-            for (loc, label) in [
-                (StartLocation::Launch, "Launch folder"),
-                (StartLocation::Home, "Home"),
-                (StartLocation::LastVisited, "Last visited"),
-                (StartLocation::Custom, "Custom path"),
-            ] {
-                if chip(ui, ("start_loc", label), None, label, &theme, self.settings.start_location == loc).clicked() {
-                    self.settings.start_location = loc;
-                    self.persist_settings();
-                }
+        group_card(ui, &theme, |ui| {
+            let locations = [StartLocation::Launch, StartLocation::Home, StartLocation::LastVisited, StartLocation::Custom];
+            let labels = ["Launch folder", "Home", "Last visited", "Custom"];
+            let current = locations.iter().position(|l| *l == self.settings.start_location).unwrap_or(0);
+            if let Some(i) = choice_row(ui, "start_loc", icons::HOME, "Open Ski in", &labels, current, &theme) {
+                self.settings.start_location = locations[i];
+                self.persist_settings();
             }
-        });
 
-        if self.settings.start_location == StartLocation::Custom {
-            ui.horizontal(|ui| {
-                let mut path_str = self
-                    .settings
-                    .start_path
-                    .as_ref()
-                    .map(|p| p.to_string_lossy().to_string())
-                    .unwrap_or_default();
+            if self.settings.start_location == StartLocation::Custom {
+                let mut path_str = self.settings.start_path.as_ref().map(|p| p.to_string_lossy().to_string()).unwrap_or_default();
+                let valid = path_str.is_empty() || PathBuf::from(&path_str).is_dir();
                 material::input_frame(&theme).show(ui, |ui| {
                     let resp = ui.add(
                         egui::TextEdit::singleline(&mut path_str)
                             .frame(egui::Frame::NONE)
-                            .desired_width(ui.available_width() - 20.0)
-                            .hint_text("/path/to/custom/folder")
-                            .font(egui::FontId::proportional(13.0)),
+                            .desired_width(f32::INFINITY)
+                            .hint_text("/path/to/folder")
+                            .text_color(if valid { theme.text } else { theme.red })
+                            .font(egui::FontId::proportional(material::FONT_BODY)),
                     );
                     if resp.changed() {
-                        self.settings.start_path = if path_str.trim().is_empty() {
-                            None
-                        } else {
-                            Some(PathBuf::from(path_str.trim()))
-                        };
+                        self.settings.start_path = if path_str.trim().is_empty() { None } else { Some(PathBuf::from(path_str.trim())) };
                         self.persist_settings();
                     }
                 });
-            });
-        }
+                if !valid {
+                    material::hint_label(ui, "That folder does not exist; Ski opens in Home instead", &theme);
+                }
+            }
+        });
 
-        material::section_label(ui, "Windows & Tabs", &theme);
-        if switch_row(ui, "open_in_new_win", icons::NEW_WINDOW, "Open folders in a new window", &theme, self.settings.open_in_new_window).clicked() {
-            self.settings.open_in_new_window = !self.settings.open_in_new_window;
-            self.persist_settings();
-        }
+        material::section_label(ui, "Windows", &theme);
+        group_card(ui, &theme, |ui| {
+            if switch_row_with(ui, "open_in_new_win", icons::NEW_WINDOW, "Open folders in a new window", None, &theme, self.settings.open_in_new_window).clicked() {
+                self.settings.open_in_new_window = !self.settings.open_in_new_window;
+                self.persist_settings();
+            }
+        });
 
-        material::section_label(ui, "File Operations", &theme);
-        if switch_row(ui, "confirm_overwrite", icons::INFO, "Confirm before overwriting files", &theme, self.settings.confirm_overwrite).clicked() {
-            self.settings.confirm_overwrite = !self.settings.confirm_overwrite;
-            self.persist_settings();
-        }
+        material::section_label(ui, "File operations", &theme);
+        group_card(ui, &theme, |ui| {
+            let desc = Some("Ask before deleting for good or emptying the trash");
+            if switch_row_with(ui, "confirm_delete", icons::DELETE_FOREVER, "Confirm permanent deletion", desc, &theme, self.settings.confirm_delete).clicked() {
+                self.settings.confirm_delete = !self.settings.confirm_delete;
+                self.persist_settings();
+            }
+        });
     }
 
     fn appearance_tab(&mut self, ui: &mut egui::Ui, font_query: &mut String, hex: &mut String) {
@@ -229,13 +217,13 @@ impl SkiApp {
         });
         ui.horizontal(|ui| {
             material::input_frame(&theme).show(ui, |ui| {
-                ui.set_width(130.0);
+                ui.set_width(120.0);
                 let resp = ui.add(
                     egui::TextEdit::singleline(hex)
                         .frame(egui::Frame::NONE)
                         .desired_width(f32::INFINITY)
                         .hint_text("#rrggbb")
-                        .font(egui::FontId::proportional(13.5)),
+                        .font(egui::FontId::proportional(material::FONT_BODY)),
                 );
                 if resp.changed() {
                     let text = hex.trim().to_owned();
@@ -246,37 +234,38 @@ impl SkiApp {
                     }
                 }
             });
-            ui.label(egui::RichText::new("Custom hex color").size(12.0).color(theme.subtext1));
+            ui.label(egui::RichText::new("Custom hex color").size(material::FONT_CAPTION).color(theme.subtext1));
         });
 
-        material::section_label(ui, "Interface size", &theme);
-        ui.horizontal_wrapped(|ui| {
-            for (scale, label) in [(0.85, "Compact"), (1.0, "Default"), (1.15, "Large"), (1.3, "Larger")] {
-                if chip(ui, ("scale", label), None, label, &theme, (self.settings.scale - scale).abs() < 0.01).clicked() {
-                    self.settings.scale = scale;
-                    ui.ctx().set_zoom_factor(scale);
-                    self.persist_settings();
-                }
+        material::section_label(ui, "Interface", &theme);
+        group_card(ui, &theme, |ui| {
+            let scales = [0.85, 1.0, 1.15, 1.3];
+            let current = scales.iter().position(|s| (self.settings.scale - s).abs() < 0.01).unwrap_or(1);
+            if let Some(i) = choice_row(ui, "scale", icons::VIEW_LIST, "Size", &["Compact", "Default", "Large", "Larger"], current, &theme) {
+                self.settings.scale = scales[i];
+                ui.ctx().set_zoom_factor(scales[i]);
+                self.persist_settings();
+            }
+            if switch_row_with(ui, "app_animations", icons::REFRESH, "Animations", None, &theme, self.settings.animations).clicked() {
+                self.settings.animations = !self.settings.animations;
+                self.persist_settings();
             }
         });
 
-        material::section_label(ui, "Animations", &theme);
-        if switch_row(ui, "app_animations", icons::REFRESH, "Enable animations", &theme, self.settings.animations).clicked() {
-            self.settings.animations = !self.settings.animations;
-            self.persist_settings();
-        }
-
         material::section_label(ui, "Font", &theme);
         let current = self.settings.font_name.clone().unwrap_or_else(|| "Adwaita Sans (default)".to_owned());
-        ui.label(egui::RichText::new(format!("Current: {current}")).size(12.5).color(theme.subtext0));
+        material::hint_label(ui, &format!("Current: {current}"), &theme);
         material::input_frame(&theme).show(ui, |ui| {
-            ui.add(
-                egui::TextEdit::singleline(font_query)
-                    .frame(egui::Frame::NONE)
-                    .desired_width(f32::INFINITY)
-                    .hint_text("Search installed fonts")
-                    .font(egui::FontId::proportional(13.5)),
-            );
+            ui.horizontal(|ui| {
+                material::inline_icon(ui, icons::SEARCH, material::ICON_SM, theme.subtext1);
+                ui.add(
+                    egui::TextEdit::singleline(font_query)
+                        .frame(egui::Frame::NONE)
+                        .desired_width(f32::INFINITY)
+                        .hint_text("Search installed fonts")
+                        .font(egui::FontId::proportional(material::FONT_BODY)),
+                );
+            });
         });
         let needle = font_query.trim().to_lowercase();
         let all_fonts = crate::ui::fonts::system_fonts();
@@ -287,26 +276,28 @@ impl SkiApp {
         let show_default = needle.is_empty() || "adwaita sans".contains(&needle);
         let total = fonts.len() + usize::from(show_default);
         let mut picked: Option<Option<SystemFont>> = None;
-        egui::ScrollArea::vertical()
-            .max_height(190.0)
-            .auto_shrink([false, true])
-            .id_salt("font_list")
-            .show_rows(ui, 38.0, total, |ui, range| {
-                ui.spacing_mut().item_spacing.y = 2.0;
-                for row in range {
-                    if show_default && row == 0 {
-                        if nav_item(ui, "font_default", icons::DOCUMENT, "Adwaita Sans (default)", &theme, self.settings.font.is_none()).clicked() {
-                            picked = Some(None);
+        group_card(ui, &theme, |ui| {
+            egui::ScrollArea::vertical()
+                .max_height(190.0)
+                .auto_shrink([false, true])
+                .id_salt("font_list")
+                .show_rows(ui, material::ENTRY_HEIGHT + 2.0, total, |ui, range| {
+                    ui.spacing_mut().item_spacing.y = 2.0;
+                    for row in range {
+                        if show_default && row == 0 {
+                            if nav_item(ui, "font_default", icons::DOCUMENT, "Adwaita Sans (default)", &theme, self.settings.font.is_none()).clicked() {
+                                picked = Some(None);
+                            }
+                            continue;
                         }
-                        continue;
+                        let font = fonts[row - usize::from(show_default)];
+                        let on = self.settings.font.as_deref() == Some(font.path.as_path());
+                        if nav_item(ui, ("font_row", row), icons::DOCUMENT, &font.family, &theme, on).clicked() {
+                            picked = Some(Some(font.clone()));
+                        }
                     }
-                    let font = fonts[row - usize::from(show_default)];
-                    let on = self.settings.font.as_deref() == Some(font.path.as_path());
-                    if nav_item(ui, ("font_row", row), icons::DOCUMENT, &font.family, &theme, on).clicked() {
-                        picked = Some(Some(font.clone()));
-                    }
-                }
-            });
+                });
+        });
         if let Some(choice) = picked {
             self.settings.font = choice.as_ref().map(|f| f.path.clone());
             self.settings.font_name = choice.map(|f| f.family);
@@ -318,146 +309,120 @@ impl SkiApp {
     fn files_view_tab(&mut self, ui: &mut egui::Ui) {
         let theme = self.theme;
 
-        material::section_label(ui, "Default View", &theme);
-        ui.horizontal_wrapped(|ui| {
-            if chip(ui, "fv_view_list", Some(icons::VIEW_LIST), "List", &theme, self.view_mode == ViewMode::List).clicked() {
-                self.view_mode = ViewMode::List;
-                self.settings.view_mode = ViewMode::List;
+        material::section_label(ui, "View", &theme);
+        group_card(ui, &theme, |ui| {
+            if let Some(i) = choice_row(ui, "fv_view", icons::VIEW_LIST, "Default view", &["List", "Grid"], usize::from(self.view_mode == ViewMode::Grid), &theme) {
+                self.view_mode = if i == 0 { ViewMode::List } else { ViewMode::Grid };
+                self.settings.view_mode = self.view_mode;
                 self.persist_settings();
             }
-            if chip(ui, "fv_view_grid", Some(icons::GRID_VIEW), "Grid", &theme, self.view_mode == ViewMode::Grid).clicked() {
-                self.view_mode = ViewMode::Grid;
-                self.settings.view_mode = ViewMode::Grid;
+            let fields = [SortBy::Name, SortBy::Size, SortBy::Modified];
+            let current = fields.iter().position(|f| *f == self.sort_by).unwrap_or(0);
+            if let Some(i) = choice_row(ui, "fv_sort_by", icons::SORT_ASC, "Sort by", &["Name", "Size", "Modified"], current, &theme) {
+                self.sort_by = fields[i];
+                self.settings.sort_by = fields[i];
+                self.reload_items();
                 self.persist_settings();
             }
-        });
-
-        material::section_label(ui, "Sorting", &theme);
-        ui.horizontal_wrapped(|ui| {
-            for (field, label) in [(SortBy::Name, "Name"), (SortBy::Size, "Size"), (SortBy::Modified, "Modified")] {
-                if chip(ui, ("fv_sort_by", label), None, label, &theme, self.sort_by == field).clicked() {
-                    self.sort_by = field;
-                    self.settings.sort_by = field;
-                    self.reload_items();
-                    self.persist_settings();
-                }
-            }
-        });
-        ui.horizontal_wrapped(|ui| {
             let asc = self.sort_order == SortOrder::Ascending;
-            if chip(ui, "fv_sort_asc", Some(icons::SORT_ASC), "Ascending", &theme, asc).clicked() {
-                self.sort_order = SortOrder::Ascending;
-                self.settings.sort_order = SortOrder::Ascending;
-                self.reload_items();
-                self.persist_settings();
-            }
-            if chip(ui, "fv_sort_desc", Some(icons::SORT_DESC), "Descending", &theme, !asc).clicked() {
-                self.sort_order = SortOrder::Descending;
-                self.settings.sort_order = SortOrder::Descending;
+            if let Some(i) = choice_row(ui, "fv_sort_order", icons::SORT_DESC, "Order", &["Ascending", "Descending"], usize::from(!asc), &theme) {
+                self.sort_order = if i == 0 { SortOrder::Ascending } else { SortOrder::Descending };
+                self.settings.sort_order = self.sort_order;
                 self.reload_items();
                 self.persist_settings();
             }
         });
 
-        material::section_label(ui, "Visibility & Navigation", &theme);
-        if switch_row(ui, "fv_show_hidden", icons::VISIBILITY, "Show hidden files", &theme, self.show_hidden).clicked() {
-            self.show_hidden = !self.show_hidden;
-            self.settings.show_hidden = self.show_hidden;
-            self.reload_items();
-            self.persist_settings();
-        }
-        if switch_row(ui, "fv_folders_first", icons::FOLDER, "Show folders before files", &theme, self.folders_first).clicked() {
-            self.folders_first = !self.folders_first;
-            self.settings.folders_first = self.folders_first;
-            self.reload_items();
-            self.persist_settings();
-        }
-        if switch_row(ui, "fv_show_sidebar", icons::MENU, "Show navigation sidebar", &theme, self.settings.show_sidebar).clicked() {
-            self.settings.show_sidebar = !self.settings.show_sidebar;
-            self.persist_settings();
-        }
-        if switch_row(ui, "fv_remember_view", icons::FOLDER_MOVE, "Remember view settings per folder", &theme, self.settings.remember_view_per_folder).clicked() {
-            self.settings.remember_view_per_folder = !self.settings.remember_view_per_folder;
-            self.persist_settings();
-        }
-
-        material::section_label(ui, "List View Options", &theme);
-        ui.label(egui::RichText::new("Row density").size(12.5).color(theme.subtext1));
-        ui.horizontal_wrapped(|ui| {
-            for (density, label) in [
-                (Density::Compact, "Compact"),
-                (Density::Comfortable, "Comfortable"),
-                (Density::Spacious, "Spacious"),
-            ] {
-                if chip(ui, ("fv_density", label), None, label, &theme, self.settings.density == density).clicked() {
-                    self.settings.density = density;
-                    self.persist_settings();
-                }
-            }
-        });
-
-        ui.label(egui::RichText::new("Columns to display").size(12.5).color(theme.subtext1));
-        ui.horizontal_wrapped(|ui| {
-            for col in Column::ALL {
-                let on = self.columns.contains(&col);
-                if chip(ui, ("fv_col", col.label()), None, col.label(), &theme, on).clicked() {
-                    self.columns = Column::ALL
-                        .into_iter()
-                        .filter(|c| (*c == col) != self.columns.contains(c))
-                        .collect();
-                    self.settings.columns = self.columns.clone();
-                    self.persist_settings();
-                }
-            }
-        });
-
-        material::section_label(ui, "Grid View Options", &theme);
-        ui.label(egui::RichText::new("Icon size").size(12.5).color(theme.subtext1));
-        ui.horizontal_wrapped(|ui| {
-            for (gs, label) in [
-                (GridSize::Small, "Small"),
-                (GridSize::Medium, "Medium"),
-                (GridSize::Large, "Large"),
-            ] {
-                if chip(ui, ("fv_grid_size", label), None, label, &theme, self.settings.grid_size == gs).clicked() {
-                    self.settings.grid_size = gs;
-                    self.persist_settings();
-                }
-            }
-        });
-
-        ui.label(egui::RichText::new("Name wrap lines").size(12.5).color(theme.subtext1));
-        ui.horizontal_wrapped(|ui| {
-            for (lines, label) in [(1u8, "1 line"), (2u8, "2 lines"), (3u8, "3 lines")] {
-                if chip(ui, ("fv_grid_lines", label), None, label, &theme, self.settings.grid_name_lines == lines).clicked() {
-                    self.settings.grid_name_lines = lines;
-                    self.persist_settings();
-                }
-            }
-        });
-
-        material::section_label(ui, "Display Details", &theme);
-        if switch_row(ui, "fv_show_thumbs", icons::IMAGE, "Show file thumbnails", &theme, self.settings.show_thumbnails).clicked() {
-            self.settings.show_thumbnails = !self.settings.show_thumbnails;
-            self.persist_settings();
-        }
-        if switch_row(ui, "fv_show_exts", icons::DOCUMENT, "Show file extensions", &theme, self.settings.show_extensions).clicked() {
-            self.settings.show_extensions = !self.settings.show_extensions;
-            self.persist_settings();
-        }
-        if switch_row(ui, "fv_relative_dates", icons::INFO, "Use relative dates (e.g. '2 hours ago')", &theme, self.settings.relative_dates).clicked() {
-            self.settings.relative_dates = !self.settings.relative_dates;
-            self.persist_settings();
-        }
-
-        ui.label(egui::RichText::new("File size units").size(12.5).color(theme.subtext1));
-        ui.horizontal_wrapped(|ui| {
-            if chip(ui, "fv_unit_bin", None, "Binary (1024 B = 1 KiB)", &theme, !self.settings.decimal_units).clicked() {
-                self.settings.decimal_units = false;
+        material::section_label(ui, "Layout", &theme);
+        group_card(ui, &theme, |ui| {
+            if switch_row_with(ui, "fv_show_hidden", icons::VISIBILITY, "Show hidden files", None, &theme, self.show_hidden).clicked() {
+                self.show_hidden = !self.show_hidden;
+                self.settings.show_hidden = self.show_hidden;
+                self.reload_items();
                 self.persist_settings();
             }
-            if chip(ui, "fv_unit_dec", None, "Decimal (1000 B = 1 KB)", &theme, self.settings.decimal_units).clicked() {
-                self.settings.decimal_units = true;
+            if switch_row_with(ui, "fv_folders_first", icons::FOLDER, "Folders before files", None, &theme, self.folders_first).clicked() {
+                self.folders_first = !self.folders_first;
+                self.settings.folders_first = self.folders_first;
+                self.reload_items();
+                self.persist_settings();
+            }
+            if switch_row_with(ui, "fv_show_sidebar", icons::MENU, "Sidebar", None, &theme, self.settings.show_sidebar).clicked() {
+                self.settings.show_sidebar = !self.settings.show_sidebar;
+                self.persist_settings();
+            }
+            if switch_row_with(ui, "fv_show_status", icons::INFO, "Status bar", None, &theme, self.settings.show_status_bar).clicked() {
+                self.settings.show_status_bar = !self.settings.show_status_bar;
+                self.persist_settings();
+            }
+            let desc = Some("Each folder keeps its own list or grid choice");
+            if switch_row_with(ui, "fv_remember_view", icons::FOLDER_MOVE, "Remember view per folder", desc, &theme, self.settings.remember_view_per_folder).clicked() {
+                self.settings.remember_view_per_folder = !self.settings.remember_view_per_folder;
+                self.persist_settings();
+            }
+        });
+
+        material::section_label(ui, "List view", &theme);
+        group_card(ui, &theme, |ui| {
+            let densities = [Density::Compact, Density::Comfortable, Density::Spacious];
+            let current = densities.iter().position(|d| *d == self.settings.density).unwrap_or(1);
+            if let Some(i) = choice_row(ui, "fv_density", icons::VIEW_LIST, "Row height", &["Compact", "Comfortable", "Spacious"], current, &theme) {
+                self.settings.density = densities[i];
+                self.persist_settings();
+            }
+            ui.add_space(4.0);
+            material::hint_label(ui, "Columns", &theme);
+            ui.horizontal_wrapped(|ui| {
+                ui.add_space(4.0);
+                for col in Column::ALL {
+                    let on = self.columns.contains(&col);
+                    if chip(ui, ("fv_col", col.label()), None, col.label(), &theme, on).clicked() {
+                        self.columns = Column::ALL
+                            .into_iter()
+                            .filter(|c| (*c == col) != self.columns.contains(c))
+                            .collect();
+                        self.settings.columns = self.columns.clone();
+                        self.persist_settings();
+                    }
+                }
+            });
+            ui.add_space(4.0);
+        });
+
+        material::section_label(ui, "Grid view", &theme);
+        group_card(ui, &theme, |ui| {
+            let sizes = [GridSize::Small, GridSize::Medium, GridSize::Large];
+            let current = sizes.iter().position(|g| *g == self.settings.grid_size).unwrap_or(1);
+            if let Some(i) = choice_row(ui, "fv_grid_size", icons::GRID_VIEW, "Icon size", &["Small", "Medium", "Large"], current, &theme) {
+                self.settings.grid_size = sizes[i];
+                self.persist_settings();
+            }
+            let lines = [1u8, 2, 3];
+            let current = lines.iter().position(|l| *l == self.settings.grid_name_lines).unwrap_or(1);
+            if let Some(i) = choice_row(ui, "fv_grid_lines", icons::TEXT, "Name lines", &["1", "2", "3"], current, &theme) {
+                self.settings.grid_name_lines = lines[i];
+                self.persist_settings();
+            }
+        });
+
+        material::section_label(ui, "Details", &theme);
+        group_card(ui, &theme, |ui| {
+            if switch_row_with(ui, "fv_show_thumbs", icons::IMAGE, "Thumbnails", None, &theme, self.settings.show_thumbnails).clicked() {
+                self.settings.show_thumbnails = !self.settings.show_thumbnails;
+                self.persist_settings();
+            }
+            if switch_row_with(ui, "fv_show_exts", icons::DOCUMENT, "File extensions", None, &theme, self.settings.show_extensions).clicked() {
+                self.settings.show_extensions = !self.settings.show_extensions;
+                self.persist_settings();
+            }
+            let desc = Some("Show “2 hours ago” instead of a date");
+            if switch_row_with(ui, "fv_relative_dates", icons::RECENT, "Relative dates", desc, &theme, self.settings.relative_dates).clicked() {
+                self.settings.relative_dates = !self.settings.relative_dates;
+                self.persist_settings();
+            }
+            let current = usize::from(self.settings.decimal_units);
+            if let Some(i) = choice_row(ui, "fv_units", icons::INFO, "File size units", &["1024 B = 1 KiB", "1000 B = 1 KB"], current, &theme) {
+                self.settings.decimal_units = i == 1;
                 self.persist_settings();
             }
         });
@@ -466,23 +431,28 @@ impl SkiApp {
     fn behavior_tab(&mut self, ui: &mut egui::Ui) {
         let theme = self.theme;
 
-        material::section_label(ui, "Click Behavior", &theme);
-        if switch_row(ui, "beh_single_click", icons::OPEN, "Single-click to open files and folders", &theme, self.settings.single_click_open).clicked() {
-            self.settings.single_click_open = !self.settings.single_click_open;
-            self.persist_settings();
-        }
+        material::section_label(ui, "Mouse", &theme);
+        group_card(ui, &theme, |ui| {
+            let desc = Some("Otherwise double-click opens, a single click only selects");
+            if switch_row_with(ui, "beh_single_click", icons::OPEN, "Open with a single click", desc, &theme, self.settings.single_click_open).clicked() {
+                self.settings.single_click_open = !self.settings.single_click_open;
+                self.persist_settings();
+            }
+        });
 
-        material::section_label(ui, "Keyboard Navigation", &theme);
-        if switch_row(ui, "beh_vim_keys", icons::KEYBOARD, "Enable vim navigation keys (h/j/k/l, g/G, y)", &theme, self.settings.vim_keys).clicked() {
-            self.settings.vim_keys = !self.settings.vim_keys;
-            self.persist_settings();
-        }
-
-        material::section_label(ui, "Quick Filter", &theme);
-        if switch_row(ui, "beh_type_to_filter", icons::SEARCH, "Type to filter current folder without Ctrl+F", &theme, self.settings.type_to_filter).clicked() {
-            self.settings.type_to_filter = !self.settings.type_to_filter;
-            self.persist_settings();
-        }
+        material::section_label(ui, "Keyboard", &theme);
+        group_card(ui, &theme, |ui| {
+            let desc = Some("h j k l to move, g / G to jump, y to copy the path");
+            if switch_row_with(ui, "beh_vim_keys", icons::KEYBOARD, "Vim navigation keys", desc, &theme, self.settings.vim_keys).clicked() {
+                self.settings.vim_keys = !self.settings.vim_keys;
+                self.persist_settings();
+            }
+            let desc = Some("Start typing to filter, without pressing / first");
+            if switch_row_with(ui, "beh_type_to_filter", icons::SEARCH, "Type to filter", desc, &theme, self.settings.type_to_filter).clicked() {
+                self.settings.type_to_filter = !self.settings.type_to_filter;
+                self.persist_settings();
+            }
+        });
     }
 
     fn keybindings_tab(
@@ -498,19 +468,19 @@ impl SkiApp {
         ui.horizontal(|ui| {
             material::input_frame(&theme).show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new(icons::SEARCH).font(icons::font(15.0)).color(theme.subtext1));
+                    material::inline_icon(ui, icons::SEARCH, material::ICON_SM, theme.subtext1);
                     ui.add(
                         egui::TextEdit::singleline(keybind_search)
                             .frame(egui::Frame::NONE)
-                            .desired_width(220.0)
-                            .hint_text("Search shortcuts...")
-                            .font(egui::FontId::proportional(13.0)),
+                            .desired_width(ui.available_width().min(210.0))
+                            .hint_text("Search shortcuts")
+                            .font(egui::FontId::proportional(material::FONT_BODY)),
                     );
                 });
             });
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if chip(ui, "reset_all_keybinds", Some(icons::REFRESH), "Reset all to defaults", &theme, false).clicked() {
+                if button(ui, "reset_all_keybinds", Some(icons::REFRESH), "Reset all", &theme, ButtonKind::Tonal, true).clicked() {
                     self.settings.keybinds.clear();
                     self.persist_settings();
                     *capture = None;
@@ -524,26 +494,25 @@ impl SkiApp {
         if let Some((binding, target_act, conf_act, target_idx)) = conflict_warning.clone() {
             ui.add_space(4.0);
             egui::Frame::new()
-                .fill(theme.with_alpha(theme.yellow, 35))
-                .stroke(egui::Stroke::new(1.0, theme.yellow))
-                .corner_radius(CornerRadius::same(12))
+                .fill(theme.with_alpha(theme.yellow, 30))
+                .corner_radius(CornerRadius::same(material::RADIUS_MD))
                 .inner_margin(egui::Margin::symmetric(14, 10))
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
-                        ui.label(egui::RichText::new(icons::INFO).font(icons::font(16.0)).color(theme.yellow));
+                        material::inline_icon(ui, icons::INFO, material::ICON_MD, theme.yellow);
                         ui.label(
                             egui::RichText::new(format!(
-                                "Shortcut \"{}\" is already used by \"{}\". Replace?",
-                                binding,
+                                "“{}” is already used by “{}”. Replace it?",
+                                keymap::display(&binding),
                                 conf_act.label()
                             ))
-                            .size(13.0)
+                            .size(material::FONT_BODY)
                             .color(theme.text),
                         );
                     });
                     ui.add_space(4.0);
                     ui.horizontal(|ui| {
-                        if chip(ui, "conf_replace", Some(icons::CHECK), "Replace", &theme, true).clicked() {
+                        if button(ui, "conf_replace", Some(icons::CHECK), "Replace", &theme, ButtonKind::Filled, true).clicked() {
                             // 1. Remove from conflicting action
                             let mut conf_bindings = keymap::bindings(&self.settings.keybinds, conf_act);
                             conf_bindings.retain(|b| b != &binding);
@@ -576,7 +545,7 @@ impl SkiApp {
                             *capture = None;
                             self.capturing_key = false;
                         }
-                        if chip(ui, "conf_cancel", Some(icons::CLOSE), "Cancel", &theme, false).clicked() {
+                        if button(ui, "conf_cancel", None, "Cancel", &theme, ButtonKind::Text, true).clicked() {
                             *conflict_warning = None;
                             *capture = None;
                             self.capturing_key = false;
@@ -701,15 +670,17 @@ impl SkiApp {
 
             material::section_label(ui, group_name, &theme);
 
+            group_card(ui, &theme, |ui| {
             for action in actions_in_group {
                 let is_overridden = self.settings.keybinds.contains_key(action.id());
 
                 ui.horizontal(|ui| {
-                    ui.set_min_height(34.0);
+                    ui.set_min_height(36.0);
+                    ui.add_space(8.0);
 
                     // Action label
                     let label_color = if is_overridden { theme.mauve } else { theme.text };
-                    ui.label(egui::RichText::new(action.label()).size(13.0).color(label_color));
+                    ui.label(egui::RichText::new(action.label()).size(material::FONT_BODY).color(label_color));
 
                     // Per-action reset button if overridden
                     if is_overridden
@@ -725,6 +696,7 @@ impl SkiApp {
 
                     // Keycap pills aligned to right
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.add_space(6.0);
                         // "+ Add" button
                         let is_adding = *capture == Some((action, None));
                         let add_label = if is_adding { "Press keys…" } else { "+ Add" };
@@ -744,7 +716,8 @@ impl SkiApp {
                         let current_bindings = keymap::bindings(&self.settings.keybinds, action);
                         for (idx, bind_str) in current_bindings.iter().enumerate().rev() {
                             let is_capturing_this = *capture == Some((action, Some(idx)));
-                            let pill_text = if is_capturing_this { "Press keys…" } else { bind_str.as_str() };
+                            let shown = keymap::display(bind_str);
+                            let pill_text = if is_capturing_this { "Press keys…" } else { shown.as_str() };
                             let (pill_resp, rem_clicked) = keycap_pill(
                                 ui,
                                 ("act_pill", action.id(), idx),
@@ -783,6 +756,7 @@ impl SkiApp {
                     });
                 });
             }
+            });
         }
     }
 
@@ -791,12 +765,8 @@ impl SkiApp {
             *defaults = apps::CATEGORIES.iter().map(|c| apps::default_for(c.mimes[0])).collect();
         }
         let theme = self.theme;
-        material::section_label(ui, "Default Applications", &theme);
-        ui.label(
-            egui::RichText::new("Default application for each kind of file. This changes the system-wide defaults.")
-                .size(12.5)
-                .color(theme.subtext1),
-        );
+        material::section_label(ui, "Default applications", &theme);
+        material::hint_label(ui, "The application that opens each kind of file. This changes the system-wide defaults.", &theme);
         ui.spacing_mut().item_spacing.y = 2.0;
         let installed = self.installed_apps();
         for (idx, category) in apps::CATEGORIES.iter().enumerate() {
@@ -830,7 +800,7 @@ impl SkiApp {
                 }
             }
             if candidates.is_empty() {
-                ui.label(egui::RichText::new("No installed application handles these files.").size(12.5).color(theme.subtext0));
+                material::hint_label(ui, "No installed application handles these files", &theme);
             }
             if let Some(app) = chosen {
                 apps::set_category_default(category, &app.id);
@@ -851,47 +821,28 @@ fn keycap_pill(
     capturing: bool,
     can_remove: bool,
 ) -> (egui::Response, bool) {
-    let font_id = egui::FontId::monospace(12.0);
+    let font_id = egui::FontId::proportional(material::FONT_CAPTION);
     let galley = ui.painter().layout_no_wrap(text.to_owned(), font_id, theme.text);
-    let remove_btn_w = if can_remove && !capturing { 18.0 } else { 0.0 };
-    let total_w = galley.size().x + 18.0 + remove_btn_w;
-    let height = 26.0;
+    let remove_btn_w = if can_remove && !capturing { 20.0 } else { 0.0 };
+    let total_w = galley.size().x + 20.0 + remove_btn_w;
 
-    let (rect, resp) = ui.allocate_exact_size(Vec2::new(total_w, height), egui::Sense::click());
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(total_w, 26.0), egui::Sense::click());
     let id = ui.make_persistent_id(id_source);
-    let fx = material::fx(ui, id, &resp, true, &material::FxSpec::ROW);
+    let hover = material::animate(ui.ctx(), id.with("h"), resp.hovered());
+    let on = material::animate(ui.ctx(), id.with("cap"), capturing);
 
-    let bg = if capturing {
-        theme.with_alpha(theme.mauve, 50)
-    } else {
-        material::lerp_color(theme.surface2, theme.surface1, fx.hover)
-    };
+    // Flat tonal fill only: lighter on hover, accent tint while waiting for a key
+    let idle = material::lerp_color(theme.surface2, theme.text, 0.10 * hover);
+    let bg = material::lerp_color(idle, material::lerp_color(theme.surface2, theme.mauve, 0.28), on);
+    ui.painter().rect_filled(rect, CornerRadius::same(material::RADIUS_SM), bg);
 
-    let stroke = if capturing {
-        egui::Stroke::new(1.5, theme.mauve)
-    } else if fx.hover > 0.0 {
-        egui::Stroke::new(1.0, theme.with_alpha(theme.text, 40))
-    } else {
-        egui::Stroke::new(1.0, theme.surface1)
-    };
-
-    ui.painter().rect(rect, CornerRadius::same(6), bg, stroke, egui::StrokeKind::Inside);
-
-    let text_color = if capturing {
-        theme.mauve
-    } else {
-        material::lerp_color(theme.subtext0, theme.text, fx.hover)
-    };
-
-    let text_pos = Pos2::new(rect.left() + 9.0, rect.center().y - galley.size().y / 2.0);
+    let text_color = material::lerp_color(material::lerp_color(theme.subtext0, theme.text, hover), theme.mauve, on);
+    let text_pos = Pos2::new(rect.left() + 10.0, rect.center().y - galley.size().y / 2.0);
     ui.painter().galley(text_pos, galley, text_color);
 
     let mut remove_clicked = false;
     if can_remove && !capturing {
-        let remove_rect = Rect::from_center_size(
-            Pos2::new(rect.right() - 11.0, rect.center().y),
-            Vec2::new(16.0, 16.0),
-        );
+        let remove_rect = Rect::from_center_size(Pos2::new(rect.right() - 12.0, rect.center().y), Vec2::new(16.0, 16.0));
         let rem_hover = ui.rect_contains_pointer(remove_rect);
         let rem_color = if rem_hover { theme.red } else { theme.subtext1 };
         material::paint_icon(ui.painter(), remove_rect.center(), icons::CLOSE, 12.0, rem_color);
@@ -919,12 +870,7 @@ fn swatch(
         ui.painter().circle_filled(r.center(), r.width() / 2.0, egui::Color32::from_white_alpha((fx.flash * 120.0) as u8));
     }
     if selected {
-        let on_color = if (color.r() as u32 + color.g() as u32 + color.b() as u32) > 380 {
-            theme.crust
-        } else {
-            egui::Color32::WHITE
-        };
-        material::paint_icon(ui.painter(), r.center(), icons::CHECK, 17.0, on_color);
+        material::paint_icon(ui.painter(), r.center(), icons::CHECK, material::ICON_MD, material::on_color(theme, color));
     }
     resp
 }
@@ -940,25 +886,24 @@ fn theme_card(
     let (rect, resp) = ui.allocate_exact_size(egui::vec2(104.0, 82.0), egui::Sense::click());
     let id = ui.make_persistent_id(id_source);
     let fx = material::fx(ui, id, &resp, true, &material::FxSpec::CLICK);
-    let sel = ui.ctx().animate_bool_with_time_and_easing(id.with("sel"), selected, 0.25, material::quint_out);
+    let sel = material::animate(ui.ctx(), id.with("sel"), selected);
     let r = egui::Rect::from_center_size(rect.center(), rect.size() * fx.scale);
 
-    let back = material::lerp_color(theme.surface1, theme.with_alpha(theme.mauve, 255), 0.0);
-    let back = material::lerp_color(back, material::lerp_color(theme.surface1, theme.mauve, 0.35), sel);
-    ui.painter().rect_filled(r, egui::CornerRadius::same(18), back);
+    let back = material::lerp_color(theme.surface1, material::lerp_color(theme.surface1, theme.mauve, 0.35), sel);
+    ui.painter().rect_filled(r, CornerRadius::same(material::RADIUS_LG), back);
     let swatch_rect = egui::Rect::from_min_size(r.min + egui::vec2(8.0, 8.0), egui::vec2(r.width() - 16.0, 46.0));
     let painter = ui.painter();
-    painter.rect_filled(swatch_rect, egui::CornerRadius::same(12), preview.base);
+    painter.rect_filled(swatch_rect, CornerRadius::same(material::RADIUS_MD), preview.base);
     let bar = egui::Rect::from_min_size(swatch_rect.min + egui::vec2(6.0, 6.0), egui::vec2(swatch_rect.width() * 0.5, 34.0));
-    painter.rect_filled(bar, egui::CornerRadius::same(8), preview.surface1);
+    painter.rect_filled(bar, CornerRadius::same(material::RADIUS_SM), preview.surface1);
     painter.rect_filled(
         egui::Rect::from_min_size(bar.min + egui::vec2(6.0, 6.0), egui::vec2(bar.width() - 12.0, 6.0)),
-        egui::CornerRadius::same(3),
+        CornerRadius::same(3),
         preview.text,
     );
     painter.rect_filled(
         egui::Rect::from_min_size(bar.min + egui::vec2(6.0, 16.0), egui::vec2((bar.width() - 12.0) * 0.6, 6.0)),
-        egui::CornerRadius::same(3),
+        CornerRadius::same(3),
         preview.subtext1,
     );
     painter.circle_filled(egui::pos2(swatch_rect.right() - 16.0, swatch_rect.center().y), 9.0, preview.mauve);
@@ -966,11 +911,11 @@ fn theme_card(
         egui::pos2(r.center().x, r.bottom() - 13.0),
         egui::Align2::CENTER_CENTER,
         label,
-        egui::FontId::proportional(12.5),
+        egui::FontId::proportional(material::FONT_CAPTION),
         material::lerp_color(theme.subtext0, theme.text, sel),
     );
     if fx.flash > 0.0 {
-        painter.rect_filled(r, egui::CornerRadius::same(18), egui::Color32::from_white_alpha((fx.flash * 60.0) as u8));
+        painter.rect_filled(r, CornerRadius::same(material::RADIUS_LG), egui::Color32::from_white_alpha((fx.flash * 60.0) as u8));
     }
     resp
 }
@@ -987,30 +932,30 @@ fn category_row(
     let (rect, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 44.0), egui::Sense::click());
     let id = ui.make_persistent_id(id_source);
     let fx = material::fx(ui, id, &resp, true, &material::FxSpec::ROW);
-    let sel = ui.ctx().animate_bool_with_time_and_easing(id.with("open"), open, 0.25, material::quint_out);
+    let sel = material::animate(ui.ctx(), id.with("open"), open);
     let fill = material::lerp_color(theme.surface1, theme.surface2, fx.hover.max(sel));
-    ui.painter().rect_filled(rect, egui::CornerRadius::same(18), fill);
+    ui.painter().rect_filled(rect, material::pill(rect), fill);
     material::paint_icon(
         ui.painter(),
-        egui::pos2(rect.left() + 24.0, rect.center().y),
+        egui::pos2(rect.left() + material::INSET_ICON, rect.center().y),
         icon,
-        18.0,
+        material::ICON_MD,
         material::lerp_color(theme.subtext0, theme.mauve, sel),
     );
     ui.painter().text(
-        egui::pos2(rect.left() + 46.0, rect.center().y),
+        egui::pos2(rect.left() + material::INSET_LABEL, rect.center().y),
         egui::Align2::LEFT_CENTER,
         label,
-        egui::FontId::proportional(13.5),
+        egui::FontId::proportional(material::FONT_BODY),
         theme.text,
     );
     let chevron = if open { icons::ARROW_UP } else { icons::CHEVRON_RIGHT };
-    material::paint_icon(ui.painter(), egui::pos2(rect.right() - 20.0, rect.center().y), chevron, 16.0, theme.subtext1);
+    material::paint_icon(ui.painter(), egui::pos2(rect.right() - 22.0, rect.center().y), chevron, material::ICON_SM, theme.subtext1);
     ui.painter().text(
-        egui::pos2(rect.right() - 40.0, rect.center().y),
+        egui::pos2(rect.right() - 42.0, rect.center().y),
         egui::Align2::RIGHT_CENTER,
         value,
-        egui::FontId::proportional(12.5),
+        egui::FontId::proportional(material::FONT_CAPTION),
         theme.subtext1,
     );
     resp

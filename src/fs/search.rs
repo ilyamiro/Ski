@@ -16,17 +16,24 @@ const BATCH: usize = 24;
 pub struct Search {
     generation: Arc<AtomicU64>,
     rx: Option<mpsc::Receiver<Vec<FileItem>>>,
+    finished: bool,
 }
 
 impl Search {
     pub fn new() -> Self {
-        Self { generation: Arc::new(AtomicU64::new(0)), rx: None }
+        Self { generation: Arc::new(AtomicU64::new(0)), rx: None, finished: true }
     }
 
     /// Cancel any running search.
     pub fn cancel(&mut self) {
         self.generation.fetch_add(1, Ordering::Relaxed);
         self.rx = None;
+        self.finished = true;
+    }
+
+    /// A search is still walking folders.
+    pub fn is_running(&self) -> bool {
+        self.rx.is_some() && !self.finished
     }
 
     pub fn start(&mut self, ctx: &egui::Context, root: PathBuf, query: String, show_hidden: bool) {
@@ -34,6 +41,7 @@ impl Search {
         let generation = self.generation.clone();
         let (tx, rx) = mpsc::channel();
         self.rx = Some(rx);
+        self.finished = false;
         let ctx = ctx.clone();
         let needle = query.to_lowercase();
 
@@ -107,8 +115,16 @@ impl Search {
     pub fn poll(&mut self) -> Vec<FileItem> {
         let mut out = Vec::new();
         if let Some(rx) = &self.rx {
-            while let Ok(mut batch) = rx.try_recv() {
-                out.append(&mut batch);
+            loop {
+                match rx.try_recv() {
+                    Ok(mut batch) => out.append(&mut batch),
+                    Err(mpsc::TryRecvError::Empty) => break,
+                    // The worker is done and dropped its sender
+                    Err(mpsc::TryRecvError::Disconnected) => {
+                        self.finished = true;
+                        break;
+                    }
+                }
             }
         }
         out

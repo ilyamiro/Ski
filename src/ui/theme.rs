@@ -185,7 +185,8 @@ pub fn apply(ctx: &egui::Context, theme: &SerpantinumTheme) {
         state.bg_stroke = egui::Stroke::NONE;
         state.fg_stroke.color = theme.text;
     }
-    visuals.selection.stroke = egui::Stroke::NONE;
+    // Flat look: no outline, but the stroke color is also what selected text is drawn in
+    visuals.selection.stroke = egui::Stroke::new(0.0, theme.text);
     visuals.selection.bg_fill = theme.with_alpha(theme.mauve, super::material::ALPHA_SEL_BG);
     visuals.panel_fill = theme.base;
     visuals.window_fill = theme.mantle;

@@ -30,15 +30,22 @@ pub enum Action {
     NewWindow,
     Settings,
     ShowShortcuts,
+    Rename,
+    Trash,
+    DeleteForever,
+    NewFile,
+    GoHome,
+    Quit,
 }
 
 impl Action {
-    pub const ALL: [Action; 25] = [
+    pub const ALL: [Action; 31] = [
         Action::MoveDown, Action::MoveUp, Action::Open, Action::ParentFolder, Action::Back, Action::Forward,
         Action::First, Action::Last, Action::Filter, Action::EditPath, Action::ToggleHidden, Action::ListView,
         Action::GridView, Action::PinFolder, Action::Properties, Action::Copy, Action::Cut, Action::Paste,
         Action::SelectAll, Action::CopyPath, Action::Refresh, Action::NewFolder, Action::NewWindow,
-        Action::Settings, Action::ShowShortcuts,
+        Action::Settings, Action::ShowShortcuts, Action::Rename, Action::Trash, Action::DeleteForever,
+        Action::NewFile, Action::GoHome, Action::Quit,
     ];
 
     /// Stable id used as the key in settings.json.
@@ -53,6 +60,8 @@ impl Action {
             Action::Paste => "paste", Action::SelectAll => "select_all", Action::CopyPath => "copy_path",
             Action::Refresh => "refresh", Action::NewFolder => "new_folder", Action::NewWindow => "new_window",
             Action::Settings => "settings", Action::ShowShortcuts => "show_shortcuts",
+            Action::Rename => "rename", Action::Trash => "trash", Action::DeleteForever => "delete_forever",
+            Action::NewFile => "new_file", Action::GoHome => "go_home", Action::Quit => "quit",
         }
     }
 
@@ -67,7 +76,9 @@ impl Action {
             Action::Copy => "Copy", Action::Cut => "Cut", Action::Paste => "Paste",
             Action::SelectAll => "Select all", Action::CopyPath => "Copy path", Action::Refresh => "Refresh",
             Action::NewFolder => "New folder", Action::NewWindow => "New window", Action::Settings => "Settings",
-            Action::ShowShortcuts => "Show shortcuts",
+            Action::ShowShortcuts => "Show shortcuts", Action::Rename => "Rename",
+            Action::Trash => "Move to trash", Action::DeleteForever => "Delete permanently",
+            Action::NewFile => "New file", Action::GoHome => "Home folder", Action::Quit => "Close window",
         }
     }
 
@@ -75,9 +86,9 @@ impl Action {
     pub fn group(self) -> &'static str {
         match self {
             Action::MoveDown | Action::MoveUp | Action::Open | Action::ParentFolder | Action::Back
-            | Action::Forward | Action::First | Action::Last | Action::EditPath => "Navigation",
+            | Action::Forward | Action::First | Action::Last | Action::EditPath | Action::GoHome => "Navigation",
             Action::Filter | Action::ToggleHidden | Action::ListView | Action::GridView | Action::Refresh
-            | Action::Settings | Action::ShowShortcuts => "View",
+            | Action::Settings | Action::ShowShortcuts | Action::Quit => "View",
             _ => "Files",
         }
     }
@@ -85,7 +96,7 @@ impl Action {
     pub fn default_bindings(self) -> &'static [&'static str] {
         match self {
             Action::MoveDown => &["ArrowDown", "j"], Action::MoveUp => &["ArrowUp", "k"],
-            Action::Open => &["Enter", "l"], Action::ParentFolder => &["Backspace", "h"],
+            Action::Open => &["Enter", "l"], Action::ParentFolder => &["Backspace", "h", "Alt+ArrowUp"],
             Action::Back => &["Alt+ArrowLeft"], Action::Forward => &["Alt+ArrowRight"],
             Action::First => &["Home", "g"], Action::Last => &["End", "Shift+G"],
             Action::Filter => &["/", "Ctrl+F"], Action::EditPath => &["Ctrl+L"],
@@ -95,6 +106,8 @@ impl Action {
             Action::SelectAll => &["Ctrl+A"], Action::CopyPath => &["y"], Action::Refresh => &["F5", "Ctrl+R"],
             Action::NewFolder => &["Ctrl+Shift+N"], Action::NewWindow => &["Ctrl+N"],
             Action::Settings => &["Ctrl+,"], Action::ShowShortcuts => &["?"],
+            Action::Rename => &["F2"], Action::Trash => &["Delete"], Action::DeleteForever => &["Shift+Delete"],
+            Action::NewFile => &["Ctrl+Alt+N"], Action::GoHome => &["Alt+Home"], Action::Quit => &["Ctrl+Q", "Ctrl+W"],
         }
     }
 }
@@ -115,6 +128,29 @@ pub fn format_binding(key: egui::Key, mods: egui::Modifiers) -> String {
     if mods.shift { out.push_str("Shift+"); }
     out.push_str(key.name());
     out
+}
+
+/// A binding as it is shown to people: arrows instead of key names, symbols kept as typed.
+pub fn display(binding: &str) -> String {
+    binding
+        .split('+')
+        .map(|part| match part {
+            "ArrowUp" => "↑",
+            "ArrowDown" => "↓",
+            "ArrowLeft" => "←",
+            "ArrowRight" => "→",
+            other => other,
+        })
+        .collect::<Vec<_>>()
+        .join("+")
+}
+
+/// The first binding of `action`, formatted for a menu hint.
+pub fn hint(overrides: &std::collections::BTreeMap<String, Vec<String>>, action: Action, vim_keys: bool) -> Option<String> {
+    bindings(overrides, action)
+        .into_iter()
+        .find(|b| vim_keys || !is_bare_letter(b))
+        .map(|b| display(&b))
 }
 
 /// Parse a binding string into the key and the modifiers it requires.
@@ -215,6 +251,33 @@ mod tests {
 
         overrides.insert("move_down".to_string(), vec!["Down".to_string()]);
         assert_eq!(bindings(&overrides, Action::MoveDown), vec!["Down"]);
+    }
+
+    #[test]
+    fn test_display_and_hint() {
+        assert_eq!(display("Alt+ArrowLeft"), "Alt+←");
+        assert_eq!(display("ArrowDown"), "↓");
+        assert_eq!(display("Ctrl+Shift+N"), "Ctrl+Shift+N");
+        let none = std::collections::BTreeMap::new();
+        assert_eq!(hint(&none, Action::MoveDown, true).as_deref(), Some("↓"));
+        // Without vim keys the bare-letter binding is skipped
+        assert_eq!(hint(&none, Action::CopyPath, false), None);
+        assert_eq!(hint(&none, Action::CopyPath, true).as_deref(), Some("y"));
+        assert_eq!(hint(&none, Action::Rename, true).as_deref(), Some("F2"));
+    }
+
+    #[test]
+    fn test_every_action_has_a_unique_binding_id() {
+        let mut ids: Vec<&str> = Action::ALL.iter().map(|a| a.id()).collect();
+        ids.sort_unstable();
+        ids.dedup();
+        assert_eq!(ids.len(), Action::ALL.len());
+        // No two actions share a default binding, or the first one would shadow the other
+        let mut bindings: Vec<&str> = Action::ALL.iter().flat_map(|a| a.default_bindings().iter().copied()).collect();
+        let total = bindings.len();
+        bindings.sort_unstable();
+        bindings.dedup();
+        assert_eq!(bindings.len(), total, "duplicate default binding");
     }
 
     #[test]

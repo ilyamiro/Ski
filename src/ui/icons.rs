@@ -64,6 +64,15 @@ pub const SELECT_ALL: &str = "\u{f0486}";
 pub const COMPRESS: &str = "\u{f06eb}";
 pub const EXTRACT: &str = "\u{f1259}";
 
+pub const RECENT: &str = "\u{f02da}";
+pub const TRASH: &str = "\u{f09e7}";
+pub const DELETE_FOREVER: &str = "\u{f05e8}";
+pub const RESTORE: &str = "\u{f099b}";
+pub const RENAME: &str = "\u{f03eb}";
+pub const USB: &str = "\u{f0553}";
+pub const UNDO: &str = "\u{f054d}";
+pub const SEARCH_OFF: &str = "\u{f0968}";
+
 pub const MENU: &str = "\u{f035c}";
 pub const TUNE: &str = "\u{f062e}";
 pub const KEYBOARD: &str = "\u{f030c}";

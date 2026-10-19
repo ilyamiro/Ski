@@ -6,3 +6,4 @@ pub mod props;
 pub mod recent;
 pub mod apps;
 pub mod ops;
+pub mod trash;
