@@ -1,0 +1,7 @@
+target
+.git
+.claude
+.agents
+.omc
+.codebase-memory
+docs

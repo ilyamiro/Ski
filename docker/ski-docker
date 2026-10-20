@@ -1,0 +1,30 @@
+#!/bin/sh
+# Run the Ski container on this desktop (Wayland or X11) with your home folder mounted at the same path.
+# Usage: ski-docker [folder]        Env: SKI_IMAGE (default ghcr.io/ilyamiro/ski:latest), SKI_ENGINE (docker|podman)
+set -eu
+
+image=${SKI_IMAGE:-ghcr.io/ilyamiro/ski:latest}
+engine=${SKI_ENGINE:-docker}
+uid=$(id -u)
+start=${1:-$HOME}
+
+set -- --rm --user "$uid:$(id -g)" -e "HOME=$HOME" -v "$HOME:$HOME" -w "$HOME"
+case $start in /*) ;; *) start=$PWD/$start ;; esac
+[ -d "$start" ] || { echo "ski-docker: $start is not a folder" >&2; exit 1; }
+# Folders outside $HOME (e.g. /mnt/data) have to be mounted too
+case $start in "$HOME"|"$HOME"/*) ;; *) set -- "$@" -v "$start:$start" ;; esac
+
+if [ -n "${WAYLAND_DISPLAY:-}" ] && [ -S "${XDG_RUNTIME_DIR:-/nonexistent}/$WAYLAND_DISPLAY" ]; then
+  set -- "$@" -e WAYLAND_DISPLAY -e "XDG_RUNTIME_DIR=/run/user/$uid" \
+    -v "$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY:/run/user/$uid/$WAYLAND_DISPLAY"
+elif [ -n "${DISPLAY:-}" ]; then
+  set -- "$@" -e DISPLAY -v /tmp/.X11-unix:/tmp/.X11-unix:ro
+  [ -n "${XAUTHORITY:-}" ] && [ -f "$XAUTHORITY" ] && set -- "$@" -e XAUTHORITY -v "$XAUTHORITY:$XAUTHORITY:ro"
+else
+  echo "ski-docker: no Wayland or X11 display found" >&2
+  exit 1
+fi
+
+[ -d /dev/dri ] && set -- "$@" --device /dev/dri
+
+exec "$engine" run "$@" "$image" "$start"

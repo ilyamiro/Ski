@@ -1,68 +1,151 @@
 # Ski
 
-A small, fast, keyboard-friendly file manager for Linux, written in Rust with [egui](https://github.com/emilk/egui).
-Flat Material look, no borders, and colors that follow your [Serpantinum](https://github.com/ilyamiro) theme.
+A small, fast, keyboard-friendly file manager for Linux, written in Rust. Flat Material look, instant previews, vim keys.
 
-## Features
+![Ski showing a Pictures folder as a grid of thumbnails](docs/screenshots/hero.png)
 
-- **Browse** in list or grid view, with image thumbnails, custom folder icons, pinned folders and global search
-- **Navigate** with breadcrumbs, a sidebar with Recent, Trash, your folders, pinned folders and mounted drives, and the back / forward mouse buttons
-- **Sort from the list header**: click Name, Size or Modified; column titles line up with their values
-- **Select** like any file manager: Ctrl+click, Shift+click, Shift+arrows, Ctrl+A; click empty space or press Esc to deselect
-- **Copy, cut, paste**, plus **Copy to…** / **Move to…** with a folder chooser; nothing is ever overwritten. Files waiting to be moved are shown faded, and files dropped on the window are copied into the folder
-- **Rename**, **move to trash** with an Undo in the toast, **restore** from the trash, and permanent deletion that asks first (the freedesktop trash, shared with other file managers)
-- **Compress** to `.zip`, `.tar.gz`, `.tar.xz`, `.tar.bz2`, `.tar.zst` or `.7z`; **extract** here or to a folder you pick
-- **Open with…**: default, recommended and all installed apps, with icons and search
-- **Properties** with type-specific details (image size, text statistics, folder totals)
-- **Settings**: themes (System, Midnight, Nord, Gruvbox, Light), accent color, font, interface size, animations, default view and sorting, status bar, deletion confirmation, rebindable shortcuts, and default apps per file kind
-- Context menus show the keyboard shortcut of every action, and a status bar counts items and selected size
-- Vim-style keys (`j` `k` `h` `l`) alongside the arrow keys
+- List and grid views with thumbnails for images, SVGs, PDFs and office documents
+- Search across your home folder, with recently opened files first
+- Copy, cut, paste, rename, compress and extract; nothing is ever overwritten
+- Trash with undo, shared with other file managers
+- Five themes, any accent color, and rebindable shortcuts
+- Works on Wayland and X11
 
-## Build and run
+## Install
 
-Needs a recent stable Rust toolchain and the usual GUI libraries (Wayland/X11, Vulkan or OpenGL).
-On NixOS or with Nix:
+### Docker or Podman
 
 ```sh
-nix-shell
-cargo run --release -- [folder]
+curl -fsSL https://raw.githubusercontent.com/ilyamiro/Ski/master/docker/ski-docker -o ski-docker
+chmod +x ski-docker
+./ski-docker [folder]
 ```
 
-Elsewhere, `cargo run --release -- [folder]` works once the GUI libraries are installed.
+The script detects Wayland or X11 and mounts your home folder so you see your real files. Use `SKI_ENGINE=podman` for Podman. In the container, "Open with…" can't launch your host apps, so for everyday use install Ski natively.
 
-## Archives
+To build the image yourself:
 
-`.zip` and `.tar.gz` are handled in-process. The other formats use the system's `tar` with `xz`, `bzip2` or `zstd`, and `7z`, and only appear when those tools are installed. Extracting `.rar`, `.iso` and similar needs `7z`.
+```sh
+docker build -t ski .
+SKI_IMAGE=ski ./docker/ski-docker
+```
+
+### Cargo
+
+Needs Rust 1.85 or newer.
+
+```sh
+cargo install --git https://github.com/ilyamiro/Ski
+```
+
+Ski loads its graphics libraries at run time. If it fails to start, install them:
+
+```sh
+# Debian, Ubuntu
+sudo apt install libwayland-client0 libxkbcommon0 libxkbcommon-x11-0 libx11-6 libxcursor1 libxi6 libxrandr2 libgl1 libegl1 xdg-utils
+# Fedora
+sudo dnf install libwayland-client libxkbcommon libxkbcommon-x11 libX11 libXcursor libXi libXrandr mesa-libGL mesa-libEGL xdg-utils
+# Arch
+sudo pacman -S wayland libxkbcommon libxkbcommon-x11 libx11 libxcursor libxi libxrandr libglvnd xdg-utils
+```
+
+### Nix
+
+```sh
+git clone https://github.com/ilyamiro/Ski && cd Ski
+nix-shell --run 'cargo run --release'
+```
+
+### Application menu and default file manager
+
+```sh
+install -Dm644 assets/ski.desktop ~/.local/share/applications/ski.desktop
+xdg-mime default ski.desktop inode/directory   # optional: open folders with Ski
+```
+
+## Usage
+
+```sh
+ski              # open the current folder
+ski ~/Downloads  # open a specific folder
+```
+
+| To | Do this |
+| --- | --- |
+| Move around | Click, or use `j` `k` or the arrow keys and `Enter`. `Backspace` or `h` goes up. |
+| Go to a path | `Ctrl+L`, type the path, `Enter` |
+| Search | `/`, then type a name. `Esc` leaves the results. |
+| Pin a folder to the sidebar | Open it and press `Ctrl+D` |
+| Switch list and grid | `Ctrl+1` and `Ctrl+2` |
+| Settings | `Ctrl+,` |
+| See all shortcuts | `?` |
+
+Right-click anything for a menu that shows the shortcut of each action.
+
+![List view](docs/screenshots/list-view.png)
+
+![Context menu](docs/screenshots/context-menu.png)
 
 ## Keyboard shortcuts
 
 | Keys | Action |
 | --- | --- |
 | `j` / `k`, arrows | Move selection |
-| `Shift` + arrows, `Shift`/`Ctrl` + click | Select several |
-| `Ctrl+A` | Select all |
 | `Enter` / `l` | Open |
-| `Backspace` / `h` | Parent folder |
-| `Alt+Left` / `Alt+Right` | History (also the mouse back / forward buttons) |
-| `Alt+Up` / `Alt+Home` | Parent folder / Home |
-| `/` | Filter by name |
-| `Ctrl+L` | Edit path |
+| `Backspace` / `h` / `Alt+↑` | Parent folder |
+| `Alt+←` / `Alt+→` | Back / forward (also the mouse buttons) |
+| `Home` / `g`, `End` / `Shift+G` | First / last item |
+| `Alt+Home` | Home folder |
+| `Shift`+arrows, `Shift`/`Ctrl`+click | Select several |
+| `Ctrl+A` | Select all |
 | `Ctrl+C` / `Ctrl+X` / `Ctrl+V` | Copy / cut / paste |
 | `F2` | Rename |
 | `Delete` / `Shift+Delete` | Move to trash / delete permanently |
 | `Ctrl+Shift+N` / `Ctrl+Alt+N` | New folder / new file |
-| `Esc` | Close a dialog or menu, clear the filter, then deselect |
-| `Ctrl+H` | Toggle hidden files |
-| `Ctrl+1` / `Ctrl+2` | List / grid |
-| `Ctrl+D` | Pin folder |
-| `Alt+Enter` | Properties |
 | `y` | Copy path |
+| `Alt+Enter` | Properties |
+| `Ctrl+H` | Show or hide hidden files |
 | `F5` | Refresh |
-| `Ctrl+,` | Settings |
-| `?` | Keyboard shortcuts |
+| `Ctrl+N` | New window |
+| `Esc` | Close a dialog, clear the search, then deselect |
 | `Ctrl+Q` / `Ctrl+W` | Close the window |
 
-Preferences are stored in `~/.config/ski/`.
+All of these can be changed in Settings, under Keybindings.
+
+## Settings
+
+`Ctrl+,` opens Settings: theme and accent color, interface size, font, default view and sorting, list columns, grid size, startup folder, single-click open, vim keys, and default apps.
+
+![Appearance settings](docs/screenshots/settings-appearance.png)
+
+The default theme follows your [Serpantinum](https://github.com/ilyamiro) colors if you use them. Midnight, Nord, Gruvbox and Light are built in.
+
+![Themes](docs/screenshots/themes.png)
+
+Settings are stored in `~/.config/ski/settings.json`, and the trash in `~/.local/share/Trash`.
+
+## Archives
+
+`.zip` and `.tar.gz` work out of the box. Other formats use system tools and only appear when those are installed:
+
+| Format | Needs |
+| --- | --- |
+| `.tar.xz` | `tar`, `xz` |
+| `.tar.bz2` | `tar`, `bzip2` |
+| `.tar.zst` | `tar`, `zstd` |
+| `.7z`, and extracting `.rar`, `.iso`, `.deb`, `.rpm` | `7z` |
+
+On Debian or Ubuntu: `sudo apt install xz-utils bzip2 zstd p7zip-full`.
+
+## Troubleshooting
+
+- **No window, or errors about Wayland or libxkbcommon:** install the libraries listed under Cargo above. On Nix, start Ski from `nix-shell`.
+- **Blank window in a VM:** try `LIBGL_ALWAYS_SOFTWARE=1 ski`.
+- **Want X11 on a Wayland session:** `env -u WAYLAND_DISPLAY ski`.
+- **Interface too small or large:** Settings → Appearance → Size.
+- **Missing `.7z` or `.tar.xz` when compressing:** install the tools listed under Archives.
+
+Found a bug? Open an [issue](https://github.com/ilyamiro/Ski/issues) with your distribution and whether you use Wayland or X11.
 
 ## License
 
