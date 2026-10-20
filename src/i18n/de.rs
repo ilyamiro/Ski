@@ -487,4 +487,7 @@ pub const CATALOG: &[(&str, &str)] = &[
     ("As listed", "Wie aufgelistet"),
     ("By name", "Nach Name"),
     ("By date", "Nach Datum"),
+    ("Save", "Speichern"),
+    ("File name", "Dateiname"),
+    ("{} exists. Press Save again to replace it.", "{} existiert bereits. Zum Ersetzen erneut auf „Speichern“ drücken."),
 ];

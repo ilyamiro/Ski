@@ -5,6 +5,7 @@ use eframe::egui;
 
 use crate::i18n::{tr, tr_dyn, trf, trn};
 
+mod chooser_ui;
 mod dnd;
 mod drives_ui;
 mod file_actions;
@@ -334,6 +335,8 @@ pub struct SkiApp {
     menu: Option<ContextMenu>,
     pub(crate) dialog: Option<Dialog>,
     picker: Option<Picker>,
+    /// Set when Ski runs as the open / save dialog of other programs.
+    pub(crate) chooser: Option<crate::chooser::Chooser>,
     pub(crate) closing_dialog: Option<Dialog>,
     /// Kind of the dialog on screen, to notice when a new one appears and should take keyboard focus.
     dialog_kind: Option<std::mem::Discriminant<Dialog>>,
@@ -445,6 +448,7 @@ impl SkiApp {
             menu: None,
             dialog: None,
             picker: None,
+            chooser: None,
             closing_dialog: None,
             dialog_kind: None,
             menu_click_consumed: false,
@@ -570,7 +574,10 @@ impl SkiApp {
         };
         let listing = if self.in_recent() { Ok(self.recent_items()) } else { read_directory(&self.current_path, &opts) };
         match listing {
-            Ok(items) => {
+            Ok(mut items) => {
+                if let Some(ch) = &self.chooser {
+                    items.retain(|i| if ch.spec.mode == crate::chooser::Mode::Folder { i.is_dir } else { i.is_dir || ch.accepts(&i.path) });
+                }
                 self.items = items;
                 self.error_message = None;
                 if self.settings.show_thumbnails {
@@ -1532,7 +1539,10 @@ impl eframe::App for SkiApp {
             self.navigate_to(dir);
         }
         material::track_input_mode(&ctx, self.dialog.is_some() || self.menu.is_some() || self.jobs_popover);
+        let escape_is_taken = self.dialog.is_some() || self.menu.is_some() || self.jobs_popover || self.picker.is_some()
+            || self.show_settings || self.capturing_key || self.is_editing_path || !self.search_query.is_empty() || !self.selection.is_empty();
         self.handle_keyboard_inputs(&ctx);
+        self.chooser_escape(&ctx, escape_is_taken);
         self.sync_selection(false);
         self.poll_jobs();
         self.poll_drives(&ctx);
@@ -1597,6 +1607,8 @@ impl eframe::App for SkiApp {
                     self.render_status_bar(ui);
                 });
         }
+
+        self.render_chooser_bar(ui);
 
         egui::CentralPanel::default()
             .frame(
@@ -2228,6 +2240,10 @@ impl SkiApp {
     }
 
     fn open_item(&mut self, item: FileItem) {
+        if self.chooser.is_some() && !item.is_dir {
+            self.chooser_activate(&item);
+            return;
+        }
         if item.is_dir {
             if self.settings.open_in_new_window {
                 let started = std::env::current_exe()

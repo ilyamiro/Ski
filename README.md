@@ -59,6 +59,21 @@ To install it on NixOS, import the package in `configuration.nix`. It ships its 
 environment.systemPackages = [ (pkgs.callPackage /path/to/Ski { }) ];
 ```
 
+### NixOS: default file manager and system file dialog
+
+`nix/module.nix` installs Ski and makes it the default file manager and the system's open / save dialog:
+
+```nix
+{
+  imports = [ /path/to/Ski/nix/module.nix ];
+  programs.ski.enable = true;
+  # programs.ski.defaultFileManager = false;  # keep your current file manager
+  # programs.ski.filePicker = false;          # keep your current file dialog
+}
+```
+
+It sets `inode/directory` to Ski, adds Ski as an xdg-desktop-portal backend for `org.freedesktop.impl.portal.FileChooser`, and sets `GTK_USE_PORTAL=1`. Log out and in after `nixos-rebuild switch`. Programs that use the portal then show Ski for "Open" and "Save as". Firefox also needs `widget.use-xdg-desktop-portal.file-picker = 1` (`programs.firefox.preferences` on NixOS); Chromium needs `--enable-features=UseXdgDesktopPortal` unless it picks it up itself. Programs with a dialog of their own don't use the portal and keep it.
+
 ### Application menu and default file manager
 
 ```sh
@@ -66,6 +81,17 @@ install -Dm644 assets/ski.desktop ~/.local/share/applications/ski.desktop
 install -Dm644 assets/logo.svg ~/.local/share/icons/hicolor/scalable/apps/ski.svg
 xdg-mime default ski.desktop inode/directory   # optional: open folders with Ski
 ```
+
+### Other distributions: file dialog and file manager service
+
+Ski can answer `org.freedesktop.FileManager1` (browsers' "Show in folder") and be the portal FileChooser. Install the files in `assets/` (`ski.portal` into `share/xdg-desktop-portal/portals/`, the two `.service` files into `share/dbus-1/services/` with `@out@` replaced by your prefix), then add this to `~/.config/xdg-desktop-portal/portals.conf`:
+
+```ini
+[preferred]
+org.freedesktop.impl.portal.FileChooser=ski
+```
+
+`ski --portal` is the service itself; D-Bus starts it when needed. Each dialog is `ski --chooser --mode open|folder|save|save-files` in a window of its own, which prints the chosen `file://` URIs and exits with 0 (or 1 if cancelled).
 
 ## Usage
 

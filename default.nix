@@ -1,4 +1,4 @@
-# Usage in configuration.nix:
+# Usage in configuration.nix (or import nix/module.nix and set programs.ski.enable = true):
 #   environment.systemPackages = [ (pkgs.callPackage /path/to/Ski { }) ];
 { pkgs ? import <nixpkgs> { } }:
 
@@ -41,6 +41,12 @@ pkgs.rustPlatform.buildRustPackage {
   postInstall = ''
     install -Dm644 assets/ski.desktop $out/share/applications/ski.desktop
     install -Dm644 assets/logo.svg $out/share/icons/hicolor/scalable/apps/ski.svg
+
+    install -Dm644 assets/ski.portal $out/share/xdg-desktop-portal/portals/ski.portal
+    for name in org.freedesktop.impl.portal.desktop.ski org.freedesktop.FileManager1; do
+      install -Dm644 assets/$name.service $out/share/dbus-1/services/$name.service
+      substituteInPlace $out/share/dbus-1/services/$name.service --replace-fail @out@ $out
+    done
 
     wrapProgram $out/bin/ski \
       --prefix LD_LIBRARY_PATH : ${lib.makeLibraryPath runtimeLibs} \
