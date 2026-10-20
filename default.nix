@@ -27,11 +27,15 @@ pkgs.rustPlatform.buildRustPackage {
   pname = "ski";
   version = "0.1.0";
 
-  src = lib.cleanSourceWith {
-    src = ./.;
-    filter = path: type:
-      let name = baseNameOf path; in
-      !(builtins.elem name [ "target" ".git" ".direnv" ".omc" ".claude" ".agents" ]);
+  # Only what the build reads, so editing the README, docs or nix files doesn't rebuild
+  src = lib.fileset.toSource {
+    root = ./.;
+    fileset = lib.fileset.unions [
+      ./Cargo.toml
+      ./Cargo.lock
+      ./src
+      ./assets
+    ];
   };
 
   cargoLock.lockFile = ./Cargo.lock;

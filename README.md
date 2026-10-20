@@ -74,6 +74,19 @@ environment.systemPackages = [ (pkgs.callPackage /path/to/Ski { }) ];
 
 It sets `inode/directory` to Ski, adds Ski as an xdg-desktop-portal backend for `org.freedesktop.impl.portal.FileChooser`, and sets `GTK_USE_PORTAL=1`. Log out and in after `nixos-rebuild switch`. Programs that use the portal then show Ski for "Open" and "Save as". Firefox also needs `widget.use-xdg-desktop-portal.file-picker = 1` (`programs.firefox.preferences` on NixOS); Chromium needs `--enable-features=UseXdgDesktopPortal` unless it picks it up itself. Programs with a dialog of their own don't use the portal and keep it.
 
+If you also use home-manager's `xdg.portal`, it takes over: it writes `~/.config/xdg-desktop-portal/portals.conf`, which beats the system one, and points `NIX_XDG_DESKTOP_PORTAL_DIR` at the per-user profile, which doesn't contain `ski.portal`. Then the dialogs stay GTK's. Add Ski there as well:
+
+```nix
+xdg.portal = {
+  enable = true;
+  extraPortals = [ pkgs.xdg-desktop-portal-gtk osConfig.programs.ski.package ];  # osConfig: the NixOS config, needs `osConfig` in the module arguments
+  config.common = {
+    default = "*";
+    "org.freedesktop.impl.portal.FileChooser" = "ski";
+  };
+};
+```
+
 The dialog attaches itself to the window that asked for it (Wayland, xdg-foreign), so compositors float it and center it on that window, as they do for GTK dialogs. When the program gives no window, the dialog is a fixed-size window (900×600), which most compositors float and center too. Its app id is `ski-chooser`; if yours tiles it, add a rule, e.g. sway: `for_window [app_id="ski-chooser"] floating enable, move position center`.
 
 ### Application menu and default file manager
