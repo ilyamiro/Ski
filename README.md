@@ -1,4 +1,8 @@
-# Ski
+<p align="center">
+  <img src="assets/logo.svg" alt="Ski logo" width="128">
+</p>
+
+<h1 align="center">Ski</h1>
 
 A small, fast, keyboard-friendly file manager for Linux, written in Rust. Flat Material look, instant previews, vim keys.
 
@@ -56,10 +60,17 @@ git clone https://github.com/ilyamiro/Ski && cd Ski
 nix-shell --run 'cargo run --release'
 ```
 
+To install it on NixOS, import the package in `configuration.nix`. It ships its own desktop entry and icon:
+
+```nix
+environment.systemPackages = [ (pkgs.callPackage /path/to/Ski { }) ];
+```
+
 ### Application menu and default file manager
 
 ```sh
 install -Dm644 assets/ski.desktop ~/.local/share/applications/ski.desktop
+install -Dm644 assets/logo.svg ~/.local/share/icons/hicolor/scalable/apps/ski.svg
 xdg-mime default ski.desktop inode/directory   # optional: open folders with Ski
 ```
 

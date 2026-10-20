@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <title>Ski</title>
+  <defs>
+    <g id="ski">
+      <path d="M104 248L130 212H176L150 248Z"/>
+      <path d="M200 212H300L384 184L360 248H174Z"/>
+    </g>
+  </defs>
+  <rect width="512" height="512" fill="#0B1626"/>
+  <g fill="#E6F2FB" stroke="#E6F2FB" stroke-width="8" stroke-linejoin="round" transform="translate(-8 0)">
+    <use href="#ski"/>
+    <use href="#ski" x="40" y="80"/>
+  </g>
+  <g stroke="#E6F2FB" stroke-width="8" stroke-linecap="round" opacity=".4">
+    <path d="M48 230H70"/>
+    <path d="M60 302H112"/>
+    <path d="M84 318H112"/>
+  </g>
+</svg>
