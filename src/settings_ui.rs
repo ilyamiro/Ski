@@ -92,6 +92,8 @@ impl SkiApp {
             // Right pane: the settings of the chosen category
             ui.vertical(|ui| {
                 ui.set_width(ui.available_width());
+                let enter_t = material::animate_enter(ui.ctx(), ui.make_persistent_id(("set_tab_enter", *tab)), material::ANIM_FAST);
+                ui.set_opacity(enter_t);
                 egui::ScrollArea::vertical()
                     .max_height(max_height)
                     .auto_shrink([false, false])
@@ -130,7 +132,7 @@ impl SkiApp {
                 self.persist_settings();
             }
 
-            if self.settings.start_location == StartLocation::Custom {
+            material::collapsible(ui, "start_custom_path", self.settings.start_location == StartLocation::Custom, |ui| {
                 let mut path_str = self.settings.start_path.as_ref().map(|p| p.to_string_lossy().to_string()).unwrap_or_default();
                 let valid = path_str.is_empty() || PathBuf::from(&path_str).is_dir();
                 material::input_frame(&theme).show(ui, |ui| {
@@ -150,7 +152,7 @@ impl SkiApp {
                 if !valid {
                     material::hint_label(ui, "That folder does not exist; Ski opens in Home instead", &theme);
                 }
-            }
+            });
         });
 
         material::section_label(ui, "Windows", &theme);
@@ -296,7 +298,7 @@ impl SkiApp {
                         }
                         let font = fonts[row - usize::from(show_default)];
                         let on = self.settings.font.as_deref() == Some(font.path.as_path());
-                        if nav_item(ui, ("font_row", row), icons::DOCUMENT, &font.family, &theme, on).clicked() {
+                        if nav_item(ui, ("font_row", &font.path), icons::DOCUMENT, &font.family, &theme, on).clicked() {
                             picked = Some(Some(font.clone()));
                         }
                     }
@@ -776,43 +778,43 @@ impl SkiApp {
         for (idx, category) in apps::CATEGORIES.iter().enumerate() {
             let current = defaults.get(idx).and_then(|d| d.as_deref()).and_then(|id| installed.iter().find(|a| a.id == id));
             let value = current.map_or("Not set", |a| a.name.as_str());
-            if category_row(ui, ("cat_row", idx), category.icon, category.label, value, &theme, *picking == Some(idx)).clicked() {
-                *picking = if *picking == Some(idx) { None } else { Some(idx) };
+            let is_open = *picking == Some(idx);
+            if category_row(ui, ("cat_row", idx), category.icon, category.label, value, &theme, is_open).clicked() {
+                *picking = if is_open { None } else { Some(idx) };
             }
-            if *picking != Some(idx) {
-                continue;
-            }
-            let default_app = defaults.get(idx).and_then(|d| d.as_deref());
-            let candidates = apps::apps_for(installed, category.mimes[0], default_app);
-            let mut chosen: Option<&AppEntry> = None;
-            for (row, app) in candidates.iter().enumerate() {
-                let probe = egui::Rect::from_min_size(ui.cursor().min, egui::vec2(ui.available_width(), 44.0));
-                let tex = if ui.is_rect_visible(probe) {
-                    self.app_icons
-                        .entry(app.id.clone())
-                        .or_insert_with(|| {
-                            let image = app.icon.as_deref().and_then(apps::resolve_icon).and_then(|p| apps::load_icon_image(&p, 64))?;
-                            Some(ui.ctx().load_texture(format!("app_icon_{}", app.id), image, egui::TextureOptions::LINEAR))
-                        })
-                        .clone()
-                } else {
-                    None
-                };
-                let on = defaults[idx].as_deref() == Some(app.id.as_str());
-                if app_row(ui, ("cat_app", idx, row), tex.as_ref(), &app.name, &theme, on).clicked() {
-                    chosen = Some(app);
+            material::collapsible(ui, ("cat_collapse", idx), *picking == Some(idx), |ui| {
+                let default_app = defaults.get(idx).and_then(|d| d.as_deref());
+                let candidates = apps::apps_for(installed, category.mimes[0], default_app);
+                let mut chosen: Option<&AppEntry> = None;
+                for app in &candidates {
+                    let probe = egui::Rect::from_min_size(ui.cursor().min, egui::vec2(ui.available_width(), 44.0));
+                    let tex = if ui.is_rect_visible(probe) {
+                        self.app_icons
+                            .entry(app.id.clone())
+                            .or_insert_with(|| {
+                                let image = app.icon.as_deref().and_then(apps::resolve_icon).and_then(|p| apps::load_icon_image(&p, 64))?;
+                                Some(ui.ctx().load_texture(format!("app_icon_{}", app.id), image, egui::TextureOptions::LINEAR))
+                            })
+                            .clone()
+                    } else {
+                        None
+                    };
+                    let on = defaults[idx].as_deref() == Some(app.id.as_str());
+                    if app_row(ui, ("cat_app", idx, &app.id), tex.as_ref(), &app.name, &theme, on).clicked() {
+                        chosen = Some(app);
+                    }
                 }
-            }
-            if candidates.is_empty() {
-                material::hint_label(ui, "No installed application handles these files", &theme);
-            }
-            if let Some(app) = chosen {
-                apps::set_category_default(category, &app.id);
-                defaults[idx] = Some(app.id.clone());
-                self.set_toast(format!("{} is now the default for {}", app.name, category.label.to_lowercase()));
-                *picking = None;
-            }
-            ui.add_space(4.0);
+                if candidates.is_empty() {
+                    material::hint_label(ui, "No installed application handles these files", &theme);
+                }
+                if let Some(app) = chosen {
+                    apps::set_category_default(category, &app.id);
+                    defaults[idx] = Some(app.id.clone());
+                    self.set_toast(format!("{} is now the default for {}", app.name, category.label.to_lowercase()));
+                    *picking = None;
+                }
+                ui.add_space(4.0);
+            });
         }
     }
 }
@@ -832,15 +834,16 @@ fn keycap_pill(
 
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(total_w, material::KEYCAP_HEIGHT), egui::Sense::click());
     let id = ui.make_persistent_id(id_source);
-    let hover = material::animate(ui.ctx(), id.with("h"), resp.hovered());
+    let fx = material::fx(ui, id, &resp, true, &material::FxSpec::CLICK);
     let on = material::animate(ui.ctx(), id.with("cap"), capturing);
+    let r = material::scaled(rect, fx.scale);
 
-    // Flat tonal fill only: lighter on hover, accent tint while waiting for a key
-    let idle = material::lerp_color(theme.surface2, theme.text, 0.10 * hover);
+    // Flat tonal fill only: lighter on hover/press, accent tint while waiting for a key
+    let idle = material::lerp_color(theme.surface2, theme.text, 0.10 * fx.hover + 0.06 * fx.press);
     let bg = material::lerp_color(idle, material::lerp_color(theme.surface2, theme.mauve, 0.28), on);
-    ui.painter().rect_filled(rect, CornerRadius::same(material::RADIUS_SM), bg);
+    material::paint_fill(ui.painter(), r, CornerRadius::same(material::RADIUS_SM), bg, &fx);
 
-    let text_color = material::lerp_color(material::lerp_color(theme.subtext0, theme.text, hover), theme.mauve, on);
+    let text_color = material::lerp_color(material::lerp_color(theme.subtext0, theme.text, fx.hover.max(fx.press)), theme.mauve, on);
     let text_pos = Pos2::new(rect.left() + 10.0, rect.center().y - galley.size().y / 2.0);
     ui.painter().galley(text_pos, galley, text_color);
 
@@ -848,9 +851,11 @@ fn keycap_pill(
     if can_remove && !capturing {
         let remove_rect = Rect::from_center_size(Pos2::new(rect.right() - 12.0, rect.center().y), Vec2::splat(material::KEYCAP_HEIGHT - 4.0));
         let remove = ui.interact(remove_rect, id.with("rm"), egui::Sense::click()).on_hover_text("Remove shortcut");
-        let rem_hover = material::animate(ui.ctx(), id.with("rm_h"), remove.hovered());
-        ui.painter().rect_filled(remove_rect, material::pill(remove_rect), theme.with_alpha(theme.red, (rem_hover * 40.0) as u8));
-        material::paint_icon(ui.painter(), remove_rect.center(), icons::CLOSE, 12.0, material::lerp_color(theme.subtext1, theme.red, rem_hover));
+        let rem_fx = material::fx(ui, id.with("rm"), &remove, true, &material::FxSpec::ICON);
+        let rem_r = material::scaled(remove_rect, rem_fx.scale);
+        let rem_bg = theme.with_alpha(theme.red, ((rem_fx.hover * 40.0) + (rem_fx.press * 24.0)).round() as u8);
+        material::paint_fill(ui.painter(), rem_r, material::pill(rem_r), rem_bg, &rem_fx);
+        material::paint_icon(ui.painter(), remove_rect.center(), icons::CLOSE, 12.0, material::lerp_color(theme.subtext1, theme.red, rem_fx.hover.max(rem_fx.press)));
         remove_clicked = remove.clicked();
     }
 
@@ -867,13 +872,15 @@ fn swatch(
     let (rect, resp) = ui.allocate_exact_size(egui::vec2(30.0, 30.0), egui::Sense::click());
     let id = ui.make_persistent_id(id_source);
     let fx = material::fx(ui, id, &resp, true, &material::FxSpec::ICON);
+    let sel_t = material::animate(ui.ctx(), id.with("sel"), selected);
     let r = egui::Rect::from_center_size(rect.center(), rect.size() * fx.scale);
     ui.painter().circle_filled(r.center(), r.width() / 2.0, color);
     if fx.flash > 0.0 {
         ui.painter().circle_filled(r.center(), r.width() / 2.0, egui::Color32::from_white_alpha((fx.flash * 120.0) as u8));
     }
-    if selected {
-        material::paint_icon(ui.painter(), r.center(), icons::CHECK, material::ICON_MD, material::on_color(theme, color));
+    if sel_t > 0.01 {
+        let fg = material::on_color(theme, color).gamma_multiply(sel_t);
+        material::paint_icon(ui.painter(), rect.center(), icons::CHECK, material::ICON_MD * material::lerp(0.6, 1.0, sel_t), fg);
     }
     resp
 }
@@ -891,10 +898,12 @@ fn theme_card(
     let id = ui.make_persistent_id(id_source);
     let fx = material::fx(ui, id, &resp, true, &material::FxSpec::CLICK);
     let sel = material::animate(ui.ctx(), id.with("sel"), selected);
-    let r = egui::Rect::from_center_size(rect.center(), rect.size() * fx.scale);
+    let r = material::scaled(rect, fx.scale);
 
-    let back = material::lerp_color(theme.surface1, material::lerp_color(theme.surface1, theme.mauve, 0.35), sel);
-    ui.painter().rect_filled(r, CornerRadius::same(material::RADIUS_LG), back);
+    let idle = material::lerp_color(theme.surface1, theme.surface2, fx.hover.max(fx.press * 0.8));
+    let selected_fill = material::lerp_color(theme.surface1, theme.mauve, 0.35 + fx.hover * 0.06);
+    let back = material::lerp_color(idle, selected_fill, sel);
+    material::paint_fill(ui.painter(), r, CornerRadius::same(material::RADIUS_LG), back, &fx);
     let swatch_rect = egui::Rect::from_min_size(r.min + egui::vec2(8.0, 8.0), egui::vec2(r.width() - 16.0, 46.0));
     let painter = ui.painter();
     painter.rect_filled(swatch_rect, CornerRadius::same(material::RADIUS_MD), preview.base);
@@ -912,15 +921,12 @@ fn theme_card(
     );
     painter.circle_filled(egui::pos2(swatch_rect.right() - 16.0, swatch_rect.center().y), 9.0, preview.mauve);
     painter.text(
-        egui::pos2(r.center().x, r.bottom() - 13.0),
+        egui::pos2(rect.center().x, rect.bottom() - 13.0),
         egui::Align2::CENTER_CENTER,
         label,
         egui::FontId::proportional(material::FONT_CAPTION),
-        material::lerp_color(theme.subtext0, theme.text, sel),
+        material::lerp_color(theme.subtext0, theme.text, sel.max(fx.hover)),
     );
-    if fx.flash > 0.0 {
-        painter.rect_filled(r, CornerRadius::same(material::RADIUS_LG), egui::Color32::from_white_alpha((fx.flash * 60.0) as u8));
-    }
     resp
 }
 
@@ -937,8 +943,12 @@ fn category_row(
     let id = ui.make_persistent_id(id_source);
     let fx = material::fx(ui, id, &resp, true, &material::FxSpec::ROW);
     let sel = material::animate(ui.ctx(), id.with("open"), open);
-    let fill = material::lerp_color(theme.surface1, theme.surface2, fx.hover.max(sel));
-    ui.painter().rect_filled(rect, material::pill(rect), fill);
+    let fill = material::lerp_color(
+        material::lerp_color(theme.surface1, theme.surface2, fx.hover.max(sel)),
+        material::lerp_color(theme.surface2, theme.text, 0.08),
+        fx.press,
+    );
+    material::paint_fill(ui.painter(), rect, material::pill(rect), fill, &fx);
     material::paint_icon(
         ui.painter(),
         egui::pos2(rect.left() + material::INSET_ICON, rect.center().y),
@@ -954,7 +964,13 @@ fn category_row(
         theme.text,
     );
     let chevron = if open { icons::ARROW_UP } else { icons::CHEVRON_RIGHT };
-    material::paint_icon(ui.painter(), egui::pos2(rect.right() - 22.0, rect.center().y), chevron, material::ICON_SM, theme.subtext1);
+    material::paint_icon(
+        ui.painter(),
+        egui::pos2(rect.right() - 22.0, rect.center().y),
+        chevron,
+        material::ICON_SM,
+        material::lerp_color(theme.subtext1, theme.text, fx.hover.max(sel)),
+    );
     ui.painter().text(
         egui::pos2(rect.right() - 42.0, rect.center().y),
         egui::Align2::RIGHT_CENTER,

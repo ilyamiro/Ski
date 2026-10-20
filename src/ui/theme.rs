@@ -21,7 +21,7 @@ pub struct SerpantinumColorsRaw {
     pub yellow: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SerpantinumTheme {
     pub base: Color32,
     pub mantle: Color32,
@@ -147,6 +147,31 @@ impl SerpantinumTheme {
     pub fn with_alpha(&self, color: Color32, alpha: u8) -> Color32 {
         Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), alpha)
     }
+
+    /// Smoothly blends between two palettes.
+    pub fn lerp(&self, other: &Self, t: f32) -> Self {
+        use super::material::{lerp, lerp_color};
+        let t = t.clamp(0.0, 1.0);
+        Self {
+            base: lerp_color(self.base, other.base, t),
+            mantle: lerp_color(self.mantle, other.mantle, t),
+            crust: lerp_color(self.crust, other.crust, t),
+            text: lerp_color(self.text, other.text, t),
+            subtext0: lerp_color(self.subtext0, other.subtext0, t),
+            subtext1: lerp_color(self.subtext1, other.subtext1, t),
+            surface0: lerp_color(self.surface0, other.surface0, t),
+            surface1: lerp_color(self.surface1, other.surface1, t),
+            surface2: lerp_color(self.surface2, other.surface2, t),
+            blue: lerp_color(self.blue, other.blue, t),
+            mauve: lerp_color(self.mauve, other.mauve, t),
+            peach: lerp_color(self.peach, other.peach, t),
+            green: lerp_color(self.green, other.green, t),
+            red: lerp_color(self.red, other.red, t),
+            yellow: lerp_color(self.yellow, other.yellow, t),
+            border_radius: lerp(self.border_radius, other.border_radius, t),
+            light: if t < 0.5 { self.light } else { other.light },
+        }
+    }
 }
 
 pub fn parse_hex(hex: &str) -> Option<Color32> {
@@ -185,6 +210,11 @@ pub fn apply(ctx: &egui::Context, theme: &SerpantinumTheme) {
         state.bg_stroke = egui::Stroke::NONE;
         state.fg_stroke.color = theme.text;
     }
+    w.noninteractive.bg_fill = theme.surface0;
+    w.inactive.bg_fill = theme.with_alpha(theme.subtext1, 64);
+    w.hovered.bg_fill = theme.with_alpha(theme.subtext0, 110);
+    w.active.bg_fill = theme.with_alpha(theme.mauve, 150);
+    w.open.bg_fill = theme.surface2;
     // Flat look: no outline, but the stroke color is also what selected text is drawn in
     visuals.selection.stroke = egui::Stroke::new(0.0, theme.text);
     visuals.selection.bg_fill = theme.with_alpha(theme.mauve, super::material::ALPHA_SEL_BG);

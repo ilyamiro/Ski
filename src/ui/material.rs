@@ -57,6 +57,7 @@ pub const ALPHA_DIVIDER: u8 = 24;
 /// Shared motion
 pub const ANIM: f32 = 0.25;
 pub const ANIM_SLOW: f32 = 0.32;
+pub const ANIM_FAST: f32 = 0.15;
 
 static ANIMATIONS: AtomicBool = AtomicBool::new(true);
 
@@ -73,20 +74,150 @@ pub fn dur(d: f32) -> f32 {
     if animations_enabled() { d } else { 0.0 }
 }
 
+#[derive(Clone, Copy, Debug)]
+struct TweenState {
+    from: f32,
+    to: f32,
+    start_time: f64,
+    duration: f32,
+    last_pass: u64,
+}
+
 /// 0 -> 1 (or back) eased with the shared OutQuint curve and duration.
+/// Reversing mid-animation starts smoothly from the current visual value without jumping.
 pub fn animate(ctx: &egui::Context, id: egui::Id, target: bool) -> f32 {
-    ctx.animate_bool_with_time_and_easing(id, target, dur(ANIM), quint_out)
+    animate_for(ctx, id, target, ANIM)
 }
 
 pub fn animate_for(ctx: &egui::Context, id: egui::Id, target: bool, seconds: f32) -> f32 {
-    ctx.animate_bool_with_time_and_easing(id, target, dur(seconds), quint_out)
+    animate_value(ctx, id, if target { 1.0 } else { 0.0 }, seconds)
+}
+
+/// Smoothly animates an `f32` toward `target` over `seconds` using `quint_out`.
+/// Mid-flight target changes continue seamlessly from the current interpolated value, and widgets
+/// that were off-screen or inside a closed container snap cleanly on re-appearance.
+pub fn animate_value(ctx: &egui::Context, id: egui::Id, target: f32, seconds: f32) -> f32 {
+    let dur_s = dur(seconds);
+    let pass = ctx.cumulative_pass_nr();
+    let (now, dt) = ctx.input(|i| (i.time, i.predicted_dt.clamp(0.001, 0.05) as f64));
+
+    if dur_s <= 0.0 || !target.is_finite() {
+        ctx.data_mut(|d| {
+            d.insert_temp(
+                id,
+                TweenState {
+                    from: target,
+                    to: target,
+                    start_time: now,
+                    duration: 0.0,
+                    last_pass: pass,
+                },
+            );
+        });
+        return target;
+    }
+
+    let existing = ctx.data(|d| d.get_temp::<TweenState>(id));
+    let Some(mut state) = existing.filter(|s| pass <= s.last_pass.saturating_add(2)) else {
+        ctx.data_mut(|d| {
+            d.insert_temp(
+                id,
+                TweenState {
+                    from: target,
+                    to: target,
+                    start_time: now,
+                    duration: dur_s,
+                    last_pass: pass,
+                },
+            );
+        });
+        return target;
+    };
+
+    let raw_t = if state.duration > 0.0 {
+        ((now - state.start_time) as f32 / state.duration).clamp(0.0, 1.0)
+    } else {
+        1.0
+    };
+
+    if (state.to - target).abs() > 1e-5 {
+        let prev_time = (now - dt * 0.5).max(state.start_time);
+        let prev_t = if state.duration > 0.0 {
+            ((prev_time - state.start_time) as f32 / state.duration).clamp(0.0, 1.0)
+        } else {
+            1.0
+        };
+        state.from = lerp(state.from, state.to, quint_out(prev_t));
+        state.to = target;
+        state.start_time = prev_time;
+        state.duration = dur_s;
+    } else if (state.duration - dur_s).abs() > 1e-5 && raw_t < 1.0 {
+        state.duration = dur_s;
+    }
+
+    let t = if state.duration > 0.0 {
+        ((now - state.start_time) as f32 / state.duration).clamp(0.0, 1.0)
+    } else {
+        1.0
+    };
+    let mut current = lerp(state.from, state.to, quint_out(t));
+
+    state.last_pass = pass;
+    let done = (current - target).abs() <= 1e-4 || ((now - state.start_time) as f32 >= state.duration);
+    if done {
+        current = target;
+        state.from = target;
+        state.to = target;
+    } else {
+        ctx.request_repaint();
+    }
+    ctx.data_mut(|d| d.insert_temp(id, state));
+    current
+}
+
+/// Resets an animation's current value on this pass so the next `animate` / `animate_value` call
+/// transitions smoothly from `value`.
+pub fn reset_anim(ctx: &egui::Context, id: egui::Id, value: f32) {
+    let pass = ctx.cumulative_pass_nr();
+    let now = ctx.input(|i| i.time);
+    ctx.data_mut(|d| {
+        d.insert_temp(
+            id,
+            TweenState {
+                from: value,
+                to: value,
+                start_time: now,
+                duration: dur(ANIM),
+                last_pass: pass,
+            },
+        );
+    });
+}
+
+/// 0 -> 1 entrance progress whenever `id` newly appears on screen (was not rendered in the
+/// previous frame), used for view/tab/empty-state transitions.
+pub fn animate_enter(ctx: &egui::Context, id: egui::Id, seconds: f32) -> f32 {
+    let pass = ctx.cumulative_pass_nr();
+    if pass <= 1 || !animations_enabled() {
+        reset_anim(ctx, id, 1.0);
+        return 1.0;
+    }
+    let was_visible = ctx
+        .data(|d| d.get_temp::<TweenState>(id))
+        .is_some_and(|s| pass <= s.last_pass.saturating_add(2));
+    if !was_visible {
+        reset_anim(ctx, id, 0.0);
+    }
+    animate_value(ctx, id, 1.0, seconds)
 }
 
 pub fn quint_out(t: f32) -> f32 {
+    let t = t.clamp(0.0, 1.0);
     1.0 - (1.0 - t).powi(5)
 }
 
 fn quad_out(t: f32) -> f32 {
+    let t = t.clamp(0.0, 1.0);
     1.0 - (1.0 - t) * (1.0 - t)
 }
 
@@ -109,13 +240,14 @@ pub struct FxSpec {
 impl FxSpec {
     pub const ICON: FxSpec = FxSpec { hover_scale: 1.06, press_scale: 0.92, pop_scale: 1.1 };
     pub const CLICK: FxSpec = FxSpec { hover_scale: 1.02, press_scale: 0.97, pop_scale: 1.04 };
+    pub const TILE: FxSpec = FxSpec { hover_scale: 1.015, press_scale: 0.98, pop_scale: 1.025 };
     pub const ROW: FxSpec = FxSpec { hover_scale: 1.0, press_scale: 1.0, pop_scale: 1.0 };
 }
 
 pub fn fx(ui: &egui::Ui, id: egui::Id, resp: &egui::Response, enabled: bool, spec: &FxSpec) -> Fx {
     let ctx = ui.ctx();
     let hover = animate(ctx, id.with("hov"), enabled && resp.hovered());
-    let press = animate(ctx, id.with("prs"), enabled && resp.is_pointer_button_down_on());
+    let press = animate_for(ctx, id.with("prs"), enabled && resp.is_pointer_button_down_on(), ANIM_FAST);
 
     let now = ctx.input(|i| i.time);
     let pop_key = id.with("pop");
@@ -136,9 +268,11 @@ pub fn fx(ui: &egui::Ui, id: egui::Id, resp: &egui::Response, enabled: bool, spe
     } else {
         1.0
     };
-    // Flash: 0.4 -> 0 over 400ms (OutExpo)
-    let flash = if elapsed < 0.4 {
-        0.4 * (1.0 - egui::emath::easing::exponential_out(elapsed / 0.4))
+    // Flash: soft ramp over 25ms, then smooth decay over 375ms (OutExpo)
+    let flash = if elapsed < 0.025 {
+        lerp(0.24, 0.38, quad_out(elapsed / 0.025))
+    } else if elapsed < 0.4 {
+        0.38 * (1.0 - egui::emath::easing::exponential_out((elapsed - 0.025) / 0.375))
     } else {
         0.0
     };
@@ -146,16 +280,13 @@ pub fn fx(ui: &egui::Ui, id: egui::Id, resp: &egui::Response, enabled: bool, spe
         ctx.request_repaint();
     }
 
-    let scale = (1.0 + (spec.hover_scale - 1.0) * hover + (spec.press_scale - spec.hover_scale) * press) * pop;
+    let base_scale = lerp(lerp(1.0, spec.hover_scale, hover), spec.press_scale, press);
+    let scale = base_scale * pop;
     Fx { hover, press, scale, flash }
 }
 
-fn scaled(rect: Rect, scale: f32) -> Rect {
-    if scale == 1.0 { rect } else { Rect::from_center_size(rect.center(), rect.size() * scale) }
-}
-
 fn flash_color(flash: f32) -> Color32 {
-    Color32::from_white_alpha((flash * 255.0 * 0.5) as u8)
+    Color32::from_white_alpha((flash * 255.0 * 0.48).round() as u8)
 }
 
 pub fn lerp_color(a: Color32, b: Color32, t: f32) -> Color32 {
@@ -166,11 +297,11 @@ pub fn lerp_color(a: Color32, b: Color32, t: f32) -> Color32 {
     Color32::from_rgba_premultiplied(mix(a.r(), b.r()), mix(a.g(), b.g()), mix(a.b(), b.b()), mix(a.a(), b.a()))
 }
 
-fn blend_over(under: Color32, over: Color32) -> Color32 {
+pub(crate) fn blend_over(under: Color32, over: Color32) -> Color32 {
     lerp_color(under, Color32::from_rgb(over.r(), over.g(), over.b()), over.a() as f32 / 255.0)
 }
 
-fn lerp(a: f32, b: f32, t: f32) -> f32 {
+pub(crate) fn lerp(a: f32, b: f32, t: f32) -> f32 {
     a + (b - a) * t
 }
 
@@ -186,14 +317,14 @@ pub fn pill(rect: Rect) -> CornerRadius {
 }
 
 /// Rounds a rect to whole device pixels so flat fills have crisp edges at any interface scale.
-fn snap(painter: &egui::Painter, rect: Rect) -> Rect {
+pub(crate) fn snap(painter: &egui::Painter, rect: Rect) -> Rect {
     let ppp = painter.ctx().pixels_per_point();
     let round = |v: f32| (v * ppp).round() / ppp;
     Rect::from_min_max(Pos2::new(round(rect.min.x), round(rect.min.y)), Pos2::new(round(rect.max.x), round(rect.max.y)))
 }
 
 /// Tonal layer for the idle / hover / press states shared by every row.
-fn row_layer(theme: &SerpantinumTheme, fx: &Fx) -> Color32 {
+pub(crate) fn row_layer(theme: &SerpantinumTheme, fx: &Fx) -> Color32 {
     lerp_color(
         lerp_color(Color32::TRANSPARENT, theme.with_alpha(theme.text, ALPHA_HOVER), fx.hover),
         theme.with_alpha(theme.text, ALPHA_PRESS),
@@ -202,13 +333,18 @@ fn row_layer(theme: &SerpantinumTheme, fx: &Fx) -> Color32 {
 }
 
 /// Row background that fades to the accent tint when selected.
-fn selectable_bg(theme: &SerpantinumTheme, fx: &Fx, sel_t: f32) -> Color32 {
-    let sel_alpha = (ALPHA_SEL_BG as f32 + fx.hover * (ALPHA_SEL_HOVER - ALPHA_SEL_BG) as f32) as u8;
+pub(crate) fn selectable_bg(theme: &SerpantinumTheme, fx: &Fx, sel_t: f32) -> Color32 {
+    let sel_alpha = (ALPHA_SEL_BG as f32 + fx.hover * (ALPHA_SEL_HOVER - ALPHA_SEL_BG) as f32 + fx.press * 12.0).round() as u8;
     lerp_color(row_layer(theme, fx), theme.with_alpha(theme.mauve, sel_alpha), sel_t)
 }
 
-fn paint_fill(painter: &egui::Painter, rect: Rect, radius: CornerRadius, base: Color32, fx: &Fx) {
-    let rect = snap(painter, rect);
+pub(crate) fn scaled(rect: Rect, scale: f32) -> Rect {
+    if (scale - 1.0).abs() <= 1e-4 { rect } else { Rect::from_center_size(rect.center(), rect.size() * scale) }
+}
+
+pub(crate) fn paint_fill(painter: &egui::Painter, rect: Rect, radius: CornerRadius, base: Color32, fx: &Fx) {
+    // Snap static edges to whole device pixels, while preserving subpixel smoothness during scale transitions
+    let rect = if (fx.scale - 1.0).abs() <= 1e-3 { snap(painter, rect) } else { rect };
     if base.a() > 0 {
         painter.rect_filled(rect, radius, base);
     }
@@ -260,6 +396,7 @@ pub fn icon_button_tinted(
     let (rect, response) = ui.allocate_exact_size(Vec2::splat(CONTROL_HEIGHT), sense);
     let id = ui.make_persistent_id(id_source);
     let fx = fx(ui, id, &response, enabled, &FxSpec::ICON);
+    let en_t = animate(ui.ctx(), id.with("en"), enabled);
     let r = scaled(rect, fx.scale);
 
     let layer = match accent {
@@ -273,12 +410,10 @@ pub fn icon_button_tinted(
     paint_fill(ui.painter(), r, pill(r), layer, &fx);
 
     let hover_color = accent.unwrap_or(theme.text);
-    let color = if enabled {
-        lerp_color(theme.subtext1, hover_color, fx.hover)
-    } else {
-        theme.with_alpha(theme.subtext1, 70)
-    };
-    paint_icon(ui.painter(), r.center(), icon, ICON_MD, color);
+    let active_color = lerp_color(theme.subtext1, hover_color, fx.hover.max(fx.press * 0.5));
+    let disabled_color = theme.with_alpha(theme.subtext1, 70);
+    let color = lerp_color(disabled_color, active_color, en_t);
+    paint_icon(ui.painter(), rect.center(), icon, ICON_MD, color);
 
     if tooltip.is_empty() { response } else { response.on_hover_text(tooltip) }
 }
@@ -300,13 +435,13 @@ pub fn filled_icon_button(
 
     let idle = theme.surface1;
     let hovered = match accent {
-        Some(a) => blend_over(theme.surface1, theme.with_alpha(a, 70)),
-        None => theme.surface2,
+        Some(a) => blend_over(theme.surface1, theme.with_alpha(a, 70 + (fx.press * 30.0) as u8)),
+        None => lerp_color(theme.surface2, theme.text, fx.press * 0.08),
     };
-    paint_fill(ui.painter(), r, pill(r), lerp_color(idle, hovered, fx.hover), &fx);
+    paint_fill(ui.painter(), r, pill(r), lerp_color(idle, hovered, fx.hover.max(fx.press)), &fx);
 
-    let color = lerp_color(theme.subtext1, accent.unwrap_or(theme.text), fx.hover);
-    paint_icon(ui.painter(), r.center(), icon, (size * 0.5).round(), color);
+    let color = lerp_color(theme.subtext1, accent.unwrap_or(theme.text), fx.hover.max(fx.press));
+    paint_icon(ui.painter(), rect.center(), icon, (size * 0.5).round(), color);
     if tooltip.is_empty() { response } else { response.on_hover_text(tooltip) }
 }
 
@@ -329,17 +464,22 @@ pub fn chip(
     let sel_t = animate(ui.ctx(), id.with("sel"), selected);
     let r = scaled(rect, fx.scale);
 
-    let idle = lerp_color(theme.surface1, theme.surface2, fx.hover);
-    let active = blend_over(theme.surface1, theme.with_alpha(theme.mauve, 64 + (fx.hover * 20.0) as u8));
+    let idle = lerp_color(
+        lerp_color(theme.surface1, theme.surface2, fx.hover),
+        lerp_color(theme.surface2, theme.text, 0.08),
+        fx.press,
+    );
+    let active_alpha = (64.0 + fx.hover * 20.0 + fx.press * 16.0).round() as u8;
+    let active = blend_over(theme.surface1, theme.with_alpha(theme.mauve, active_alpha));
     paint_fill(ui.painter(), r, pill(r), lerp_color(idle, active, sel_t), &fx);
 
     let color = lerp_color(lerp_color(theme.subtext0, theme.text, fx.hover), theme.mauve, sel_t);
-    let mut x = r.left() + 12.0;
+    let mut x = rect.left() + 12.0;
     if let Some(ic) = icon {
-        paint_icon(ui.painter(), Pos2::new(x + 7.0, r.center().y), ic, ICON_SM, color);
+        paint_icon(ui.painter(), Pos2::new(x + 7.0, rect.center().y), ic, ICON_SM, color);
         x += 22.0;
     }
-    ui.painter().text(Pos2::new(x, r.center().y), Align2::LEFT_CENTER, label, egui::FontId::proportional(FONT_CHIP), color);
+    ui.painter().text(Pos2::new(x, rect.center().y), Align2::LEFT_CENTER, label, egui::FontId::proportional(FONT_CHIP), color);
     response
 }
 
@@ -374,33 +514,45 @@ pub fn button(
     let (rect, response) = ui.allocate_exact_size(Vec2::new(width, BUTTON_HEIGHT), sense);
     let id = ui.make_persistent_id(id_source);
     let fx = fx(ui, id, &response, enabled, &FxSpec::CLICK);
+    let en_t = animate(ui.ctx(), id.with("en"), enabled);
     let r = scaled(rect, fx.scale);
 
     let (fill, color) = match kind {
         ButtonKind::Filled => (
-            lerp_color(theme.mauve, Color32::WHITE, fx.hover * 0.12),
+            lerp_color(theme.mauve, Color32::WHITE, (fx.hover * 0.12 + fx.press * 0.08).min(0.2)),
             on_color(theme, theme.mauve),
         ),
         ButtonKind::Danger => (
-            lerp_color(theme.red, Color32::WHITE, fx.hover * 0.12),
+            lerp_color(theme.red, Color32::WHITE, (fx.hover * 0.12 + fx.press * 0.08).min(0.2)),
             on_color(theme, theme.red),
         ),
-        ButtonKind::Tonal => (lerp_color(theme.surface1, theme.surface2, fx.hover), theme.text),
+        ButtonKind::Tonal => (
+            lerp_color(
+                lerp_color(theme.surface1, theme.surface2, fx.hover),
+                lerp_color(theme.surface2, theme.text, 0.08),
+                fx.press,
+            ),
+            theme.text,
+        ),
         ButtonKind::Text => (
-            lerp_color(Color32::TRANSPARENT, theme.with_alpha(theme.mauve, 30), fx.hover),
+            lerp_color(
+                lerp_color(Color32::TRANSPARENT, theme.with_alpha(theme.mauve, 30), fx.hover),
+                theme.with_alpha(theme.mauve, 48),
+                fx.press,
+            ),
             theme.mauve,
         ),
     };
-    let fade = if enabled { 1.0 } else { 0.4 };
+    let fade = lerp(0.4, 1.0, en_t);
     paint_fill(ui.painter(), r, pill(r), fill.gamma_multiply(fade), &fx);
 
     let color = color.gamma_multiply(fade);
-    let mut x = r.left() + 16.0;
+    let mut x = rect.left() + 16.0;
     if let Some(ic) = icon {
-        paint_icon(ui.painter(), Pos2::new(x + 8.0, r.center().y), ic, ICON_SM, color);
+        paint_icon(ui.painter(), Pos2::new(x + 8.0, rect.center().y), ic, ICON_SM, color);
         x += 24.0;
     }
-    ui.painter().text(Pos2::new(x, r.center().y), Align2::LEFT_CENTER, label, font, color);
+    ui.painter().text(Pos2::new(x, rect.center().y), Align2::LEFT_CENTER, label, font, color);
     response
 }
 
@@ -423,7 +575,7 @@ pub fn segmented(
     let id = ui.make_persistent_id(id_source);
     ui.painter().rect_filled(snap(ui.painter(), rect), pill(rect), theme.surface1);
 
-    let inner = rect.shrink(4.0);
+    let inner = snap(ui.painter(), rect.shrink(4.0));
     let mut x = inner.left();
     let mut cells = Vec::with_capacity(options.len());
     for w in &widths {
@@ -431,23 +583,32 @@ pub fn segmented(
         x += w;
     }
 
-    // The indicator glides to the selected cell
+    // The indicator glides to the selected cell with the same OutQuint curve as the text color
     let target = cells.get(selected).copied().unwrap_or(inner);
     let ctx = ui.ctx();
     // Animated relative to the control, so a popup that moves while it is being placed
     // doesn't make the indicator drift
-    let ix = inner.left() + ctx.animate_value_with_time(id.with("ix"), target.left() - inner.left(), dur(ANIM));
-    let iw = ctx.animate_value_with_time(id.with("iw"), target.width(), dur(ANIM));
-    let indicator = Rect::from_min_size(Pos2::new(ix, inner.top()), Vec2::new(iw, inner.height()));
-    ui.painter().rect_filled(snap(ui.painter(), indicator), pill(indicator), blend_over(theme.surface1, theme.with_alpha(theme.mauve, 72)));
+    let target_rel_x = target.left() - inner.left();
+    let target_w = target.width();
+    let rel_x = animate_value(ctx, id.with("ix"), target_rel_x, ANIM);
+    let iw = animate_value(ctx, id.with("iw"), target_w, ANIM);
+    let ix = inner.left() + rel_x;
+    let raw_indicator = Rect::from_min_size(Pos2::new(ix, inner.top()), Vec2::new(iw, inner.height()));
+    let at_rest = (rel_x - target_rel_x).abs() <= 0.05 && (iw - target_w).abs() <= 0.05;
+    let indicator = if at_rest { snap(ui.painter(), raw_indicator) } else { raw_indicator };
+    ui.painter().rect_filled(indicator, pill(indicator), blend_over(theme.surface1, theme.with_alpha(theme.mauve, 72)));
 
     let mut clicked = None;
     for (i, (cell, label)) in cells.iter().zip(options).enumerate() {
         let resp = ui.interact(*cell, id.with(i), egui::Sense::click());
         let hover = animate(ui.ctx(), id.with(("hov", i)), resp.hovered() && i != selected);
-        ui.painter().rect_filled(snap(ui.painter(), *cell), pill(*cell), theme.with_alpha(theme.text, (hover * ALPHA_HOVER as f32) as u8));
+        let press = animate_for(ui.ctx(), id.with(("prs", i)), resp.is_pointer_button_down_on() && i != selected, ANIM_FAST);
+        let layer_alpha = (hover * ALPHA_HOVER as f32 + press * (ALPHA_PRESS - ALPHA_HOVER) as f32).round() as u8;
+        if layer_alpha > 0 {
+            ui.painter().rect_filled(snap(ui.painter(), *cell), pill(*cell), theme.with_alpha(theme.text, layer_alpha));
+        }
         let on = animate(ui.ctx(), id.with(("on", i)), i == selected);
-        let color = lerp_color(lerp_color(theme.subtext0, theme.text, hover), theme.mauve, on);
+        let color = lerp_color(lerp_color(theme.subtext0, theme.text, hover.max(press)), theme.mauve, on);
         ui.painter().text(cell.center(), Align2::CENTER_CENTER, *label, font.clone(), color);
         if resp.clicked() {
             clicked = Some(i);
@@ -474,18 +635,18 @@ pub fn nav_item(
     paint_fill(ui.painter(), r, pill(r), selectable_bg(theme, &fx, sel_t), &fx);
 
     let color = lerp_color(lerp_color(theme.subtext0, theme.text, fx.hover), theme.mauve, sel_t);
-    paint_icon(ui.painter(), Pos2::new(r.left() + INSET_ICON, r.center().y), icon, ICON_MD, color);
-    paint_label(ui, r.left() + INSET_LABEL, r.center().y, label, FONT_BODY, color, r.width() - INSET_LABEL - 14.0);
+    paint_icon(ui.painter(), Pos2::new(rect.left() + INSET_ICON, rect.center().y), icon, ICON_MD, color);
+    paint_label(ui, rect.left() + INSET_LABEL, rect.center().y, label, FONT_BODY, color, rect.width() - INSET_LABEL - 14.0);
     response
 }
 
-/// Glyph and color of a file's type icon.
-pub fn item_icon(item: &FileItem, theme: &SerpantinumTheme, selected: bool) -> (&'static str, Color32) {
+/// Glyph and smoothly interpolated selection color of a file's type icon.
+pub fn item_icon_animated(item: &FileItem, theme: &SerpantinumTheme, sel_t: f32) -> (&'static str, Color32) {
     if item.is_dir {
-        return (icons::FOLDER, if selected { theme.mauve } else { theme.blue });
+        return (icons::FOLDER, lerp_color(theme.blue, theme.mauve, sel_t));
     }
     if item.is_symlink {
-        return (icons::SYMLINK, if selected { theme.mauve } else { theme.subtext0 });
+        return (icons::SYMLINK, lerp_color(theme.subtext0, theme.mauve, sel_t));
     }
     if let Some((glyph, tint)) = specific_icon(&item.name) {
         let color = match tint {
@@ -655,14 +816,25 @@ pub fn list_header(
     let mut cell = |ui: &mut egui::Ui, id: &str, key: Option<SortBy>, label: &str, cell: Rect| {
         let resp = ui.interact(cell, ui.make_persistent_id(("list_header", id)), if key.is_some() { egui::Sense::click() } else { egui::Sense::hover() });
         let hover = animate(ui.ctx(), resp.id.with("h"), key.is_some() && resp.hovered());
+        let press = animate_for(ui.ctx(), resp.id.with("p"), key.is_some() && resp.is_pointer_button_down_on(), ANIM_FAST);
         let active = key == Some(sort_by);
-        ui.painter().rect_filled(snap(ui.painter(), cell), CornerRadius::same(RADIUS_SM), theme.with_alpha(theme.text, (hover * ALPHA_HOVER as f32) as u8));
-        let color = lerp_color(theme.subtext1, theme.text, hover.max(if active { 1.0 } else { 0.0 }));
+        let active_t = animate(ui.ctx(), resp.id.with("act"), active);
+        let bg_alpha = (hover * ALPHA_HOVER as f32 + press * (ALPHA_PRESS - ALPHA_HOVER) as f32).round() as u8;
+        if bg_alpha > 0 {
+            ui.painter().rect_filled(snap(ui.painter(), cell), CornerRadius::same(RADIUS_SM), theme.with_alpha(theme.text, bg_alpha));
+        }
+        let color = lerp_color(theme.subtext1, theme.text, hover.max(active_t));
         let font = egui::FontId::proportional(FONT_CAPTION);
-        let arrow = if active { Some(if order == SortOrder::Ascending { icons::SORT_ASC } else { icons::SORT_DESC }) } else { None };
         let text_rect = ui.painter().text(Pos2::new(cell.left() + 10.0, cell.center().y), Align2::LEFT_CENTER, label, font, color);
-        if let Some(a) = arrow {
-            paint_icon(ui.painter(), Pos2::new(text_rect.right() + 13.0, cell.center().y), a, ICON_XS, theme.mauve);
+        if active_t > 0.01 {
+            let arrow = if order == SortOrder::Ascending { icons::SORT_ASC } else { icons::SORT_DESC };
+            paint_icon(
+                ui.painter(),
+                Pos2::new(text_rect.right() + 13.0, cell.center().y),
+                arrow,
+                ICON_XS,
+                theme.mauve.gamma_multiply(active_t),
+            );
         }
         if resp.clicked() {
             clicked = key;
@@ -684,10 +856,18 @@ pub fn list_header(
         // Grab strip on the column's left border; dragging it left widens the column
         let grip = Rect::from_x_y_ranges((edge - width - 4.0)..=(edge - width + 4.0), rect.y_range());
         let resp = ui.interact(grip, ui.make_persistent_id(("list_header_grip", column.label())), egui::Sense::drag());
-        if resp.hovered() || resp.dragged() {
+        let grip_active = resp.hovered() || resp.dragged();
+        if grip_active {
             ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+        }
+        let grip_t = animate_for(ui.ctx(), resp.id.with("g"), grip_active, ANIM_FAST);
+        if grip_t > 0.01 {
             let x = edge - width;
-            ui.painter().line_segment([Pos2::new(x, rect.top() + 6.0), Pos2::new(x, rect.bottom() - 6.0)], egui::Stroke::new(1.5, theme.mauve));
+            let half_h = lerp(4.0, (rect.height() - 12.0) * 0.5, grip_t);
+            ui.painter().line_segment(
+                [Pos2::new(x, rect.center().y - half_h), Pos2::new(x, rect.center().y + half_h)],
+                egui::Stroke::new(1.5, theme.mauve.gamma_multiply(grip_t)),
+            );
         }
         if resp.dragged() {
             widths[column.index()] = (width - resp.drag_delta().x).clamp(COLUMN_MIN, COLUMN_MAX);
@@ -701,7 +881,7 @@ pub fn list_header(
 #[allow(clippy::too_many_arguments)]
 pub fn file_row(
     ui: &mut egui::Ui,
-    idx: usize,
+    _idx: usize,
     item: &FileItem,
     theme: &SerpantinumTheme,
     selected: bool,
@@ -714,10 +894,11 @@ pub fn file_row(
     row_height: f32,
 ) -> egui::Response {
     let (rect, response) = ui.allocate_exact_size(Vec2::new(ui.available_width(), row_height), egui::Sense::click());
-    let id = ui.make_persistent_id(("row", idx));
+    let id = ui.make_persistent_id(("row", &item.path));
     let fx = fx(ui, id, &response, true, &FxSpec::ROW);
     let sel_t = animate(ui.ctx(), id.with("sel"), selected);
     let cut_t = animate(ui.ctx(), id.with("cut"), cut);
+    let thumb_t = animate(ui.ctx(), id.with("thumb"), thumb.is_some());
     let r = scaled(rect, fx.scale);
 
     let bg = lerp_color(
@@ -729,20 +910,18 @@ pub fn file_row(
 
     let fade = lerp(1.0, 0.58, cut_t);
     let icon_center = Pos2::new(r.left() + 28.0, r.center().y);
-    match thumb {
-        Some(tex) => {
-            ui.scope(|ui| {
-                ui.set_opacity(fade);
-                paint_thumb(ui, tex, Rect::from_center_size(icon_center, Vec2::splat(32.0)), RADIUS_SM);
-            });
-        }
-        None => {
-            let (glyph, color) = item_icon(item, theme, selected);
-            paint_icon(ui.painter(), icon_center, glyph, 24.0, color.gamma_multiply(fade));
-        }
+    if thumb_t < 0.99 {
+        let (glyph, color) = item_icon_animated(item, theme, sel_t);
+        paint_icon(ui.painter(), icon_center, glyph, 24.0, color.gamma_multiply(fade * (1.0 - thumb_t)));
+    }
+    if let Some(tex) = thumb {
+        ui.scope(|ui| {
+            ui.set_opacity(fade * thumb_t);
+            paint_thumb(ui, tex, Rect::from_center_size(icon_center, Vec2::splat(32.0)), RADIUS_SM);
+        });
     }
     if cut_t > 0.01 {
-        paint_cut_badge(ui.painter(), Pos2::new(icon_center.x + 11.0, icon_center.y + 9.0), 16.0 * cut_t, theme);
+        paint_cut_badge(ui.painter(), Pos2::new(icon_center.x + 11.0, icon_center.y + 9.0), 16.0, cut_t, theme);
     }
 
     let mut right = r.right() - ROW_PAD_RIGHT;
@@ -764,13 +943,13 @@ pub fn file_row(
     if cut_t > 0.01 {
         let pill_w = 54.0;
         let pill_h = 20.0;
-        let pill_rect = Rect::from_min_size(Pos2::new(right - pill_w, r.center().y - pill_h / 2.0), Vec2::new(pill_w, pill_h));
-        let pill_bg = theme.with_alpha(theme.peach, (44.0 * cut_t) as u8);
+        let pill_rect = Rect::from_min_size(Pos2::new(right - pill_w * cut_t, r.center().y - pill_h / 2.0), Vec2::new(pill_w, pill_h));
+        let pill_bg = theme.with_alpha(theme.peach, (44.0 * cut_t).round() as u8);
         let pill_fg = theme.peach.gamma_multiply(cut_t);
         ui.painter().rect_filled(snap(ui.painter(), pill_rect), pill(pill_rect), pill_bg);
         paint_icon(ui.painter(), Pos2::new(pill_rect.left() + 13.0, pill_rect.center().y), icons::CUT, 11.0, pill_fg);
         ui.painter().text(Pos2::new(pill_rect.left() + 24.0, pill_rect.center().y), Align2::LEFT_CENTER, "Cut", egui::FontId::proportional(11.5), pill_fg);
-        right = pill_rect.left() - 10.0;
+        right -= (pill_w + 10.0) * cut_t;
     }
 
     paint_label(ui, r.left() + ROW_NAME_X, r.center().y, item.display_name(), FONT_SUBTITLE, theme.text.gamma_multiply(fade), right - r.left() - ROW_NAME_X - 6.0);
@@ -796,16 +975,16 @@ pub fn menu_item(
     let r = scaled(rect, fx.scale);
     paint_fill(ui.painter(), r, pill(r), row_layer(theme, &fx), &fx);
 
-    let color = lerp_color(theme.subtext0, theme.text, fx.hover);
-    paint_icon(ui.painter(), Pos2::new(r.left() + INSET_ICON, r.center().y), icon, ICON_MD, color);
+    let color = lerp_color(theme.subtext0, theme.text, fx.hover.max(fx.press));
+    paint_icon(ui.painter(), Pos2::new(rect.left() + INSET_ICON, rect.center().y), icon, ICON_MD, color);
 
-    let mut label_room = r.width() - INSET_LABEL - 14.0;
+    let mut label_room = rect.width() - INSET_LABEL - 14.0;
     if let Some(hint) = hint {
         let galley = ui.painter().layout_no_wrap(hint.to_owned(), egui::FontId::proportional(FONT_CAPTION), theme.subtext1);
         label_room -= galley.size().x + 12.0;
-        ui.painter().galley(Pos2::new(r.right() - 16.0 - galley.size().x, r.center().y - galley.size().y / 2.0), galley, theme.subtext1);
+        ui.painter().galley(Pos2::new(rect.right() - 16.0 - galley.size().x, rect.center().y - galley.size().y / 2.0), galley, theme.subtext1);
     }
-    paint_label(ui, r.left() + INSET_LABEL, r.center().y, label, FONT_BODY, color, label_room);
+    paint_label(ui, rect.left() + INSET_LABEL, rect.center().y, label, FONT_BODY, color, label_room);
     response
 }
 
@@ -813,7 +992,7 @@ pub fn menu_item(
 #[allow(clippy::too_many_arguments)]
 pub fn file_tile(
     ui: &mut egui::Ui,
-    idx: usize,
+    _idx: usize,
     item: &FileItem,
     theme: &SerpantinumTheme,
     selected: bool,
@@ -823,12 +1002,18 @@ pub fn file_tile(
     grid_size: crate::settings::GridSize,
     max_name_lines: usize,
 ) -> egui::Response {
-    let (cell_w, cell_h) = grid_size.cell_size();
+    let (target_w, target_h) = grid_size.cell_size();
+    let cell_w = animate_value(ui.ctx(), egui::Id::unique("grid_cell_w"), target_w, ANIM);
+    let cell_h = animate_value(ui.ctx(), egui::Id::unique("grid_cell_h"), target_h, ANIM);
+    let pic_sz = animate_value(ui.ctx(), egui::Id::unique("grid_pic_sz"), grid_size.picture_size(), ANIM);
+    let icon_sz = animate_value(ui.ctx(), egui::Id::unique("grid_icon_sz"), grid_size.icon_size(), ANIM);
+
     let (rect, response) = ui.allocate_exact_size(Vec2::new(cell_w, cell_h), egui::Sense::click());
-    let id = ui.make_persistent_id(("tile", idx));
-    let fx = fx(ui, id, &response, true, &FxSpec::CLICK);
+    let id = ui.make_persistent_id(("tile", &item.path));
+    let fx = fx(ui, id, &response, true, &FxSpec::TILE);
     let sel_t = animate(ui.ctx(), id.with("sel"), selected);
     let cut_t = animate(ui.ctx(), id.with("cut"), cut);
+    let thumb_t = animate(ui.ctx(), id.with("thumb"), thumb.is_some());
     let r = scaled(rect, fx.scale);
 
     let bg = lerp_color(
@@ -839,32 +1024,38 @@ pub fn file_tile(
     paint_fill(ui.painter(), r, CornerRadius::same(RADIUS_LG), bg, &fx);
 
     let fade = lerp(1.0, 0.58, cut_t);
-    let pic_sz = grid_size.picture_size();
-    let picture = Rect::from_center_size(Pos2::new(r.center().x, r.top() + pic_sz * 0.5 + 12.0), Vec2::splat(pic_sz));
-    match thumb {
-        Some(tex) => {
-            ui.scope(|ui| {
-                ui.set_opacity(fade);
-                paint_thumb(ui, tex, picture, RADIUS_SM);
-            });
-        }
-        None => {
-            let (glyph, color) = item_icon(item, theme, selected);
-            paint_icon(ui.painter(), picture.center(), glyph, grid_size.icon_size(), color.gamma_multiply(fade));
-        }
+    // Anchor layout positions to `rect` so multi-line text baselines stay rock-steady during hover/press scaling
+    let picture = Rect::from_center_size(Pos2::new(rect.center().x, rect.top() + pic_sz * 0.5 + 12.0), Vec2::splat(pic_sz));
+    let scaled_picture = scaled(picture, fx.scale);
+    if thumb_t < 0.99 {
+        let (glyph, color) = item_icon_animated(item, theme, sel_t);
+        paint_icon(
+            ui.painter(),
+            picture.center(),
+            glyph,
+            icon_sz * fx.scale,
+            color.gamma_multiply(fade * (1.0 - thumb_t)),
+        );
+    }
+    if let Some(tex) = thumb {
+        ui.scope(|ui| {
+            ui.set_opacity(fade * thumb_t);
+            paint_thumb(ui, tex, scaled_picture, RADIUS_SM);
+        });
     }
     if cut_t > 0.01 {
-        paint_cut_badge(ui.painter(), Pos2::new(picture.right() - 6.0, picture.bottom() - 6.0), 22.0 * cut_t, theme);
+        paint_cut_badge(ui.painter(), Pos2::new(picture.right() - 6.0, picture.bottom() - 6.0), 22.0, cut_t, theme);
     }
 
     // Names wrap over the configured lines and are centered under the picture, like Nautilus.
     // With halign Center the galley is centered on x = 0, so it is painted at the cell's center.
     let name_color = theme.text.gamma_multiply(fade);
-    let mut job = LayoutJob::simple(item.display_name().to_string(), egui::FontId::proportional(FONT_CAPTION), name_color, r.width() - 14.0);
-    job.wrap = TextWrapping { max_width: r.width() - 14.0, max_rows: max_name_lines, break_anywhere: false, overflow_character: Some('…') };
+    let max_text_w = (rect.width() - 14.0).max(16.0);
+    let mut job = LayoutJob::simple(item.display_name().to_string(), egui::FontId::proportional(FONT_CAPTION), name_color, max_text_w);
+    job.wrap = TextWrapping { max_width: max_text_w, max_rows: max_name_lines, break_anywhere: false, overflow_character: Some('…') };
     job.halign = egui::Align::Center;
     let galley = ui.painter().layout_job(job);
-    ui.painter().galley(Pos2::new(r.center().x, picture.bottom() + 8.0), galley, name_color);
+    ui.painter().galley(Pos2::new(rect.center().x, picture.bottom() + 8.0), galley, name_color);
 
     if selected && should_scroll {
         response.scroll_to_me(Some(egui::Align::Center));
@@ -873,10 +1064,11 @@ pub fn file_tile(
 }
 
 /// Flat tonal scissors badge drawn on the corner of a cut item's icon.
-fn paint_cut_badge(painter: &egui::Painter, center: Pos2, size: f32, theme: &SerpantinumTheme) {
-    let pill_fill = blend_over(theme.surface2, theme.with_alpha(theme.peach, 72));
+fn paint_cut_badge(painter: &egui::Painter, center: Pos2, max_size: f32, cut_t: f32, theme: &SerpantinumTheme) {
+    let size = max_size * cut_t;
+    let pill_fill = blend_over(theme.surface2, theme.with_alpha(theme.peach, 72)).gamma_multiply(cut_t);
     painter.circle_filled(center, size * 0.5, pill_fill);
-    paint_icon(painter, center, icons::CUT, (size * 0.56).round().max(1.0), theme.peach);
+    paint_icon(painter, center, icons::CUT, (max_size * 0.56).round() * cut_t.max(0.2), theme.peach.gamma_multiply(cut_t));
 }
 
 /// Material switch row: icon, label (with an optional description) and an animated on/off switch.
@@ -924,9 +1116,9 @@ pub fn switch_row_with(
 
 /// Flat on/off switch: a thin track and a plain knob, no glyphs.
 fn paint_switch(ui: &egui::Ui, center: Pos2, on: f32, press: f32, theme: &SerpantinumTheme) {
-    let track = Rect::from_center_size(center, Vec2::new(34.0, 18.0));
-    ui.painter().rect_filled(snap(ui.painter(), track), CornerRadius::same(9), lerp_color(theme.surface2, theme.mauve, on));
-    let knob_r = lerp(5.5, 6.5, on.max(press));
+    let track = snap(ui.painter(), Rect::from_center_size(center, Vec2::new(34.0, 18.0)));
+    ui.painter().rect_filled(track, CornerRadius::same(9), lerp_color(theme.surface2, theme.mauve, on));
+    let knob_r = lerp(5.5, 6.5, on) + press * 0.8;
     let knob_x = lerp(track.left() + 9.0, track.right() - 9.0, on);
     let knob = lerp_color(theme.subtext1, on_color(theme, theme.mauve), on);
     ui.painter().circle_filled(Pos2::new(knob_x, track.center().y), knob_r, knob);
@@ -950,12 +1142,14 @@ pub fn radio_row(
     theme: &SerpantinumTheme,
     selected: bool,
 ) -> egui::Response {
-    let (rect, response, _) = menu_row_frame(ui, &id_source, theme);
+    let (rect, response, fx) = menu_row_frame(ui, &id_source, theme);
     let t = animate(ui.ctx(), response.id.with("on"), selected);
     let center = Pos2::new(rect.left() + 18.0, rect.center().y);
-    let ring = lerp_color(theme.subtext1, theme.mauve, t);
+    let ring = lerp_color(lerp_color(theme.subtext1, theme.text, fx.hover), theme.mauve, t);
     ui.painter().circle_stroke(center, 7.0, egui::Stroke::new(1.5, ring));
-    ui.painter().circle_filled(center, 3.5 * t, theme.mauve);
+    if t > 0.01 {
+        ui.painter().circle_filled(center, 3.5 * t, theme.mauve.gamma_multiply(t));
+    }
     paint_label(ui, rect.left() + 38.0, rect.center().y, label, FONT_BODY, theme.text, rect.width() - 48.0);
     response
 }
@@ -999,10 +1193,19 @@ pub fn stepper_row(
     let mut out = [false; 2];
     for (i, (icon, enabled)) in [(icons::REMOVE, can_dec), (icons::ADD, can_inc)].into_iter().enumerate() {
         let cell = Rect::from_center_size(Pos2::new(rect.right() - 25.0 - (1 - i) as f32 * 32.0, rect.center().y), Vec2::splat(26.0));
-        let resp = ui.interact(cell, id.with(i), if enabled { egui::Sense::click() } else { egui::Sense::hover() });
-        let hover = animate(ui.ctx(), id.with(("h", i)), resp.hovered() && enabled);
-        ui.painter().rect_filled(cell, pill(cell), lerp_color(theme.surface1, theme.surface2, hover));
-        let color = if enabled { lerp_color(theme.subtext1, theme.text, hover) } else { theme.with_alpha(theme.subtext1, 70) };
+        let btn_id = id.with(i);
+        let resp = ui.interact(cell, btn_id, if enabled { egui::Sense::click() } else { egui::Sense::hover() });
+        let fx = fx(ui, btn_id, &resp, enabled, &FxSpec::ICON);
+        let en_t = animate(ui.ctx(), id.with(("en", i)), enabled);
+        let r = scaled(cell, fx.scale);
+        let fill = lerp_color(
+            lerp_color(theme.surface1, theme.surface2, fx.hover),
+            lerp_color(theme.surface2, theme.text, 0.08),
+            fx.press,
+        );
+        paint_fill(ui.painter(), r, pill(r), fill, &fx);
+        let active_color = lerp_color(theme.subtext1, theme.text, fx.hover.max(fx.press));
+        let color = lerp_color(theme.with_alpha(theme.subtext1, 70), active_color, en_t);
         paint_icon(ui.painter(), cell.center(), icon, ICON_SM, color);
         out[i] = resp.clicked();
     }
@@ -1020,12 +1223,14 @@ pub fn nav_pair(ui: &mut egui::Ui, theme: &SerpantinumTheme, can_back: bool, can
     let mut responses = Vec::with_capacity(2);
     for (i, (icon, enabled, tip)) in [(icons::ARROW_BACK, can_back, "Back"), (icons::ARROW_FORWARD, can_forward, "Forward")].into_iter().enumerate() {
         let cell = Rect::from_min_size(body.min + Vec2::new(W * i as f32, 0.0), Vec2::new(W, H));
-        let resp = ui.interact(cell, id.with(i), if enabled { egui::Sense::click() } else { egui::Sense::hover() });
-        let hover = animate(ui.ctx(), id.with(("h", i)), resp.hovered() && enabled);
-        let press = enabled && resp.is_pointer_button_down_on();
-        let fill = theme.with_alpha(theme.text, (hover * ALPHA_HOVER as f32) as u8 + if press { ALPHA_PRESS - ALPHA_HOVER } else { 0 });
-        ui.painter().rect_filled(snap(ui.painter(), cell.shrink(2.0)), pill(cell.shrink(2.0)), fill);
-        let color = if enabled { lerp_color(theme.subtext1, theme.text, hover) } else { theme.with_alpha(theme.subtext1, 70) };
+        let btn_id = id.with(i);
+        let resp = ui.interact(cell, btn_id, if enabled { egui::Sense::click() } else { egui::Sense::hover() });
+        let fx = fx(ui, btn_id, &resp, enabled, &FxSpec::CLICK);
+        let en_t = animate(ui.ctx(), id.with(("en", i)), enabled);
+        let inner = scaled(cell.shrink(2.0), fx.scale);
+        paint_fill(ui.painter(), inner, pill(inner), row_layer(theme, &fx), &fx);
+        let active_color = lerp_color(theme.subtext1, theme.text, fx.hover.max(fx.press * 0.5));
+        let color = lerp_color(theme.with_alpha(theme.subtext1, 70), active_color, en_t);
         paint_icon(ui.painter(), cell.center(), icon, ICON_MD, color);
         responses.push(resp.on_hover_text(tip));
     }
@@ -1070,6 +1275,52 @@ pub fn choice_row(
         Rect::from_min_size(Pos2::new(rect.left() + INSET_LABEL + 2.0, rect.top() + SETTING_HEIGHT - 4.0), Vec2::new(seg_w, seg_h))
     };
     ui.scope_builder(egui::UiBuilder::new().max_rect(seg_rect), |ui| segmented(ui, id, options, selected, theme)).inner
+}
+
+/// Smoothly expands and collapses a vertical block of widgets when `open` toggles.
+pub fn collapsible(
+    ui: &mut egui::Ui,
+    id_source: impl std::hash::Hash + std::fmt::Debug,
+    open: bool,
+    add_contents: impl FnOnce(&mut egui::Ui),
+) {
+    let id = ui.make_persistent_id(id_source);
+    let t = animate(ui.ctx(), id.with("open"), open);
+    if t <= 0.0 {
+        return;
+    }
+    if t >= 1.0 {
+        let resp = ui.vertical(|ui| {
+            add_contents(ui);
+        });
+        ui.ctx().data_mut(|d| d.insert_temp(id.with("h"), resp.response.rect.height()));
+        return;
+    }
+
+    let avail_w = ui.available_width();
+    let start_pos = ui.cursor().min;
+    let prev_h = ui.ctx().data(|d| d.get_temp::<f32>(id.with("h")));
+    let clip_rect = match prev_h {
+        Some(h) => Rect::from_min_size(start_pos, Vec2::new(avail_w, (h * t).max(1.0))).intersect(ui.clip_rect()),
+        None => ui.clip_rect(),
+    };
+
+    let slide_y = -(1.0 - t) * 6.0;
+    let child_max = Rect::from_min_size(start_pos + Vec2::new(0.0, slide_y), Vec2::new(avail_w, 4000.0));
+    let mut builder = egui::UiBuilder::new()
+        .max_rect(child_max)
+        .layout(egui::Layout::top_down(egui::Align::Min));
+    if !open {
+        builder = builder.disabled();
+    }
+    let mut child = ui.new_child(builder);
+    child.set_clip_rect(clip_rect);
+    child.set_opacity(if prev_h.is_some() { t } else { t * t });
+    add_contents(&mut child);
+
+    let natural_h = (child.min_rect().bottom() - child_max.top()).max(0.0);
+    ui.ctx().data_mut(|d| d.insert_temp(id.with("h"), natural_h));
+    ui.allocate_exact_size(Vec2::new(avail_w, natural_h * t), egui::Sense::hover());
 }
 
 /// Material 3 section label with consistent padding and typography.
@@ -1197,12 +1448,26 @@ pub fn input_frame(theme: &SerpantinumTheme) -> egui::Frame {
 
 /// Centered placeholder for views without content: a large quiet icon, a title and a hint.
 pub fn empty_state(ui: &mut egui::Ui, theme: &SerpantinumTheme, icon: &str, title: &str, hint: Option<&str>) {
+    let id = ui.make_persistent_id(("empty_state", icon, title));
+    let t = animate_enter(ui.ctx(), id, ANIM);
     let rect = ui.max_rect();
-    let center = rect.center() - Vec2::new(0.0, 16.0);
-    paint_icon(ui.painter(), center - Vec2::new(0.0, 34.0), icon, 56.0, theme.surface2);
-    ui.painter().text(center + Vec2::new(0.0, 12.0), Align2::CENTER_CENTER, title, egui::FontId::proportional(FONT_TITLE), theme.subtext0);
+    let center = rect.center() - Vec2::new(0.0, 16.0 - (1.0 - t) * 8.0);
+    paint_icon(ui.painter(), center - Vec2::new(0.0, 34.0), icon, 56.0, theme.surface2.gamma_multiply(t));
+    ui.painter().text(
+        center + Vec2::new(0.0, 12.0),
+        Align2::CENTER_CENTER,
+        title,
+        egui::FontId::proportional(FONT_TITLE),
+        theme.subtext0.gamma_multiply(t),
+    );
     if let Some(hint) = hint {
-        ui.painter().text(center + Vec2::new(0.0, 36.0), Align2::CENTER_CENTER, hint, egui::FontId::proportional(FONT_CAPTION), theme.subtext1);
+        ui.painter().text(
+            center + Vec2::new(0.0, 36.0),
+            Align2::CENTER_CENTER,
+            hint,
+            egui::FontId::proportional(FONT_CAPTION),
+            theme.subtext1.gamma_multiply(t),
+        );
     }
 }
 
@@ -1228,12 +1493,16 @@ pub fn inline_icon(ui: &mut egui::Ui, icon: &str, size: f32, color: Color32) {
 }
 
 /// Paints the rubber-band drag selection rectangle using the flat Material 3 accent tonal fill
-/// and a subtle accent border.
-pub fn paint_rubberband(painter: &egui::Painter, rect: Rect, theme: &SerpantinumTheme) {
+/// and a subtle accent border, with an animated opacity factor `t` (0.0..=1.0).
+pub fn paint_rubberband_faded(painter: &egui::Painter, rect: Rect, theme: &SerpantinumTheme, t: f32) {
+    let t = t.clamp(0.0, 1.0);
+    if t <= 0.0 {
+        return;
+    }
     let rect = snap(painter, rect);
     let radius = CornerRadius::same(RADIUS_MD);
-    let fill = theme.with_alpha(theme.mauve, 34);
-    let stroke = egui::Stroke::new(1.0, theme.with_alpha(theme.mauve, 110));
+    let fill = theme.with_alpha(theme.mauve, (34.0 * t).round() as u8);
+    let stroke = egui::Stroke::new(1.0, theme.with_alpha(theme.mauve, (110.0 * t).round() as u8));
     painter.rect(rect, radius, fill, stroke, egui::StrokeKind::Inside);
 }
 
@@ -1251,5 +1520,41 @@ mod tests {
         assert_eq!(half.a(), 40);
         // Opaque colors blend as usual
         assert_eq!(lerp_color(Color32::BLACK, Color32::WHITE, 0.5), Color32::from_rgb(128, 128, 128));
+    }
+
+    #[test]
+    fn mid_flight_reversal_is_continuous_without_jumps() {
+        set_animations(true);
+        let ctx = egui::Context::default();
+        let id = egui::Id::unique("test_reversal");
+
+        let step = |time: f64, target: bool| -> f32 {
+            let mut raw = egui::RawInput::default();
+            raw.time = Some(time);
+            raw.predicted_dt = 0.016;
+            let mut val = 0.0;
+            let mut out = ctx.run_ui(raw, |ui| {
+                val = animate(ui.ctx(), id, target);
+            });
+            out.textures_delta.clear();
+            val
+        };
+
+        // Frame 0: initial state false -> 0.0
+        assert_eq!(step(0.0, false), 0.0);
+        // Frame 1..3: animate toward true (0.0 -> ~0.67 at t=50ms)
+        let v1 = step(0.016, true);
+        let v2 = step(0.032, true);
+        let v3 = step(0.050, true);
+        assert!(v1 > 0.0 && v2 > v1 && v3 > v2);
+        assert!(v3 > 0.5, "OutQuint should pass 0.5 early in the transition, got {v3}");
+
+        // Frame 4: reverse back to false mid-flight!
+        // Must descend smoothly from `v3` rather than teleporting down to near 0.0.
+        let v4 = step(0.066, false);
+        assert!(
+            v4 < v3 && v4 > v3 - 0.25,
+            "mid-flight reversal should be continuous from {v3}, got {v4}"
+        );
     }
 }

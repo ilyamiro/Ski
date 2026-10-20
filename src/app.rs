@@ -256,6 +256,9 @@ pub struct SkiApp {
     pub(crate) settings: Settings,
     pub(crate) saved_settings: Settings,
     pub(crate) system_theme: SerpantinumTheme,
+    from_theme: SerpantinumTheme,
+    target_theme: SerpantinumTheme,
+    theme_anim_start: Option<f64>,
     pub(crate) theme_dirty: bool,
     pub(crate) fonts_dirty: bool,
     pins: Vec<PathBuf>,
@@ -277,6 +280,7 @@ pub struct SkiApp {
     zoom_accum: f32,
 
     drag_select: Option<DragSelect>,
+    last_rubberband: Option<egui::Rect>,
 
     pub(crate) capturing_key: bool,
 }
@@ -337,6 +341,9 @@ impl SkiApp {
             saved_settings: settings.clone(),
             settings,
             system_theme: SerpantinumTheme::load(),
+            from_theme: theme,
+            target_theme: theme,
+            theme_anim_start: None,
             theme_dirty: false,
             fonts_dirty: false,
             pins: Place::load_pins(),
@@ -351,6 +358,7 @@ impl SkiApp {
             scroll_to_selected: false,
             zoom_accum: 0.0,
             drag_select: None,
+            last_rubberband: None,
             capturing_key: false,
         };
 
@@ -389,6 +397,7 @@ impl SkiApp {
         self.path_input = self.current_path.to_string_lossy().to_string();
         self.selected_index = None;
         self.drag_select = None;
+        self.last_rubberband = None;
         self.search_query.clear();
         self.search.cancel();
         self.show_search = false;
@@ -769,6 +778,7 @@ impl SkiApp {
             }
             _ => None,
         };
+        material::reset_anim(ctx, egui::Id::unique("context_menu_anim"), 0.0);
         self.menu = Some(ContextMenu { pos, target, open_label: None, label_rx });
     }
 
@@ -800,15 +810,43 @@ impl SkiApp {
                 theme.blue = a;
             }
         }
-        self.theme = theme;
-        self.theme_dirty = true;
+        if theme != self.target_theme {
+            self.from_theme = self.theme;
+            self.target_theme = theme;
+            self.theme_dirty = true;
+        }
     }
 
     /// Re-apply theme / font / scale to egui after a change, and write changed preferences to disk.
     fn sync_settings(&mut self, ctx: &egui::Context) {
+        material::set_animations(self.settings.animations);
+        ctx.all_styles_mut(|s| s.animation_time = material::dur(material::ANIM));
+
+        let now = ctx.input(|i| i.time);
+        let dur_s = material::dur(material::ANIM);
         if self.theme_dirty {
-            crate::ui::theme::apply(ctx, &self.theme);
             self.theme_dirty = false;
+            if dur_s <= 0.0 {
+                self.theme = self.target_theme;
+                self.from_theme = self.target_theme;
+                self.theme_anim_start = None;
+                crate::ui::theme::apply(ctx, &self.theme);
+            } else {
+                self.theme_anim_start = Some(now);
+            }
+        }
+        if let Some(start) = self.theme_anim_start {
+            let t = if dur_s > 0.0 { ((now - start) as f32 / dur_s).clamp(0.0, 1.0) } else { 1.0 };
+            let eased = material::quint_out(t);
+            self.theme = self.from_theme.lerp(&self.target_theme, eased);
+            crate::ui::theme::apply(ctx, &self.theme);
+            if t >= 1.0 {
+                self.theme = self.target_theme;
+                self.from_theme = self.target_theme;
+                self.theme_anim_start = None;
+            } else {
+                ctx.request_repaint();
+            }
         }
         if self.fonts_dirty {
             crate::ui::fonts::install(ctx, self.settings.font.as_deref());
@@ -817,8 +855,6 @@ impl SkiApp {
         if (ctx.zoom_factor() - self.settings.scale).abs() > f32::EPSILON {
             ctx.set_zoom_factor(self.settings.scale);
         }
-        material::set_animations(self.settings.animations);
-        ctx.all_styles_mut(|s| s.animation_time = material::dur(material::ANIM));
         crate::fs::file_item::set_format_options(self.settings.decimal_units, self.settings.relative_dates);
         crate::fs::file_item::set_show_extensions(self.settings.show_extensions);
 
@@ -1314,17 +1350,21 @@ impl eframe::App for SkiApp {
 
         let window_width = ui.available_width();
         let sidebar_visible = self.settings.show_sidebar && (window_width >= SIDEBAR_BREAKPOINT);
+        let sidebar_t = material::animate(ui.ctx(), egui::Id::unique("sidebar_panel_anim"), sidebar_visible);
 
-        if sidebar_visible {
+        if sidebar_t > 0.001 {
             egui::Panel::left("sidebar_places")
-                .exact_size(212.0)
+                .exact_size((212.0 * sidebar_t).max(1.0))
                 .resizable(false)
                 .frame(
                     egui::Frame::new()
                         .fill(self.theme.mantle)
                         .inner_margin(egui::Margin::symmetric(PAGE_MARGIN, 8)),
                 )
-                .show(ui, |ui| self.render_sidebar(ui));
+                .show(ui, |ui| {
+                    ui.set_opacity(sidebar_t);
+                    self.render_sidebar(ui);
+                });
         }
 
         egui::Panel::top("top_navigation")
@@ -1335,12 +1375,16 @@ impl eframe::App for SkiApp {
             )
             .show(ui, |ui| self.render_top_bar(ui, sidebar_visible));
 
-        if self.settings.show_status_bar {
+        let status_t = material::animate(ui.ctx(), egui::Id::unique("status_bar_anim"), self.settings.show_status_bar);
+        if status_t > 0.001 {
             egui::Panel::bottom("status_bar")
-                .exact_size(30.0)
+                .exact_size((30.0 * status_t).max(1.0))
                 .resizable(false)
                 .frame(egui::Frame::new().fill(self.theme.base).inner_margin(egui::Margin::symmetric(PAGE_MARGIN + CONTENT_INSET, 0)))
-                .show(ui, |ui| self.render_status_bar(ui));
+                .show(ui, |ui| {
+                    ui.set_opacity(status_t);
+                    self.render_status_bar(ui);
+                });
         }
 
         egui::CentralPanel::default()
@@ -1372,9 +1416,10 @@ impl eframe::App for SkiApp {
                     }
                 }
 
-                if !self.search_query.trim().is_empty() || self.type_filter != TypeFilter::All {
+                let show_filter_bar = !self.search_query.trim().is_empty() || self.type_filter != TypeFilter::All;
+                material::collapsible(ui, "filter_bar_collapse", show_filter_bar, |ui| {
                     self.render_filter_bar(ui);
-                }
+                });
 
                 if let Some(err) = &self.error_message {
                     material::empty_state(ui, &self.theme, icons::INFO, "This folder can't be opened", Some(err));
@@ -1396,10 +1441,15 @@ impl eframe::App for SkiApp {
                     };
                     material::empty_state(ui, &self.theme, icon, title, hint);
                 } else {
-                    match self.view_mode {
-                        ViewMode::List => self.render_list_view(ui),
-                        ViewMode::Grid => self.render_grid_view(ui),
-                    }
+                    let enter_id = ui.make_persistent_id(("view_enter", &self.current_path, self.view_mode as u8));
+                    let enter_t = material::animate_enter(ui.ctx(), enter_id, material::ANIM_FAST);
+                    ui.scope(|ui| {
+                        ui.set_opacity(enter_t);
+                        match self.view_mode {
+                            ViewMode::List => self.render_list_view(ui),
+                            ViewMode::Grid => self.render_grid_view(ui),
+                        }
+                    });
                 }
             });
 
@@ -1443,11 +1493,19 @@ impl SkiApp {
                     ui.allocate_exact_size(egui::vec2(title_width, CONTROL_HEIGHT), egui::Sense::click());
                 ui.add_space(TITLE_GAP);
 
+                let editing_top_pill = (self.show_search && !sidebar_visible) || self.is_editing_path;
+                let pill_hover = material::animate(ui.ctx(), title_resp.id.with("hover"), !editing_top_pill && title_resp.hovered());
+                let pill_edit = material::animate(ui.ctx(), egui::Id::unique("top_pill_edit"), editing_top_pill);
+                let pill_fill = material::lerp_color(
+                    material::lerp_color(self.theme.surface0, self.theme.surface1, pill_hover),
+                    self.theme.surface2,
+                    pill_edit,
+                );
+                ui.painter().rect_filled(material::snap(ui.painter(), title_rect), material::pill(title_rect), pill_fill);
+
                 if self.show_search && !sidebar_visible {
-                    ui.painter().rect_filled(title_rect, material::pill(title_rect), self.theme.surface1);
                     self.render_search_field(ui, title_rect);
                 } else if self.is_editing_path {
-                    ui.painter().rect_filled(title_rect, material::pill(title_rect), self.theme.surface1);
                     self.render_path_field(ui, title_rect);
                 } else {
                     self.render_title(ui, title_rect, &title_resp);
@@ -1480,9 +1538,10 @@ impl SkiApp {
                 };
                 let view = icon_button(ui, "btn_view_options", view_icon, &self.theme, true, "View options");
                 self.settings_button_rect = view.rect;
-                if self.type_filter != TypeFilter::All {
+                let filter_dot_t = material::animate(ui.ctx(), egui::Id::unique("view_filter_dot"), self.type_filter != TypeFilter::All);
+                if filter_dot_t > 0.01 {
                     let dot = egui::pos2(view.rect.right() - 8.0, view.rect.top() + 8.0);
-                    ui.painter().circle_filled(dot, 4.0, self.theme.mauve);
+                    ui.painter().circle_filled(dot, 4.0 * filter_dot_t, self.theme.mauve.gamma_multiply(filter_dot_t));
                 }
                 if view.clicked() {
                     self.show_settings = !self.show_settings;
@@ -1553,8 +1612,6 @@ impl SkiApp {
     fn render_title(&mut self, ui: &mut egui::Ui, rect: egui::Rect, field: &egui::Response) {
         let theme = self.theme;
         let cy = rect.center().y;
-        let hover = material::animate(ui.ctx(), field.id.with("hover"), field.hovered());
-        ui.painter().rect_filled(rect, material::pill(rect), material::lerp_color(theme.surface0, theme.surface1, hover));
 
         let searching = !self.search_query.trim().is_empty();
         if searching || self.in_recent() {
@@ -1596,9 +1653,10 @@ impl SkiApp {
         let mut edit = false;
         let crumb_button = |ui: &mut egui::Ui, id: egui::Id, cell: egui::Rect, current: bool| {
             let resp = ui.interact(cell, id, egui::Sense::click());
-            let h = material::animate(ui.ctx(), id.with("h"), resp.hovered());
-            ui.painter().rect_filled(cell, material::pill(cell), theme.with_alpha(theme.text, (h * material::ALPHA_HOVER as f32) as u8));
-            (resp, material::lerp_color(if current { theme.text } else { theme.subtext1 }, theme.text, h))
+            let fx = material::fx(ui, id, &resp, true, &material::FxSpec::CLICK);
+            let r = material::scaled(cell, fx.scale);
+            material::paint_fill(ui.painter(), r, material::pill(r), material::row_layer(&theme, &fx), &fx);
+            (resp, material::lerp_color(if current { theme.text } else { theme.subtext1 }, theme.text, fx.hover.max(fx.press)))
         };
         let chevron = |ui: &egui::Ui, x: f32| {
             material::paint_icon(ui.painter(), egui::pos2(x + sep / 2.0, cy), icons::CHEVRON_RIGHT, material::ICON_XS, theme.with_alpha(theme.subtext1, 140));
@@ -1618,7 +1676,7 @@ impl SkiApp {
         let last = crumbs.len().saturating_sub(1);
         for (i, (crumb, w)) in crumbs.iter().zip(&widths).enumerate() {
             let cell = egui::Rect::from_min_size(egui::pos2(x, cy - CRUMB_HEIGHT / 2.0), egui::vec2(*w, CRUMB_HEIGHT));
-            let (resp, color) = crumb_button(ui, ui.make_persistent_id(("crumb", i)), cell, i == last);
+            let (resp, color) = crumb_button(ui, ui.make_persistent_id(("crumb", &crumb.path)), cell, i == last);
             let mut tx = cell.left() + 10.0;
             if let Some(icon) = crumb.icon {
                 material::paint_icon(ui.painter(), egui::pos2(tx + 8.0, cy), icon, material::ICON_MD, color);
@@ -1723,10 +1781,10 @@ impl SkiApp {
                 first = false;
 
                 if section == 2 {
-                    for (idx, pin) in self.pins.iter().enumerate() {
+                    for pin in &self.pins {
                         let selected = browsing && self.current_path == *pin;
                         let name = pin.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| pin.display().to_string());
-                        let resp = nav_item(ui, ("pin", idx), icons::FOLDER, &name, &self.theme, selected);
+                        let resp = nav_item(ui, ("pin", pin), icons::FOLDER, &name, &self.theme, selected);
                         if resp.clicked() {
                             destination = Some(pin.clone());
                         }
@@ -1797,52 +1855,73 @@ impl SkiApp {
         }
 
         // The pill grows out of the inset button; the icon stays on the destinations' icon column
-        let inset = HEADER_INSET * (1.0 - open_t);
-        let rect = egui::Rect::from_min_size(
-            slot.min + egui::vec2(inset, 0.0),
-            egui::vec2(CONTROL_HEIGHT + (full - CONTROL_HEIGHT) * open_t - inset, CONTROL_HEIGHT),
+        let rect = egui::Rect::from_min_max(
+            egui::pos2(slot.min.x + HEADER_INSET * (1.0 - open_t), slot.top()),
+            egui::pos2(material::lerp(slot.min.x + HEADER_INSET + CONTROL_HEIGHT, slot.min.x + full, open_t), slot.bottom()),
         );
 
         let search_id = egui::Id::unique("sidebar_search");
         let focused = ui.memory(|m| m.has_focus(search_id));
-        let fill = if focused { self.theme.surface2 } else { self.theme.surface1 };
-        ui.painter().rect_filled(rect, material::pill(rect), fill);
+        let focus_t = material::animate(ui.ctx(), egui::Id::unique("sidebar_search_focus"), focused);
+        let fill = material::lerp_color(
+            egui::Color32::TRANSPARENT,
+            material::lerp_color(self.theme.surface1, self.theme.surface2, focus_t),
+            open_t,
+        );
+        ui.painter().rect_filled(material::snap(ui.painter(), rect), material::pill(rect), fill);
         material::paint_icon(ui.painter(), egui::pos2(slot.left() + material::INSET_ICON, rect.center().y), icons::SEARCH, material::ICON_MD, self.theme.subtext1);
 
-        if open_t < 0.6 {
+        let content_alpha = ((open_t - 0.35) / 0.65).clamp(0.0, 1.0);
+        if content_alpha <= 0.0 && !self.focus_search {
             return;
         }
         let clear_rect = egui::Rect::from_center_size(egui::pos2(rect.right() - CONTROL_HEIGHT / 2.0, rect.center().y), egui::vec2(26.0, 26.0));
+        let edit_left = slot.left() + material::INSET_LABEL;
+        let edit_right = (clear_rect.left() - 4.0).max(edit_left + 8.0);
         let edit_rect = egui::Rect::from_min_max(
-            egui::pos2(slot.left() + material::INSET_LABEL, rect.top()),
-            egui::pos2(clear_rect.left() - 4.0, rect.bottom()),
+            egui::pos2(edit_left, rect.top()),
+            egui::pos2(edit_right, rect.bottom()),
         );
-        let resp = material::put_over(
-            ui,
-            edit_rect,
-            egui::TextEdit::singleline(&mut self.search_query)
-                .id(search_id)
-                .frame(egui::Frame::NONE)
-                .align(egui::Align2::LEFT_CENTER)
-                .font(egui::FontId::proportional(material::FONT_BODY))
-                .hint_text("Search files"),
-        );
-        if self.focus_search {
-            resp.request_focus();
-            self.focus_search = false;
-        }
-        if resp.changed() {
-            let ctx = ui.ctx().clone();
-            self.on_query_changed(&ctx);
-        }
+        ui.scope(|ui| {
+            ui.set_clip_rect(rect.intersect(ui.clip_rect()));
+            ui.set_opacity(content_alpha);
+            let resp = material::put_over(
+                ui,
+                edit_rect,
+                egui::TextEdit::singleline(&mut self.search_query)
+                    .id(search_id)
+                    .frame(egui::Frame::NONE)
+                    .align(egui::Align2::LEFT_CENTER)
+                    .font(egui::FontId::proportional(material::FONT_BODY))
+                    .hint_text("Search files"),
+            );
+            if self.focus_search {
+                resp.request_focus();
+                self.focus_search = false;
+            }
+            if resp.changed() {
+                let ctx = ui.ctx().clone();
+                self.on_query_changed(&ctx);
+            }
 
-        let clear = ui.interact(clear_rect, ui.make_persistent_id("sidebar_search_clear"), egui::Sense::click());
-        let hover = material::animate(ui.ctx(), clear.id.with("h"), clear.hovered());
-        ui.painter().rect_filled(clear_rect, material::pill(clear_rect), self.theme.with_alpha(self.theme.text, (hover * material::ALPHA_PRESS as f32) as u8));
-        material::paint_icon(ui.painter(), clear_rect.center(), icons::CLOSE, material::ICON_XS, material::lerp_color(self.theme.subtext1, self.theme.text, hover));
-        if clear.clicked() {
-            self.close_search();
-        }
+            if content_alpha > 0.01 {
+                let clear_id = ui.make_persistent_id("sidebar_search_clear");
+                let clear = ui.interact(clear_rect, clear_id, if open { egui::Sense::click() } else { egui::Sense::hover() });
+                let fx = material::fx(ui, clear_id, &clear, open, &material::FxSpec::ICON);
+                let r = material::scaled(clear_rect, fx.scale);
+                material::paint_fill(ui.painter(), r, material::pill(r), material::row_layer(&self.theme, &fx), &fx);
+                material::paint_icon(
+                    ui.painter(),
+                    clear_rect.center(),
+                    icons::CLOSE,
+                    material::ICON_XS,
+                    material::lerp_color(self.theme.subtext1, self.theme.text, fx.hover.max(fx.press)),
+                );
+                if clear.clicked() && open {
+                    self.close_search();
+                }
+            }
+        });
     }
 
     fn open_item(&mut self, item: FileItem) {
@@ -1877,7 +1956,7 @@ impl SkiApp {
     fn render_list_view(&mut self, ui: &mut egui::Ui) {
         let mut opened: Option<FileItem> = None;
         let should_scroll = std::mem::take(&mut self.scroll_to_selected);
-        let row_height = self.settings.density.row_height();
+        let row_height = material::animate_value(ui.ctx(), egui::Id::unique("list_row_height"), self.settings.density.row_height(), material::ANIM);
         let show_thumbs = self.settings.show_thumbnails;
 
         if !self.is_mixed_listing()
@@ -1951,7 +2030,9 @@ impl SkiApp {
     fn render_grid_view(&mut self, ui: &mut egui::Ui) {
         let mut opened: Option<FileItem> = None;
         let should_scroll = std::mem::take(&mut self.scroll_to_selected);
-        let (cell_w, cell_h) = self.settings.grid_size.cell_size();
+        let (target_w, target_h) = self.settings.grid_size.cell_size();
+        let cell_w = material::animate_value(ui.ctx(), egui::Id::unique("grid_cell_w"), target_w, material::ANIM);
+        let cell_h = material::animate_value(ui.ctx(), egui::Id::unique("grid_cell_h"), target_h, material::ANIM);
         let cell = egui::vec2(cell_w, cell_h);
         let grid_size = self.settings.grid_size;
         let grid_lines = self.settings.grid_name_lines as usize;
@@ -2060,6 +2141,7 @@ impl SkiApp {
     ) -> bool {
         if self.dialog.is_some() || self.menu.is_some() || self.show_settings {
             self.drag_select = None;
+            self.last_rubberband = None;
             return false;
         }
 
@@ -2096,58 +2178,70 @@ impl SkiApp {
             });
         }
 
-        let Some(mut drag) = self.drag_select.take() else {
-            return false;
-        };
+        let mut is_active = false;
+        let mut was_active = false;
 
-        if let Some(p) = pos {
-            drag.current_screen = p;
-        }
+        if let Some(mut drag) = self.drag_select.take() {
+            if let Some(p) = pos {
+                drag.current_screen = p;
+            }
 
-        let start_screen = egui::pos2(drag.start_content.x, drag.start_content.y - scroll_y);
-        if !drag.active && drag.current_screen.distance(start_screen) >= 5.0 {
-            drag.active = true;
-        }
+            let start_screen = egui::pos2(drag.start_content.x, drag.start_content.y - scroll_y);
+            if !drag.active && drag.current_screen.distance(start_screen) >= 5.0 {
+                drag.active = true;
+            }
 
-        if drag.active {
-            let box_screen = egui::Rect::from_two_pos(start_screen, drag.current_screen);
-            let mut next_selection = drag.base_selection.clone();
-            let mut first_hit = None;
-            let mut last_hit = None;
+            if drag.active {
+                let box_screen = egui::Rect::from_two_pos(start_screen, drag.current_screen);
+                let mut next_selection = drag.base_selection.clone();
+                let mut first_hit = None;
+                let mut last_hit = None;
 
-            for &(idx, rect) in item_rects {
-                if box_screen.intersects(rect) {
-                    if first_hit.is_none() {
-                        first_hit = Some(idx);
+                for &(idx, rect) in item_rects {
+                    if box_screen.intersects(rect) {
+                        if first_hit.is_none() {
+                            first_hit = Some(idx);
+                        }
+                        last_hit = Some(idx);
+                        if mods.command && drag.base_selection.contains(&idx) {
+                            next_selection.remove(&idx);
+                        } else {
+                            next_selection.insert(idx);
+                        }
                     }
-                    last_hit = Some(idx);
-                    if mods.command && drag.base_selection.contains(&idx) {
-                        next_selection.remove(&idx);
-                    } else {
-                        next_selection.insert(idx);
-                    }
+                }
+
+                self.selection = next_selection;
+                self.selected_index = last_hit.or_else(|| self.selection.iter().next_back().copied());
+                self.anchor = first_hit.or(self.selected_index);
+                self.last_cursor = self.selected_index;
+
+                let clipped = box_screen.intersect(viewport);
+                if clipped.is_positive() {
+                    self.last_rubberband = Some(clipped);
                 }
             }
 
-            self.selection = next_selection;
-            self.selected_index = last_hit.or_else(|| self.selection.iter().next_back().copied());
-            self.anchor = first_hit.or(self.selected_index);
-            self.last_cursor = self.selected_index;
-
-            let clipped = box_screen.intersect(viewport);
-            if clipped.is_positive() {
-                let painter = ui.ctx().layer_painter(egui::LayerId::new(
-                    egui::Order::Foreground,
-                    egui::Id::unique("rubberband_overlay"),
-                ));
-                material::paint_rubberband(&painter, clipped, &self.theme);
+            was_active = drag.active;
+            if down && !released {
+                is_active = drag.active;
+                self.drag_select = Some(drag);
             }
         }
 
-        let was_active = drag.active;
-        if down && !released {
-            self.drag_select = Some(drag);
+        let rb_t = material::animate_for(ui.ctx(), egui::Id::unique("rubberband_fade"), is_active, material::ANIM_FAST);
+        if rb_t > 0.01
+            && let Some(rect) = self.last_rubberband
+        {
+            let painter = ui.ctx().layer_painter(egui::LayerId::new(
+                egui::Order::Foreground,
+                egui::Id::unique("rubberband_overlay"),
+            ));
+            material::paint_rubberband_faded(&painter, rect, &self.theme, rb_t);
+        } else if !is_active {
+            self.last_rubberband = None;
         }
+
         was_active
     }
 
@@ -2188,7 +2282,9 @@ impl SkiApp {
 
     /// While files are dragged over the window: a tint and a hint about where they will land.
     fn render_drop_overlay(&self, ctx: &egui::Context) {
-        if ctx.input(|i| i.raw.hovered_files.is_empty()) || self.dialog.is_some() {
+        let active = !ctx.input(|i| i.raw.hovered_files.is_empty()) && self.dialog.is_none();
+        let t = material::animate(ctx, egui::Id::unique("drop_overlay_anim"), active);
+        if t <= 0.0 {
             return;
         }
         let theme = self.theme;
@@ -2196,17 +2292,22 @@ impl SkiApp {
         let target = if self.can_modify_here() { format!("Drop to copy into “{}”", self.location_name()) } else { "Open a regular folder to drop files".to_owned() };
         egui::Area::new(egui::Id::unique("drop_overlay")).order(egui::Order::Foreground).fixed_pos(screen.min).interactable(false).show(ctx, |ui| {
             let (rect, _) = ui.allocate_exact_size(screen.size(), egui::Sense::hover());
-            ui.painter().rect_filled(rect, 0, theme.with_alpha(theme.mauve, 28));
-            let galley = ui.painter().layout_no_wrap(target, egui::FontId::proportional(material::FONT_SUBTITLE), theme.text);
-            let pill = egui::Rect::from_center_size(rect.center(), galley.size() + egui::vec2(48.0, 24.0));
-            ui.painter().rect_filled(pill, material::pill(pill), theme.surface2);
-            ui.painter().galley(pill.center() - galley.size() / 2.0, galley, theme.text);
+            ui.painter().rect_filled(rect, 0, theme.with_alpha(theme.mauve, (28.0 * t).round() as u8));
+            let galley = ui.painter().layout_no_wrap(target, egui::FontId::proportional(material::FONT_SUBTITLE), theme.text.gamma_multiply(t));
+            let scale = material::lerp(0.94, 1.0, t);
+            let pill = egui::Rect::from_center_size(
+                rect.center() + egui::vec2(0.0, (1.0 - t) * 8.0),
+                (galley.size() + egui::vec2(48.0, 24.0)) * scale,
+            );
+            ui.painter().rect_filled(pill, material::pill(pill), theme.surface2.gamma_multiply(t));
+            ui.painter().galley(pill.center() - galley.size() / 2.0, galley, theme.text.gamma_multiply(t));
         });
     }
 
     fn render_toast(&mut self, ctx: &egui::Context) {
+        let open = self.status_toast.as_ref().is_some_and(|t| !t.leaving);
+        let t = material::animate(ctx, egui::Id::unique("toast_anim"), open);
         let Some(toast) = &self.status_toast else { return };
-        let t = material::animate(ctx, egui::Id::unique("toast_anim"), !toast.leaving);
         if toast.leaving && t <= 0.0 {
             self.status_toast = None;
             return;
@@ -2247,7 +2348,7 @@ impl SkiApp {
     }
 
     fn render_settings(&mut self, ctx: &egui::Context) {
-        let t = material::animate_for(ctx, egui::Id::unique("settings_anim"), self.show_settings, material::ANIM_SLOW);
+        let t = material::animate(ctx, egui::Id::unique("settings_anim"), self.show_settings);
         if t <= 0.0 {
             return;
         }
@@ -2266,7 +2367,7 @@ impl SkiApp {
             .pivot(egui::Align2::RIGHT_TOP)
             .fixed_pos(egui::pos2(
                 self.settings_button_rect.right(),
-                self.settings_button_rect.bottom() + POPUP_GAP - (1.0 - t) * (POPUP_GAP - 1.0),
+                self.settings_button_rect.bottom() + POPUP_GAP - (1.0 - t) * 8.0,
             ))
             .interactable(self.show_settings)
             .show(ctx, |ui| {
@@ -2362,7 +2463,7 @@ impl SkiApp {
             reload = true;
         }
 
-        if self.view_mode == ViewMode::List {
+        material::collapsible(ui, "vo_list_columns", self.view_mode == ViewMode::List, |ui| {
             material::divider(ui, &theme);
             self.section_title(ui, "List columns");
             ui.horizontal_wrapped(|ui| {
@@ -2377,7 +2478,7 @@ impl SkiApp {
                     }
                 }
             });
-        }
+        });
 
         material::divider(ui, &theme);
         self.section_title(ui, "File type");
@@ -3312,9 +3413,9 @@ impl SkiApp {
                         if !pins.is_empty() {
                             material::divider(ui, &theme);
                         }
-                        for (idx, pin) in pins.iter().enumerate() {
+                        for pin in pins {
                             let name = pin.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| pin.display().to_string());
-                            if nav_item(ui, ("pk_pin", idx), icons::FOLDER, &name, &theme, picker.dir == *pin).clicked() {
+                            if nav_item(ui, ("pk_pin", pin), icons::FOLDER, &name, &theme, picker.dir == *pin).clicked() {
                                 goto = Some(pin.clone());
                             }
                         }
@@ -3379,9 +3480,9 @@ impl SkiApp {
                     egui::ScrollArea::vertical().auto_shrink([false, false]).id_salt("pk_scroll").show(ui, |ui| {
                         ui.spacing_mut().item_spacing.y = 2.0;
                         let mut pick = None;
-                        for (idx, folder) in picker.folders.iter().enumerate() {
+                        for folder in &picker.folders {
                             let label = folder.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-                            let resp = nav_item(ui, ("pk_folder", idx), icons::FOLDER, &label, &theme, picker.chosen.as_ref() == Some(folder));
+                            let resp = nav_item(ui, ("pk_folder", folder), icons::FOLDER, &label, &theme, picker.chosen.as_ref() == Some(folder));
                             if resp.double_clicked() {
                                 goto = Some(folder.clone());
                             } else if resp.clicked() {
@@ -3705,11 +3806,11 @@ impl SkiApp {
                         && nav_item(ui, "icon_browse_up", icons::ARROW_UP, "..", &theme, false).clicked() {
                             *browse = Some(parent.to_path_buf());
                         }
-                    for (idx, (path, is_dir)) in entries.iter().enumerate() {
+                    for (path, is_dir) in &entries {
                         let label = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
                         let glyph = if *is_dir { icons::FOLDER } else { icons::IMAGE };
                         let on = !*is_dir && *input == path.to_string_lossy();
-                        if nav_item(ui, ("icon_browse_entry", idx), glyph, &label, &theme, on).clicked() {
+                        if nav_item(ui, ("icon_browse_entry", path), glyph, &label, &theme, on).clicked() {
                             if *is_dir {
                                 *browse = Some(path.clone());
                             } else {
@@ -3724,10 +3825,10 @@ impl SkiApp {
         } else if !candidates.is_empty() {
             material::section_label(ui, "Images in this folder", &theme);
             ui.horizontal_wrapped(|ui| {
-                for (idx, path) in candidates.iter().enumerate() {
+                for path in candidates.iter() {
                     let label = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
                     let on = *input == path.to_string_lossy();
-                    if chip(ui, ("icon_candidate", idx), None, &label, &theme, on).clicked() {
+                    if chip(ui, ("icon_candidate", path), None, &label, &theme, on).clicked() {
                         *input = path.to_string_lossy().into_owned();
                         *error = None;
                     }
@@ -3838,17 +3939,20 @@ impl SkiApp {
                             let fx = material::fx(ui, resp.id, &resp, true, &material::FxSpec::ROW);
                             let painter = ui.painter();
                             let inner = rect.shrink2(egui::vec2(4.0, 2.0));
-                            painter.rect_filled(inner, material::pill(inner), theme.with_alpha(theme.text, (fx.hover * material::ALPHA_HOVER as f32) as u8));
+                            material::paint_fill(painter, inner, material::pill(inner), material::row_layer(&theme, &fx), &fx);
                             if idx > 0 {
                                 let line = egui::Rect::from_min_size(egui::pos2(rect.left() + 16.0, rect.top()), egui::vec2(full - 32.0, 1.0));
-                                painter.rect_filled(line, 0, theme.with_alpha(theme.text, 14));
+                                painter.rect_filled(material::snap(painter, line), 0, theme.with_alpha(theme.text, 14));
                             }
                             painter.text(egui::pos2(rect.left() + 16.0, rect.center().y), egui::Align2::LEFT_CENTER, *label, egui::FontId::proportional(12.5), theme.subtext1);
                             let mut job = egui::text::LayoutJob::simple_singleline(value.clone(), egui::FontId::proportional(material::FONT_BODY), theme.text);
                             job.wrap = egui::text::TextWrapping::truncate_at_width((full - 140.0 - 36.0).max(20.0));
                             let galley = painter.layout_job(job);
                             painter.galley(egui::pos2(rect.left() + 118.0, rect.center().y - galley.size().y / 2.0), galley, theme.text);
-                            material::paint_icon(painter, egui::pos2(rect.right() - 22.0, rect.center().y), icons::COPY, 14.0, theme.with_alpha(theme.subtext1, (fx.hover * 255.0) as u8));
+                            let copy_alpha = ((fx.hover.max(fx.press)) * 255.0).round() as u8;
+                            if copy_alpha > 0 {
+                                material::paint_icon(painter, egui::pos2(rect.right() - 22.0, rect.center().y), icons::COPY, 14.0, theme.with_alpha(theme.subtext1, copy_alpha));
+                            }
                             if resp.on_hover_text("Click to copy").clicked() {
                                 copied = Some(value.clone());
                             }
@@ -3906,17 +4010,21 @@ pub(crate) fn app_row(
     let id = ui.make_persistent_id(id_source);
     let fx = material::fx(ui, id, &resp, true, &material::FxSpec::ROW);
     let sel = material::animate(ui.ctx(), id.with("sel"), selected);
-    let bg = material::lerp_color(theme.with_alpha(theme.text, (fx.hover * material::ALPHA_HOVER as f32) as u8), theme.with_alpha(theme.mauve, material::ALPHA_SEL_BG), sel);
-    ui.painter().rect_filled(rect, material::pill(rect), bg);
+    let icon_t = material::animate(ui.ctx(), id.with("ico"), icon.is_some());
+    let bg = material::selectable_bg(theme, &fx, sel);
+    material::paint_fill(ui.painter(), rect, material::pill(rect), bg, &fx);
 
     let icon_rect = egui::Rect::from_center_size(egui::pos2(rect.left() + 26.0, rect.center().y), egui::vec2(28.0, 28.0));
-    match icon {
-        Some(tex) => {
-            egui::Image::from_texture(egui::load::SizedTexture::new(tex.id(), icon_rect.size())).paint_at(ui, icon_rect);
-        }
-        None => material::paint_icon(ui.painter(), icon_rect.center(), icons::EXECUTABLE, 22.0, theme.subtext0),
+    if icon_t < 0.99 {
+        material::paint_icon(ui.painter(), icon_rect.center(), icons::EXECUTABLE, 22.0, theme.subtext0.gamma_multiply(1.0 - icon_t));
     }
-    let color = material::lerp_color(theme.text, theme.mauve, sel);
+    if let Some(tex) = icon {
+        ui.scope(|ui| {
+            ui.set_opacity(icon_t);
+            egui::Image::from_texture(egui::load::SizedTexture::new(tex.id(), icon_rect.size())).paint_at(ui, icon_rect);
+        });
+    }
+    let color = material::lerp_color(material::lerp_color(theme.text, theme.text, fx.hover), theme.mauve, sel);
     let mut job = egui::text::LayoutJob::simple_singleline(label.to_owned(), egui::FontId::proportional(material::FONT_BODY), color);
     job.wrap = egui::text::TextWrapping::truncate_at_width((rect.width() - 64.0).max(20.0));
     let galley = ui.painter().layout_job(job);
