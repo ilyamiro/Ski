@@ -28,19 +28,21 @@ pub struct Place {
     pub icon: &'static str,
     pub kind: PlaceKind,
     pub group: PlaceGroup,
+    /// The device behind a drive entry.
+    pub drive: Option<super::drives::Drive>,
 }
 
 impl Place {
     pub fn new(name: impl Into<String>, path: PathBuf, icon: &'static str, group: PlaceGroup) -> Self {
-        Self { name: name.into(), path, icon, kind: PlaceKind::Folder, group }
+        Self { name: name.into(), path, icon, kind: PlaceKind::Folder, group, drive: None }
     }
 
-    /// Pinned folders, saved in `~/.config/ski/pins.json`.
+    /// Pinned folders and files, saved in `~/.config/ski/pins.json`.
     pub fn load_pins() -> Vec<PathBuf> {
         pins_file()
             .and_then(|f| std::fs::read_to_string(f).ok())
             .and_then(|s| serde_json::from_str::<Vec<PathBuf>>(&s).ok())
-            .map(|pins| pins.into_iter().filter(|p| p.is_dir()).collect())
+            .map(|pins| pins.into_iter().filter(|p| p.exists()).collect())
             .unwrap_or_default()
     }
 
@@ -86,36 +88,18 @@ impl Place {
         }
 
         places.push(Place::new("Computer", PathBuf::from("/"), icons::STORAGE, Devices));
-        places.extend(mounted_drives());
+        places.extend(super::drives::list());
 
         // Compare against canonical paths so symlinked folders still highlight
         for place in &mut places {
             if place.kind == PlaceKind::Folder
+                && place.drive.as_ref().is_none_or(|d| d.mounted)
                 && let Ok(canonical) = place.path.canonicalize() {
                     place.path = canonical;
                 }
         }
         places
     }
-}
-
-/// Removable drives the desktop mounted for the user (`/run/media/<user>/<label>` and friends).
-fn mounted_drives() -> Vec<Place> {
-    let user = std::env::var("USER").unwrap_or_default();
-    let roots = [PathBuf::from("/run/media").join(&user), PathBuf::from("/media").join(&user), PathBuf::from("/media")];
-    let mut drives: Vec<Place> = roots
-        .iter()
-        .filter_map(|root| std::fs::read_dir(root).ok())
-        .flat_map(|rd| rd.flatten())
-        .map(|e| e.path())
-        .filter(|p| p.is_dir())
-        .map(|p| {
-            let name = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-            Place::new(name, p, icons::USB, PlaceGroup::Devices)
-        })
-        .collect();
-    drives.sort_by_key(|d| d.name.to_lowercase());
-    drives
 }
 
 fn pins_file() -> Option<PathBuf> {

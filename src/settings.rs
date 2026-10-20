@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 use crate::app::ViewMode;
+use crate::i18n::tr;
 use crate::fs::scanner::{SortBy, SortOrder};
 use crate::ui::material::Column;
 
@@ -12,6 +13,8 @@ use crate::ui::material::Column;
 pub struct Settings {
     /// Palette name: `system` follows the Serpantinum colors, otherwise a preset from `theme::PRESETS`.
     pub theme: String,
+    /// `system` follows the desktop language, otherwise a code from `i18n::Language`.
+    pub language: String,
     /// Accent color as `#rrggbb`; `None` keeps the palette's own.
     pub accent: Option<String>,
     /// Font file for the interface; `None` is the bundled Adwaita Sans.
@@ -37,7 +40,15 @@ pub struct Settings {
     pub vim_keys: bool,
     pub open_in_new_window: bool,
     pub confirm_delete: bool,
+    /// Command that opens a terminal; `{}` stands for the folder. Empty finds one by itself.
+    pub terminal: String,
+    /// Folder whose files are offered as templates for new files; `None` is the desktop's own.
+    pub templates_dir: Option<PathBuf>,
     pub type_to_filter: bool,
+    /// Where searches look, and whether they match case or look inside files.
+    pub search_scope: crate::fs::search::SearchScope,
+    pub search_case: bool,
+    pub search_contents: bool,
     // View
     pub density: Density,
     pub grid_size: GridSize,
@@ -77,9 +88,9 @@ impl Density {
 
     pub fn label(self) -> &'static str {
         match self {
-            Density::Compact => "Compact",
-            Density::Comfortable => "Comfortable",
-            Density::Spacious => "Spacious",
+            Density::Compact => tr("Compact"),
+            Density::Comfortable => tr("Comfortable"),
+            Density::Spacious => tr("Spacious"),
         }
     }
 
@@ -171,6 +182,9 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             theme: "system".to_owned(),
+            language: "system".to_owned(),
+            terminal: String::new(),
+            templates_dir: None,
             accent: None,
             font: None,
             font_name: None,
@@ -190,6 +204,9 @@ impl Default for Settings {
             open_in_new_window: false,
             confirm_delete: true,
             type_to_filter: false,
+            search_scope: Default::default(),
+            search_case: false,
+            search_contents: false,
             density: Density::Comfortable,
             grid_size: GridSize::default(),
             grid_name_lines: 2,

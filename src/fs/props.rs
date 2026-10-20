@@ -6,6 +6,7 @@ use std::sync::{Arc, OnceLock};
 use std::time::SystemTime;
 
 use super::file_item::{format_bytes, FileItem};
+use crate::i18n::{tr, trf, trn};
 
 fn id_table(path: &str) -> HashMap<u32, String> {
     let mut map = HashMap::new();
@@ -46,7 +47,7 @@ pub fn mode_string(mode: u32, is_dir: bool) -> String {
 
 /// `2026-10-18 14:03` in local time.
 pub fn format_datetime(time: Option<SystemTime>) -> String {
-    let Some(time) = time else { return "Unknown".to_owned() };
+    let Some(time) = time else { return tr("Unknown").to_owned() };
     let secs = match time.duration_since(SystemTime::UNIX_EPOCH) {
         Ok(d) => d.as_secs() as libc::time_t,
         Err(e) => -(e.duration().as_secs() as libc::time_t),
@@ -55,7 +56,7 @@ pub fn format_datetime(time: Option<SystemTime>) -> String {
     let tm = unsafe {
         let mut tm: libc::tm = std::mem::zeroed();
         if libc::localtime_r(&secs, &mut tm).is_null() {
-            return "Unknown".to_owned();
+            return tr("Unknown").to_owned();
         }
         tm
     };
@@ -176,38 +177,37 @@ impl Properties {
     /// Sections of label / value pairs in display order. Folder totals are added by the caller.
     pub fn groups(&self) -> Vec<(&'static str, Vec<(&'static str, String)>)> {
         let it = &self.item;
-        let mut general = vec![("Type", self.kind.clone()), ("Location", self.location.clone())];
+        let mut general = vec![(tr("Type"), self.kind.clone()), (tr("Location"), self.location.clone())];
         if let Some(target) = &self.link_target {
-            general.push(("Links to", target.clone()));
+            general.push((tr("Links to"), target.clone()));
         }
         if !it.is_dir {
-            general.insert(1, ("MIME type", self.mime.clone()));
+            general.insert(1, (tr("MIME type"), self.mime.clone()));
         }
         if it.is_dir {
             if let Some(n) = self.child_count {
-                general.push(("Contents", if n == 1 { "1 item".to_owned() } else { format!("{n} items") }));
+                general.push((tr("Contents"), trn(n, "{} item", "{} items")));
             }
         } else {
-            general.push(("Size", format!("{} ({} bytes)", format_bytes(it.size), it.size)));
+            general.push((tr("Size"), trf("{} ({} bytes)", &[&format_bytes(it.size), &it.size])));
         }
-        let mut groups = vec![("General", general)];
+        let mut groups = vec![(tr("General"), general)];
         groups.extend(self.extra.iter().cloned());
         groups.extend([
             (
-                "Dates",
+                tr("Dates"),
                 vec![
-                    ("Modified", format_datetime(it.modified)),
-                    ("Created", format_datetime(it.created)),
-                    ("Accessed", format_datetime(it.accessed)),
-                    ("Changed", format_datetime(self.changed)),
+                    (tr("Modified"), format_datetime(it.modified)),
+                    (tr("Created"), format_datetime(it.created)),
+                    (tr("Accessed"), format_datetime(it.accessed)),
+                    (tr("Changed"), format_datetime(self.changed)),
                 ],
             ),
             (
-                "Ownership",
+                tr("Ownership"),
                 vec![
-                    ("Owner", it.owner()),
-                    ("Group", self.group.clone()),
-                    ("Permissions", format!("{} ({:03o})", mode_string(it.mode, it.is_dir), it.mode & 0o777)),
+                    (tr("Owner"), it.owner()),
+                    (tr("Group"), self.group.clone()),
                 ],
             ),
         ]);
@@ -217,7 +217,7 @@ impl Properties {
 
 fn describe(item: &FileItem) -> String {
     let base = if item.is_dir {
-        "Folder".to_owned()
+        tr("Folder").to_owned()
     } else {
         let ext = item
             .path
@@ -226,11 +226,11 @@ fn describe(item: &FileItem) -> String {
             .unwrap_or_default();
         match (ext.is_empty(), item.file_type) {
             (true, t) => t.label().to_owned(),
-            (false, super::file_item::FileType::Other) => format!("{ext} file"),
+            (false, super::file_item::FileType::Other) => trf("{} file", &[&ext]),
             (false, t) => format!("{ext} · {}", t.label()),
         }
     };
-    if item.is_symlink { format!("Link to {}", base.to_lowercase()) } else { base }
+    if item.is_symlink { trf("Link to {}", &[&base.to_lowercase()]) } else { base }
 }
 
 type Section = (&'static str, Vec<(&'static str, String)>);
@@ -243,14 +243,14 @@ fn type_details(item: &FileItem, mime: &str) -> Vec<Section> {
     let mut sections = Vec::new();
     if mime.starts_with("image/") {
         if let Some(rows) = image_details(&item.path) {
-            sections.push(("Image", rows));
+            sections.push((tr("Image"), rows));
         }
     } else if (mime.starts_with("text/") || mime.contains("json") || mime.contains("toml") || mime.contains("xml"))
         && let Some(rows) = text_details(&item.path, item.size) {
-            sections.push(("Text", rows));
+            sections.push((tr("Text"), rows));
         }
     if item.file_type == super::file_item::FileType::Executable {
-        sections.push(("Program", vec![("Executable", "Yes".to_owned())]));
+        sections.push((tr("Program"), vec![(tr("Executable"), tr("Yes").to_owned())]));
     }
     sections
 }
@@ -266,26 +266,26 @@ fn image_details(path: &Path) -> Option<Vec<(&'static str, String)>> {
     let channels = color.channel_count().max(1) as u32;
     let bits = color.bits_per_pixel() as u32 / channels;
     let model = match channels {
-        1 => "Grayscale",
-        2 => "Grayscale + alpha",
-        3 => "RGB",
-        _ => "RGB + alpha",
+        1 => tr("Grayscale"),
+        2 => tr("Grayscale + alpha"),
+        3 => tr("RGB"),
+        _ => tr("RGB + alpha"),
     };
     let divisor = gcd(w, h).max(1);
     let orientation = match w.cmp(&h) {
-        std::cmp::Ordering::Greater => "Landscape",
-        std::cmp::Ordering::Less => "Portrait",
-        std::cmp::Ordering::Equal => "Square",
+        std::cmp::Ordering::Greater => tr("Landscape"),
+        std::cmp::Ordering::Less => tr("Portrait"),
+        std::cmp::Ordering::Equal => tr("Square"),
     };
 
     let mut rows = vec![
-        ("Dimensions", format!("{w} × {h} px")),
-        ("Megapixels", format!("{:.2} MP", w as f64 * h as f64 / 1_000_000.0)),
-        ("Aspect ratio", format!("{}:{} · {orientation}", w / divisor, h / divisor)),
-        ("Color", format!("{model}, {bits}-bit")),
+        (tr("Dimensions"), format!("{w} × {h} px")),
+        (tr("Megapixels"), format!("{:.2} MP", w as f64 * h as f64 / 1_000_000.0)),
+        (tr("Aspect ratio"), format!("{}:{} · {orientation}", w / divisor, h / divisor)),
+        (tr("Color"), trf("{}, {}-bit", &[&model, &bits])),
     ];
     if let Some(format) = format {
-        rows.push(("Format", format!("{format:?}").to_uppercase()));
+        rows.push((tr("Format"), format!("{format:?}").to_uppercase()));
     }
     Some(rows)
 }
@@ -301,9 +301,9 @@ fn text_details(path: &Path, size: u64) -> Option<Vec<(&'static str, String)>> {
     }
     let content = std::fs::read_to_string(path).ok()?;
     Some(vec![
-        ("Lines", content.lines().count().to_string()),
-        ("Words", content.split_whitespace().count().to_string()),
-        ("Characters", content.chars().count().to_string()),
-        ("Encoding", "UTF-8".to_owned()),
+        (tr("Lines"), content.lines().count().to_string()),
+        (tr("Words"), content.split_whitespace().count().to_string()),
+        (tr("Characters"), content.chars().count().to_string()),
+        (tr("Encoding"), "UTF-8".to_owned()),
     ])
 }

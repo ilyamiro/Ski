@@ -8,13 +8,6 @@ A small, fast, keyboard-friendly file manager for Linux, written in Rust. Flat M
 
 ![Ski showing a Pictures folder as a grid of thumbnails](docs/screenshots/hero.png)
 
-- List and grid views with thumbnails for images, SVGs, PDFs and office documents
-- Search across your home folder, with recently opened files first
-- Copy, cut, paste, rename, compress and extract; nothing is ever overwritten
-- Trash with undo, shared with other file managers
-- Five themes, any accent color, and rebindable shortcuts
-- Works on Wayland and X11
-
 ## Install
 
 ### Docker or Podman
@@ -86,7 +79,10 @@ ski ~/Downloads  # open a specific folder
 | Move around | Click, or use `j` `k` or the arrow keys and `Enter`. `Backspace` or `h` goes up. |
 | Go to a path | `Ctrl+L`, type the path, `Enter` |
 | Search | `/`, then type a name. `Esc` leaves the results. |
-| Pin a folder to the sidebar | Open it and press `Ctrl+D` |
+| Pin a folder or file to the sidebar | Select it and press `Ctrl+D` (with nothing selected: the open folder). Drag pinned rows to reorder. |
+| Move or copy by dragging | Drag items onto a folder, sidebar place, breadcrumb or tab. Hold `Ctrl` to copy. |
+| Open a folder in a tab | Middle-click it, or `Ctrl+T` for a new tab |
+| Eject a drive | Hover it in the sidebar and click the eject button |
 | Switch list and grid | `Ctrl+1` and `Ctrl+2` |
 | Settings | `Ctrl+,` |
 | See all shortcuts | `?` |
@@ -118,14 +114,25 @@ Right-click anything for a menu that shows the shortcut of each action.
 | `Ctrl+H` | Show or hide hidden files |
 | `F5` | Refresh |
 | `Ctrl+N` | New window |
+| `Ctrl+T` / `Ctrl+W` | New tab / close tab (closes the window on the last tab) |
+| `Ctrl+Tab` / `Ctrl+Shift+Tab`, `Ctrl+PageDown` / `Ctrl+PageUp` | Next / previous tab |
+| `Ctrl+Z` | Undo the last file operation |
+| `Ctrl+Shift+Z` / `Ctrl+Y` | Redo |
+| `Ctrl+Shift+D` | Duplicate |
+| `Ctrl+Shift+M` | Create link |
+| `F4` | Open the folder in a terminal |
+| `Ctrl+S` | Select items matching a pattern such as `*.png` |
+| `Ctrl+Shift+I` / `Ctrl+Shift+A` | Invert selection / deselect all |
+| `Ctrl+J` | Show running file operations |
+| `Menu` / `Shift+F10` | Open the context menu for the selection |
 | `Esc` | Close a dialog, clear the search, then deselect |
-| `Ctrl+Q` / `Ctrl+W` | Close the window |
+| `Ctrl+Q` | Quit |
 
 All of these can be changed in Settings, under Keybindings.
 
 ## Settings
 
-`Ctrl+,` opens Settings: theme and accent color, interface size, font, default view and sorting, list columns, grid size, startup folder, single-click open, vim keys, and default apps.
+`Ctrl+,` opens Settings: language, theme and accent color, interface size, font, default view and sorting, list columns, grid size, startup folder, single-click open, vim keys, terminal command, templates folder, and default apps.
 
 ![Appearance settings](docs/screenshots/settings-appearance.png)
 

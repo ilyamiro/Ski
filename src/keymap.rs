@@ -3,6 +3,8 @@
 
 use eframe::egui;
 
+use crate::i18n::tr;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Action {
     MoveDown,
@@ -38,16 +40,34 @@ pub enum Action {
     NewFile,
     GoHome,
     Quit,
+    NewTab,
+    CloseTab,
+    NextTab,
+    PrevTab,
+    Undo,
+    Redo,
+    Duplicate,
+    MakeLink,
+    OpenTerminal,
+    InvertSelection,
+    SelectPattern,
+    SelectNone,
+    ContextMenu,
+    ShowJobs,
 }
 
 impl Action {
-    pub const ALL: [Action; 33] = [
+    pub const ALL: [Action; 47] = [
         Action::MoveDown, Action::MoveUp, Action::Open, Action::ParentFolder, Action::Back, Action::Forward,
         Action::First, Action::Last, Action::Filter, Action::EditPath, Action::ToggleHidden, Action::ZoomIn, Action::ZoomOut, Action::ListView,
         Action::GridView, Action::PinFolder, Action::Properties, Action::Copy, Action::Cut, Action::Paste,
         Action::SelectAll, Action::CopyPath, Action::Refresh, Action::NewFolder, Action::NewWindow,
         Action::Settings, Action::ShowShortcuts, Action::Rename, Action::Trash, Action::DeleteForever,
         Action::NewFile, Action::GoHome, Action::Quit,
+        Action::NewTab, Action::CloseTab, Action::NextTab, Action::PrevTab,
+        Action::Undo, Action::Redo, Action::Duplicate, Action::MakeLink, Action::OpenTerminal,
+        Action::InvertSelection, Action::SelectPattern, Action::SelectNone, Action::ContextMenu,
+        Action::ShowJobs,
     ];
 
     /// Stable id used as the key in settings.json.
@@ -64,23 +84,35 @@ impl Action {
             Action::Settings => "settings", Action::ShowShortcuts => "show_shortcuts",
             Action::Rename => "rename", Action::Trash => "trash", Action::DeleteForever => "delete_forever",
             Action::NewFile => "new_file", Action::GoHome => "go_home", Action::Quit => "quit",
+            Action::NewTab => "new_tab", Action::CloseTab => "close_tab", Action::NextTab => "next_tab", Action::PrevTab => "prev_tab",
+            Action::Undo => "undo", Action::Redo => "redo",
+            Action::Duplicate => "duplicate", Action::MakeLink => "make_link", Action::OpenTerminal => "open_terminal",
+            Action::InvertSelection => "invert_selection", Action::SelectPattern => "select_pattern",
+            Action::SelectNone => "select_none", Action::ContextMenu => "context_menu",
+            Action::ShowJobs => "show_jobs",
         }
     }
 
     pub fn label(self) -> &'static str {
         match self {
-            Action::MoveDown => "Move selection down", Action::MoveUp => "Move selection up",
-            Action::Open => "Open", Action::ParentFolder => "Parent folder", Action::Back => "Back",
-            Action::Forward => "Forward", Action::First => "Jump to first", Action::Last => "Jump to last",
-            Action::Filter => "Filter by name", Action::EditPath => "Edit path",
-            Action::ToggleHidden => "Toggle hidden files", Action::ZoomIn => "Larger icons", Action::ZoomOut => "Smaller icons", Action::ListView => "List view",
-            Action::GridView => "Grid view", Action::PinFolder => "Pin folder", Action::Properties => "Properties",
-            Action::Copy => "Copy", Action::Cut => "Cut", Action::Paste => "Paste",
-            Action::SelectAll => "Select all", Action::CopyPath => "Copy path", Action::Refresh => "Refresh",
-            Action::NewFolder => "New folder", Action::NewWindow => "New window", Action::Settings => "Settings",
-            Action::ShowShortcuts => "Show shortcuts", Action::Rename => "Rename",
-            Action::Trash => "Move to trash", Action::DeleteForever => "Delete permanently",
-            Action::NewFile => "New file", Action::GoHome => "Home folder", Action::Quit => "Close window",
+            Action::MoveDown => tr("Move selection down"), Action::MoveUp => tr("Move selection up"),
+            Action::Open => tr("Open"), Action::ParentFolder => tr("Parent folder"), Action::Back => tr("Back"),
+            Action::Forward => tr("Forward"), Action::First => tr("Jump to first"), Action::Last => tr("Jump to last"),
+            Action::Filter => tr("Filter by name"), Action::EditPath => tr("Edit path"),
+            Action::ToggleHidden => tr("Toggle hidden files"), Action::ZoomIn => tr("Larger icons"), Action::ZoomOut => tr("Smaller icons"), Action::ListView => tr("List view"),
+            Action::GridView => tr("Grid view"), Action::PinFolder => tr("Pin folder"), Action::Properties => tr("Properties"),
+            Action::Copy => tr("Copy"), Action::Cut => tr("Cut"), Action::Paste => tr("Paste"),
+            Action::SelectAll => tr("Select all"), Action::CopyPath => tr("Copy path"), Action::Refresh => tr("Refresh"),
+            Action::NewFolder => tr("New folder"), Action::NewWindow => tr("New window"), Action::Settings => tr("Settings"),
+            Action::ShowShortcuts => tr("Show shortcuts"), Action::Rename => tr("Rename"),
+            Action::Trash => tr("Move to trash"), Action::DeleteForever => tr("Delete permanently"),
+            Action::NewFile => tr("New file"), Action::GoHome => tr("Home folder"), Action::Quit => tr("Close window"),
+            Action::NewTab => tr("New tab"), Action::CloseTab => tr("Close tab"), Action::NextTab => tr("Next tab"), Action::PrevTab => tr("Previous tab"),
+            Action::Undo => tr("Undo"), Action::Redo => tr("Redo"),
+            Action::Duplicate => tr("Duplicate"), Action::MakeLink => tr("Create link"), Action::OpenTerminal => tr("Open in terminal"),
+            Action::InvertSelection => tr("Invert selection"), Action::SelectPattern => tr("Select matching…"),
+            Action::SelectNone => tr("Deselect all"), Action::ContextMenu => tr("Open context menu"),
+            Action::ShowJobs => tr("Show file operations"),
         }
     }
 
@@ -88,10 +120,11 @@ impl Action {
     pub fn group(self) -> &'static str {
         match self {
             Action::MoveDown | Action::MoveUp | Action::Open | Action::ParentFolder | Action::Back
-            | Action::Forward | Action::First | Action::Last | Action::EditPath | Action::GoHome => "Navigation",
+            | Action::Forward | Action::First | Action::Last | Action::EditPath | Action::GoHome
+            | Action::NewTab | Action::CloseTab | Action::NextTab | Action::PrevTab => tr("Navigation"),
             Action::Filter | Action::ToggleHidden | Action::ZoomIn | Action::ZoomOut | Action::ListView | Action::GridView | Action::Refresh
-            | Action::Settings | Action::ShowShortcuts | Action::Quit => "View",
-            _ => "Files",
+            | Action::Settings | Action::ShowShortcuts | Action::Quit => tr("View"),
+            _ => tr("Files"),
         }
     }
 
@@ -109,7 +142,14 @@ impl Action {
             Action::NewFolder => &["Ctrl+Shift+N"], Action::NewWindow => &["Ctrl+N"],
             Action::Settings => &["Ctrl+,"], Action::ShowShortcuts => &["?"],
             Action::Rename => &["F2"], Action::Trash => &["Delete"], Action::DeleteForever => &["Shift+Delete"],
-            Action::NewFile => &["Ctrl+Alt+N"], Action::GoHome => &["Alt+Home"], Action::Quit => &["Ctrl+Q", "Ctrl+W"],
+            Action::NewFile => &["Ctrl+Alt+N"], Action::GoHome => &["Alt+Home"], Action::Quit => &["Ctrl+Q"],
+            Action::NewTab => &["Ctrl+T"], Action::CloseTab => &["Ctrl+W"],
+            Action::NextTab => &["Ctrl+Tab", "Ctrl+PageDown"], Action::PrevTab => &["Ctrl+Shift+Tab", "Ctrl+PageUp"],
+            Action::Undo => &["Ctrl+Z"], Action::Redo => &["Ctrl+Shift+Z", "Ctrl+Y"],
+            Action::Duplicate => &["Ctrl+Shift+D"], Action::MakeLink => &["Ctrl+Shift+M"], Action::OpenTerminal => &["F4"],
+            Action::InvertSelection => &["Ctrl+Shift+I"], Action::SelectPattern => &["Ctrl+S"],
+            Action::SelectNone => &["Ctrl+Shift+A"], Action::ContextMenu => &["Menu", "Shift+F10"],
+            Action::ShowJobs => &["Ctrl+J"],
         }
     }
 }

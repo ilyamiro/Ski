@@ -80,7 +80,38 @@ pub const MENU: &str = "\u{f035c}";
 pub const TUNE: &str = "\u{f062e}";
 pub const KEYBOARD: &str = "\u{f030c}";
 pub const NEW_WINDOW: &str = "\u{f05b2}";
+pub const TRANSLATE: &str = "\u{f05ca}";
 pub const COG: &str = "\u{f0493}";
+
+// Tabs, links, drives, bookmarks, selection and transfers
+pub const TAB: &str = "\u{f04e9}";
+pub const NEW_TAB: &str = "\u{f075c}";
+pub const TERMINAL: &str = "\u{f07b7}";
+pub const LINK: &str = "\u{f0337}";
+pub const LOCK: &str = "\u{f033e}";
+pub const LOCK_OPEN: &str = "\u{f033f}";
+pub const EJECT: &str = "\u{f01ea}";
+pub const REDO: &str = "\u{f044e}";
+pub const BOOKMARK: &str = "\u{f00c0}";
+pub const BOOKMARK_PLUS: &str = "\u{f00c5}";
+pub const BOOKMARK_OUTLINE: &str = "\u{f00c3}";
+pub const DUPLICATE: &str = "\u{f0191}";
+pub const CANCEL: &str = "\u{f073a}";
+pub const PAUSE: &str = "\u{f03e4}";
+pub const PLAY: &str = "\u{f040a}";
+pub const SELECT_INVERSE: &str = "\u{f0487}";
+pub const SELECT_OFF: &str = "\u{f0488}";
+pub const SELECT_PATTERN: &str = "\u{f0451}";
+pub const FILTER: &str = "\u{f0236}";
+pub const ALERT: &str = "\u{f0026}";
+pub const FOLDER_OPEN: &str = "\u{f0770}";
+pub const SHIELD: &str = "\u{f099d}";
+pub const CASE_SENSITIVE: &str = "\u{f0b34}";
+pub const TEXT_SEARCH: &str = "\u{f13b8}";
+pub const DRAG: &str = "\u{f0b90}";
+pub const TEMPLATE: &str = "\u{f1a9e}";
+pub const SYNC: &str = "\u{f04e6}";
+pub const HISTORY: &str = "\u{f02da}";
 
 // File types
 pub const PDF: &str = "\u{f0226}";

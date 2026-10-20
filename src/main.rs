@@ -1,5 +1,6 @@
 mod app;
 mod fs;
+mod i18n;
 mod keymap;
 mod settings;
 mod settings_ui;
@@ -14,6 +15,7 @@ use ui::theme::SerpantinumTheme;
 
 fn main() -> eframe::Result {
     let settings = settings::Settings::load();
+    i18n::set_language(i18n::resolve(&settings.language));
     let theme = SerpantinumTheme::from_settings(&settings);
 
     let initial_path = if let Some(arg) = env::args().nth(1) {

@@ -1,5 +1,7 @@
 use std::path::PathBuf;
 
+use crate::i18n::{self, tr, trf, Language};
+
 use eframe::egui::{self, Color32, CornerRadius, Pos2, Rect, Vec2};
 
 use crate::app::{app_row, Dialog, SkiApp, ViewMode};
@@ -54,7 +56,7 @@ impl SkiApp {
 
         let ctx = ui.ctx().clone();
         let theme = self.theme;
-        let close = material::dialog_header(ui, "Settings", None, &theme, "set_close");
+        let close = material::dialog_header(ui, tr("Settings"), None, &theme, "set_close");
         ui.add_space(4.0);
 
         let max_height = (ctx.content_rect().height() - 160.0).clamp(320.0, 540.0);
@@ -69,12 +71,12 @@ impl SkiApp {
                 ui.spacing_mut().item_spacing = egui::vec2(0.0, 2.0);
 
                 let categories = [
-                    (0, icons::COG, "General"),
-                    (1, icons::TUNE, "Appearance"),
-                    (2, icons::VIEW_LIST, "Files & View"),
-                    (3, icons::SETTINGS, "Behavior"),
-                    (4, icons::KEYBOARD, "Keybindings"),
-                    (5, icons::APPS, "Applications"),
+                    (0, icons::COG, tr("General")),
+                    (1, icons::TUNE, tr("Appearance")),
+                    (2, icons::VIEW_LIST, tr("Files & View")),
+                    (3, icons::SETTINGS, tr("Behavior")),
+                    (4, icons::KEYBOARD, tr("Keybindings")),
+                    (5, icons::APPS, tr("Applications")),
                 ];
 
                 for (idx, icon, label) in categories {
@@ -122,12 +124,27 @@ impl SkiApp {
     fn general_tab(&mut self, ui: &mut egui::Ui) {
         let theme = self.theme;
 
-        material::section_label(ui, "Startup", &theme);
+        material::section_label(ui, tr("Language"), &theme);
+        group_card(ui, &theme, |ui| {
+            let mut options: Vec<(String, String, bool)> = vec![("system".to_owned(), tr("System default").to_owned(), self.settings.language == "system")];
+            for language in Language::ALL {
+                options.push((language.code().to_owned(), language.native_name().to_owned(), self.settings.language == language.code()));
+            }
+            for (code, name, on) in options {
+                if material::radio_row(ui, ("language", &code), &name, &theme, on).clicked() && !on {
+                    self.settings.language = code;
+                    i18n::set_language(i18n::resolve(&self.settings.language));
+                    self.persist_settings();
+                }
+            }
+        });
+
+        material::section_label(ui, tr("Startup"), &theme);
         group_card(ui, &theme, |ui| {
             let locations = [StartLocation::Launch, StartLocation::Home, StartLocation::LastVisited, StartLocation::Custom];
-            let labels = ["Launch folder", "Home", "Last visited", "Custom"];
+            let labels = [tr("Launch folder"), tr("Home"), tr("Last visited"), tr("Custom")];
             let current = locations.iter().position(|l| *l == self.settings.start_location).unwrap_or(0);
-            if let Some(i) = choice_row(ui, "start_loc", icons::HOME, "Open Ski in", &labels, current, &theme) {
+            if let Some(i) = choice_row(ui, "start_loc", icons::HOME, tr("Open Ski in"), &labels, current, &theme) {
                 self.settings.start_location = locations[i];
                 self.persist_settings();
             }
@@ -140,7 +157,7 @@ impl SkiApp {
                         egui::TextEdit::singleline(&mut path_str)
                             .frame(egui::Frame::NONE)
                             .desired_width(f32::INFINITY)
-                            .hint_text("/path/to/folder")
+                            .hint_text(tr("/path/to/folder"))
                             .text_color(if valid { theme.text } else { theme.red })
                             .font(egui::FontId::proportional(material::FONT_BODY)),
                     );
@@ -150,23 +167,23 @@ impl SkiApp {
                     }
                 });
                 if !valid {
-                    material::hint_label(ui, "That folder does not exist; Ski opens in Home instead", &theme);
+                    material::hint_label(ui, tr("That folder does not exist; Ski opens in Home instead"), &theme);
                 }
             });
         });
 
-        material::section_label(ui, "Windows", &theme);
+        material::section_label(ui, tr("Windows"), &theme);
         group_card(ui, &theme, |ui| {
-            if switch_row_with(ui, "open_in_new_win", icons::NEW_WINDOW, "Open folders in a new window", None, &theme, self.settings.open_in_new_window).clicked() {
+            if switch_row_with(ui, "open_in_new_win", icons::NEW_WINDOW, tr("Open folders in a new window"), None, &theme, self.settings.open_in_new_window).clicked() {
                 self.settings.open_in_new_window = !self.settings.open_in_new_window;
                 self.persist_settings();
             }
         });
 
-        material::section_label(ui, "File operations", &theme);
+        material::section_label(ui, tr("File operations"), &theme);
         group_card(ui, &theme, |ui| {
-            let desc = Some("Ask before deleting for good or emptying the trash");
-            if switch_row_with(ui, "confirm_delete", icons::DELETE_FOREVER, "Confirm permanent deletion", desc, &theme, self.settings.confirm_delete).clicked() {
+            let desc = Some(tr("Ask before deleting for good or emptying the trash"));
+            if switch_row_with(ui, "confirm_delete", icons::DELETE_FOREVER, tr("Confirm permanent deletion"), desc, &theme, self.settings.confirm_delete).clicked() {
                 self.settings.confirm_delete = !self.settings.confirm_delete;
                 self.persist_settings();
             }
@@ -176,21 +193,21 @@ impl SkiApp {
     fn appearance_tab(&mut self, ui: &mut egui::Ui, font_query: &mut String, hex: &mut String) {
         let theme = self.theme;
 
-        material::section_label(ui, "Theme", &theme);
+        material::section_label(ui, tr("Theme"), &theme);
         // The cards share the row evenly, so the last one never wraps onto a line of its own
         let gap = 8.0;
         let count = PRESETS.len() + 1;
         let card_w = ((ui.available_width() - gap * (count - 1) as f32) / count as f32).floor().clamp(80.0, 120.0);
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing = egui::vec2(gap, gap);
-            let mut choices: Vec<(&str, &str, SerpantinumTheme)> = vec![("system", "System", self.system_theme)];
+            let mut choices: Vec<(&str, &str, SerpantinumTheme)> = vec![("system", tr("System"), self.system_theme)];
             for (id, label, ..) in PRESETS.iter() {
                 let preset = Settings {
                     theme: (*id).to_owned(),
                     accent: None,
                     ..Settings::default()
                 };
-                choices.push((id, label, SerpantinumTheme::from_settings(&preset)));
+                choices.push((id, tr(label), SerpantinumTheme::from_settings(&preset)));
             }
             for (id, label, preview) in choices {
                 if theme_card(ui, ("theme_card", id), card_w, label, &preview, &theme, self.settings.theme == id).clicked() {
@@ -201,10 +218,10 @@ impl SkiApp {
             }
         });
 
-        material::section_label(ui, "Accent color", &theme);
+        material::section_label(ui, tr("Accent color"), &theme);
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing = egui::vec2(8.0, 8.0);
-            if chip(ui, "accent_default", None, "Theme default", &theme, self.settings.accent.is_none()).clicked() {
+            if chip(ui, "accent_default", None, tr("Theme default"), &theme, self.settings.accent.is_none()).clicked() {
                 self.settings.accent = None;
                 hex.clear();
                 self.rebuild_theme();
@@ -240,27 +257,27 @@ impl SkiApp {
                     }
                 }
             });
-            ui.label(egui::RichText::new("Custom hex color").size(material::FONT_CAPTION).color(theme.subtext1));
+            ui.label(egui::RichText::new(tr("Custom hex color")).size(material::FONT_CAPTION).color(theme.subtext1));
         });
 
-        material::section_label(ui, "Interface", &theme);
+        material::section_label(ui, tr("Interface"), &theme);
         group_card(ui, &theme, |ui| {
             let scales = [0.85, 1.0, 1.15, 1.3];
             let current = scales.iter().position(|s| (self.settings.scale - s).abs() < 0.01).unwrap_or(1);
-            if let Some(i) = choice_row(ui, "scale", icons::VIEW_LIST, "Size", &["Compact", "Default", "Large", "Larger"], current, &theme) {
+            if let Some(i) = choice_row(ui, "scale", icons::VIEW_LIST, tr("Size"), &[tr("Compact"), tr("Default"), tr("Large"), tr("Larger")], current, &theme) {
                 self.settings.scale = scales[i];
                 ui.ctx().set_zoom_factor(scales[i]);
                 self.persist_settings();
             }
-            if switch_row_with(ui, "app_animations", icons::REFRESH, "Animations", None, &theme, self.settings.animations).clicked() {
+            if switch_row_with(ui, "app_animations", icons::REFRESH, tr("Animations"), None, &theme, self.settings.animations).clicked() {
                 self.settings.animations = !self.settings.animations;
                 self.persist_settings();
             }
         });
 
-        material::section_label(ui, "Font", &theme);
-        let current = self.settings.font_name.clone().unwrap_or_else(|| "Adwaita Sans (default)".to_owned());
-        material::hint_label(ui, &format!("Current: {current}"), &theme);
+        material::section_label(ui, tr("Font"), &theme);
+        let current = self.settings.font_name.clone().unwrap_or_else(|| tr("Adwaita Sans (default)").to_owned());
+        material::hint_label(ui, &trf("Current: {}", &[&current]), &theme);
         material::input_frame(&theme).show(ui, |ui| {
             ui.horizontal(|ui| {
                 material::inline_icon(ui, icons::SEARCH, material::ICON_SM, theme.subtext1);
@@ -268,7 +285,7 @@ impl SkiApp {
                     egui::TextEdit::singleline(font_query)
                         .frame(egui::Frame::NONE)
                         .desired_width(f32::INFINITY)
-                        .hint_text("Search installed fonts")
+                        .hint_text(tr("Search installed fonts"))
                         .font(egui::FontId::proportional(material::FONT_BODY)),
                 );
             });
@@ -291,7 +308,7 @@ impl SkiApp {
                     ui.spacing_mut().item_spacing.y = 2.0;
                     for row in range {
                         if show_default && row == 0 {
-                            if nav_item(ui, "font_default", icons::DOCUMENT, "Adwaita Sans (default)", &theme, self.settings.font.is_none()).clicked() {
+                            if nav_item(ui, "font_default", icons::DOCUMENT, tr("Adwaita Sans (default)"), &theme, self.settings.font.is_none()).clicked() {
                                 picked = Some(None);
                             }
                             continue;
@@ -315,23 +332,23 @@ impl SkiApp {
     fn files_view_tab(&mut self, ui: &mut egui::Ui) {
         let theme = self.theme;
 
-        material::section_label(ui, "View", &theme);
+        material::section_label(ui, tr("View"), &theme);
         group_card(ui, &theme, |ui| {
-            if let Some(i) = choice_row(ui, "fv_view", icons::VIEW_LIST, "Default view", &["List", "Grid"], usize::from(self.view_mode == ViewMode::Grid), &theme) {
+            if let Some(i) = choice_row(ui, "fv_view", icons::VIEW_LIST, tr("Default view"), &[tr("List"), tr("Grid")], usize::from(self.view_mode == ViewMode::Grid), &theme) {
                 self.view_mode = if i == 0 { ViewMode::List } else { ViewMode::Grid };
                 self.settings.view_mode = self.view_mode;
                 self.persist_settings();
             }
             let fields = [SortBy::Name, SortBy::Size, SortBy::Modified];
             let current = fields.iter().position(|f| *f == self.sort_by).unwrap_or(0);
-            if let Some(i) = choice_row(ui, "fv_sort_by", icons::SORT_ASC, "Sort by", &["Name", "Size", "Modified"], current, &theme) {
+            if let Some(i) = choice_row(ui, "fv_sort_by", icons::SORT_ASC, tr("Sort by"), &[tr("Name"), tr("Size"), tr("Modified")], current, &theme) {
                 self.sort_by = fields[i];
                 self.settings.sort_by = fields[i];
                 self.reload_items();
                 self.persist_settings();
             }
             let asc = self.sort_order == SortOrder::Ascending;
-            if let Some(i) = choice_row(ui, "fv_sort_order", icons::SORT_DESC, "Order", &["Ascending", "Descending"], usize::from(!asc), &theme) {
+            if let Some(i) = choice_row(ui, "fv_sort_order", icons::SORT_DESC, tr("Order"), &[tr("Ascending"), tr("Descending")], usize::from(!asc), &theme) {
                 self.sort_order = if i == 0 { SortOrder::Ascending } else { SortOrder::Descending };
                 self.settings.sort_order = self.sort_order;
                 self.reload_items();
@@ -339,45 +356,45 @@ impl SkiApp {
             }
         });
 
-        material::section_label(ui, "Layout", &theme);
+        material::section_label(ui, tr("Layout"), &theme);
         group_card(ui, &theme, |ui| {
-            if switch_row_with(ui, "fv_show_hidden", icons::VISIBILITY, "Show hidden files", None, &theme, self.show_hidden).clicked() {
+            if switch_row_with(ui, "fv_show_hidden", icons::VISIBILITY, tr("Show hidden files"), None, &theme, self.show_hidden).clicked() {
                 self.show_hidden = !self.show_hidden;
                 self.settings.show_hidden = self.show_hidden;
                 self.reload_items();
                 self.persist_settings();
             }
-            if switch_row_with(ui, "fv_folders_first", icons::FOLDER, "Folders before files", None, &theme, self.folders_first).clicked() {
+            if switch_row_with(ui, "fv_folders_first", icons::FOLDER, tr("Folders before files"), None, &theme, self.folders_first).clicked() {
                 self.folders_first = !self.folders_first;
                 self.settings.folders_first = self.folders_first;
                 self.reload_items();
                 self.persist_settings();
             }
-            if switch_row_with(ui, "fv_show_sidebar", icons::MENU, "Sidebar", None, &theme, self.settings.show_sidebar).clicked() {
+            if switch_row_with(ui, "fv_show_sidebar", icons::MENU, tr("Sidebar"), None, &theme, self.settings.show_sidebar).clicked() {
                 self.settings.show_sidebar = !self.settings.show_sidebar;
                 self.persist_settings();
             }
-            if switch_row_with(ui, "fv_show_status", icons::INFO, "Status bar", None, &theme, self.settings.show_status_bar).clicked() {
+            if switch_row_with(ui, "fv_show_status", icons::INFO, tr("Status bar"), None, &theme, self.settings.show_status_bar).clicked() {
                 self.settings.show_status_bar = !self.settings.show_status_bar;
                 self.persist_settings();
             }
-            let desc = Some("Each folder keeps its own list or grid choice");
-            if switch_row_with(ui, "fv_remember_view", icons::FOLDER_MOVE, "Remember view per folder", desc, &theme, self.settings.remember_view_per_folder).clicked() {
+            let desc = Some(tr("Each folder keeps its own list or grid choice"));
+            if switch_row_with(ui, "fv_remember_view", icons::FOLDER_MOVE, tr("Remember view per folder"), desc, &theme, self.settings.remember_view_per_folder).clicked() {
                 self.settings.remember_view_per_folder = !self.settings.remember_view_per_folder;
                 self.persist_settings();
             }
         });
 
-        material::section_label(ui, "List view", &theme);
+        material::section_label(ui, tr("List view"), &theme);
         group_card(ui, &theme, |ui| {
             let densities = [Density::Compact, Density::Comfortable, Density::Spacious];
             let current = densities.iter().position(|d| *d == self.settings.density).unwrap_or(1);
-            if let Some(i) = choice_row(ui, "fv_density", icons::VIEW_LIST, "Row height", &["Compact", "Comfortable", "Spacious"], current, &theme) {
+            if let Some(i) = choice_row(ui, "fv_density", icons::VIEW_LIST, tr("Row height"), &[tr("Compact"), tr("Comfortable"), tr("Spacious")], current, &theme) {
                 self.settings.density = densities[i];
                 self.persist_settings();
             }
             ui.add_space(4.0);
-            material::hint_label(ui, "Columns", &theme);
+            material::hint_label(ui, tr("Columns"), &theme);
             ui.horizontal_wrapped(|ui| {
                 ui.add_space(4.0);
                 for col in Column::ALL {
@@ -395,39 +412,39 @@ impl SkiApp {
             ui.add_space(4.0);
         });
 
-        material::section_label(ui, "Grid view", &theme);
+        material::section_label(ui, tr("Grid view"), &theme);
         group_card(ui, &theme, |ui| {
             let size = self.settings.grid_size;
-            let (less, more) = material::stepper_row(ui, "fv_grid_size", "Icon size", &theme, &size.label(), size.can_step(-1), size.can_step(1));
+            let (less, more) = material::stepper_row(ui, "fv_grid_size", tr("Icon size"), &theme, &size.label(), size.can_step(-1), size.can_step(1));
             if less || more {
                 self.settings.grid_size = size.step(if more { 1 } else { -1 });
                 self.persist_settings();
             }
             let lines = [1u8, 2, 3];
             let current = lines.iter().position(|l| *l == self.settings.grid_name_lines).unwrap_or(1);
-            if let Some(i) = choice_row(ui, "fv_grid_lines", icons::TEXT, "Name lines", &["1", "2", "3"], current, &theme) {
+            if let Some(i) = choice_row(ui, "fv_grid_lines", icons::TEXT, tr("Name lines"), &["1", "2", "3"], current, &theme) {
                 self.settings.grid_name_lines = lines[i];
                 self.persist_settings();
             }
         });
 
-        material::section_label(ui, "Details", &theme);
+        material::section_label(ui, tr("Details"), &theme);
         group_card(ui, &theme, |ui| {
-            if switch_row_with(ui, "fv_show_thumbs", icons::IMAGE, "Thumbnails", None, &theme, self.settings.show_thumbnails).clicked() {
+            if switch_row_with(ui, "fv_show_thumbs", icons::IMAGE, tr("Thumbnails"), None, &theme, self.settings.show_thumbnails).clicked() {
                 self.settings.show_thumbnails = !self.settings.show_thumbnails;
                 self.persist_settings();
             }
-            if switch_row_with(ui, "fv_show_exts", icons::DOCUMENT, "File extensions", None, &theme, self.settings.show_extensions).clicked() {
+            if switch_row_with(ui, "fv_show_exts", icons::DOCUMENT, tr("File extensions"), None, &theme, self.settings.show_extensions).clicked() {
                 self.settings.show_extensions = !self.settings.show_extensions;
                 self.persist_settings();
             }
-            let desc = Some("Show “2 hours ago” instead of a date");
-            if switch_row_with(ui, "fv_relative_dates", icons::RECENT, "Relative dates", desc, &theme, self.settings.relative_dates).clicked() {
+            let desc = Some(tr("Show “2 hours ago” instead of a date"));
+            if switch_row_with(ui, "fv_relative_dates", icons::RECENT, tr("Relative dates"), desc, &theme, self.settings.relative_dates).clicked() {
                 self.settings.relative_dates = !self.settings.relative_dates;
                 self.persist_settings();
             }
             let current = usize::from(self.settings.decimal_units);
-            if let Some(i) = choice_row(ui, "fv_units", icons::INFO, "File size units", &["1024 B = 1 KiB", "1000 B = 1 KB"], current, &theme) {
+            if let Some(i) = choice_row(ui, "fv_units", icons::INFO, tr("File size units"), &["1024 B = 1 KiB", "1000 B = 1 KB"], current, &theme) {
                 self.settings.decimal_units = i == 1;
                 self.persist_settings();
             }
@@ -437,27 +454,83 @@ impl SkiApp {
     fn behavior_tab(&mut self, ui: &mut egui::Ui) {
         let theme = self.theme;
 
-        material::section_label(ui, "Mouse", &theme);
+        material::section_label(ui, tr("Mouse"), &theme);
         group_card(ui, &theme, |ui| {
-            let desc = Some("Otherwise double-click opens, a single click only selects");
-            if switch_row_with(ui, "beh_single_click", icons::OPEN, "Open with a single click", desc, &theme, self.settings.single_click_open).clicked() {
+            let desc = Some(tr("Otherwise double-click opens, a single click only selects"));
+            if switch_row_with(ui, "beh_single_click", icons::OPEN, tr("Open with a single click"), desc, &theme, self.settings.single_click_open).clicked() {
                 self.settings.single_click_open = !self.settings.single_click_open;
                 self.persist_settings();
             }
         });
 
-        material::section_label(ui, "Keyboard", &theme);
+        material::section_label(ui, tr("Keyboard"), &theme);
         group_card(ui, &theme, |ui| {
-            let desc = Some("h j k l to move, g / G to jump, y to copy the path");
-            if switch_row_with(ui, "beh_vim_keys", icons::KEYBOARD, "Vim navigation keys", desc, &theme, self.settings.vim_keys).clicked() {
+            let desc = Some(tr("h j k l to move, g / G to jump, y to copy the path"));
+            if switch_row_with(ui, "beh_vim_keys", icons::KEYBOARD, tr("Vim navigation keys"), desc, &theme, self.settings.vim_keys).clicked() {
                 self.settings.vim_keys = !self.settings.vim_keys;
                 self.persist_settings();
             }
-            let desc = Some("Start typing to filter, without pressing / first");
-            if switch_row_with(ui, "beh_type_to_filter", icons::SEARCH, "Type to filter", desc, &theme, self.settings.type_to_filter).clicked() {
+            let desc = Some(tr("Start typing to filter, without pressing / first"));
+            if switch_row_with(ui, "beh_type_to_filter", icons::SEARCH, tr("Type to filter"), desc, &theme, self.settings.type_to_filter).clicked() {
                 self.settings.type_to_filter = !self.settings.type_to_filter;
                 self.persist_settings();
             }
+        });
+
+        material::section_label(ui, tr("Terminal"), &theme);
+        group_card(ui, &theme, |ui| {
+            let found = crate::fs::terminal::detect(&self.settings.terminal);
+            let hint = found.as_deref().map_or_else(|| tr("No terminal found").to_owned(), |t| trf("Detected: {}", &[&t]));
+            material::input_frame(&theme).show(ui, |ui| {
+                let mut command = self.settings.terminal.clone();
+                let resp = ui.add(
+                    egui::TextEdit::singleline(&mut command)
+                        .frame(egui::Frame::NONE)
+                        .desired_width(f32::INFINITY)
+                        .hint_text(hint)
+                        .font(egui::FontId::proportional(material::FONT_BODY)),
+                );
+                if resp.changed() {
+                    self.settings.terminal = command;
+                    self.persist_settings();
+                }
+            });
+            material::hint_label(ui, tr("Command that opens a terminal; {} stands for the folder. Leave empty to find one automatically."), &theme);
+        });
+
+        material::section_label(ui, tr("Templates"), &theme);
+        group_card(ui, &theme, |ui| {
+            let default_dir = crate::fs::templates::user_dir(None);
+            let mut path_str = self.settings.templates_dir.as_ref().map(|p| p.to_string_lossy().to_string()).unwrap_or_default();
+            let shown = if path_str.trim().is_empty() { default_dir.clone() } else { Some(PathBuf::from(path_str.trim())) };
+            let valid = path_str.trim().is_empty() || PathBuf::from(path_str.trim()).is_dir();
+            material::input_frame(&theme).show(ui, |ui| {
+                let resp = ui.add(
+                    egui::TextEdit::singleline(&mut path_str)
+                        .frame(egui::Frame::NONE)
+                        .desired_width(f32::INFINITY)
+                        .hint_text(default_dir.as_ref().map(|d| d.display().to_string()).unwrap_or_default())
+                        .text_color(if valid { theme.text } else { theme.red })
+                        .font(egui::FontId::proportional(material::FONT_BODY)),
+                );
+                if resp.changed() {
+                    self.settings.templates_dir = if path_str.trim().is_empty() { None } else { Some(PathBuf::from(path_str.trim())) };
+                    self.persist_settings();
+                }
+            });
+            material::hint_label(ui, tr("Files in this folder are offered when you create a new file."), &theme);
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                ui.add_space(8.0);
+                if button(ui, "open_templates", Some(icons::FOLDER_OPEN), tr("Open templates folder"), &theme, ButtonKind::Tonal, shown.is_some()).clicked()
+                    && let Some(dir) = shown
+                {
+                    // The folder is created on first use, so there is always somewhere to put templates
+                    let _ = std::fs::create_dir_all(&dir);
+                    self.pending_open = Some(dir);
+                }
+            });
+            ui.add_space(4.0);
         });
     }
 
@@ -479,14 +552,14 @@ impl SkiApp {
                         egui::TextEdit::singleline(keybind_search)
                             .frame(egui::Frame::NONE)
                             .desired_width(ui.available_width().min(210.0))
-                            .hint_text("Search shortcuts")
+                            .hint_text(tr("Search shortcuts"))
                             .font(egui::FontId::proportional(material::FONT_BODY)),
                     );
                 });
             });
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if button(ui, "reset_all_keybinds", Some(icons::REFRESH), "Reset all", &theme, ButtonKind::Tonal, true).clicked() {
+                if button(ui, "reset_all_keybinds", Some(icons::REFRESH), tr("Reset all"), &theme, ButtonKind::Tonal, true).clicked() {
                     self.settings.keybinds.clear();
                     self.persist_settings();
                     *capture = None;
@@ -507,10 +580,9 @@ impl SkiApp {
                     ui.horizontal(|ui| {
                         material::inline_icon(ui, icons::INFO, material::ICON_MD, theme.yellow);
                         ui.label(
-                            egui::RichText::new(format!(
+                            egui::RichText::new(trf(
                                 "“{}” is already used by “{}”. Replace it?",
-                                keymap::display(&binding),
-                                conf_act.label()
+                                &[&keymap::display(&binding), &conf_act.label()],
                             ))
                             .size(material::FONT_BODY)
                             .color(theme.text),
@@ -518,7 +590,7 @@ impl SkiApp {
                     });
                     ui.add_space(4.0);
                     ui.horizontal(|ui| {
-                        if button(ui, "conf_replace", Some(icons::CHECK), "Replace", &theme, ButtonKind::Filled, true).clicked() {
+                        if button(ui, "conf_replace", Some(icons::CHECK), tr("Replace"), &theme, ButtonKind::Filled, true).clicked() {
                             // 1. Remove from conflicting action
                             let mut conf_bindings = keymap::bindings(&self.settings.keybinds, conf_act);
                             conf_bindings.retain(|b| b != &binding);
@@ -551,7 +623,7 @@ impl SkiApp {
                             *capture = None;
                             self.capturing_key = false;
                         }
-                        if button(ui, "conf_cancel", None, "Cancel", &theme, ButtonKind::Text, true).clicked() {
+                        if button(ui, "conf_cancel", None, tr("Cancel"), &theme, ButtonKind::Text, true).clicked() {
                             *conflict_warning = None;
                             *capture = None;
                             self.capturing_key = false;
@@ -656,7 +728,7 @@ impl SkiApp {
 
         // Action list grouped by Action::group()
         let search = keybind_search.trim().to_lowercase();
-        let groups = ["Navigation", "View", "Files"];
+        let groups = [tr("Navigation"), tr("View"), tr("Files")];
 
         for group_name in groups {
             let actions_in_group: Vec<Action> = Action::ALL
@@ -690,7 +762,7 @@ impl SkiApp {
 
                     // Per-action reset button if overridden
                     if is_overridden
-                        && filled_icon_button(ui, ("rst_act", action.id()), icons::REFRESH, &theme, 22.0, "Reset to default", None).clicked()
+                        && filled_icon_button(ui, ("rst_act", action.id()), icons::REFRESH, &theme, 22.0, tr("Reset to default"), None).clicked()
                     {
                         self.settings.keybinds.remove(action.id());
                         self.persist_settings();
@@ -705,7 +777,7 @@ impl SkiApp {
                         ui.add_space(6.0);
                         // "+ Add" button
                         let is_adding = *capture == Some((action, None));
-                        let add_label = if is_adding { "Press keys…" } else { "+ Add" };
+                        let add_label = if is_adding { tr("Press keys…") } else { tr("+ Add") };
                         let (add_resp, _) = keycap_pill(ui, ("act_add", action.id()), add_label, &theme, is_adding, false);
                         if add_resp.clicked() {
                             if is_adding {
@@ -723,7 +795,7 @@ impl SkiApp {
                         for (idx, bind_str) in current_bindings.iter().enumerate().rev() {
                             let is_capturing_this = *capture == Some((action, Some(idx)));
                             let shown = keymap::display(bind_str);
-                            let pill_text = if is_capturing_this { "Press keys…" } else { shown.as_str() };
+                            let pill_text = if is_capturing_this { tr("Press keys…") } else { shown.as_str() };
                             let (pill_resp, rem_clicked) = keycap_pill(
                                 ui,
                                 ("act_pill", action.id(), idx),
@@ -771,15 +843,15 @@ impl SkiApp {
             *defaults = apps::CATEGORIES.iter().map(|c| apps::default_for(c.mimes[0])).collect();
         }
         let theme = self.theme;
-        material::section_label(ui, "Default applications", &theme);
-        material::hint_label(ui, "The application that opens each kind of file. This changes the system-wide defaults.", &theme);
+        material::section_label(ui, tr("Default applications"), &theme);
+        material::hint_label(ui, tr("The application that opens each kind of file. This changes the system-wide defaults."), &theme);
         ui.spacing_mut().item_spacing.y = 2.0;
         let installed = self.installed_apps();
         for (idx, category) in apps::CATEGORIES.iter().enumerate() {
             let current = defaults.get(idx).and_then(|d| d.as_deref()).and_then(|id| installed.iter().find(|a| a.id == id));
-            let value = current.map_or("Not set", |a| a.name.as_str());
+            let value = current.map_or(tr("Not set"), |a| a.name.as_str());
             let is_open = *picking == Some(idx);
-            if category_row(ui, ("cat_row", idx), category.icon, category.label, value, &theme, is_open).clicked() {
+            if category_row(ui, ("cat_row", idx), category.icon, tr(category.label), value, &theme, is_open).clicked() {
                 *picking = if is_open { None } else { Some(idx) };
             }
             material::collapsible(ui, ("cat_collapse", idx), *picking == Some(idx), |ui| {
@@ -805,12 +877,12 @@ impl SkiApp {
                     }
                 }
                 if candidates.is_empty() {
-                    material::hint_label(ui, "No installed application handles these files", &theme);
+                    material::hint_label(ui, tr("No installed application handles these files"), &theme);
                 }
                 if let Some(app) = chosen {
                     apps::set_category_default(category, &app.id);
                     defaults[idx] = Some(app.id.clone());
-                    self.set_toast(format!("{} is now the default for {}", app.name, category.label.to_lowercase()));
+                    self.set_toast(trf("{} is now the default for {}", &[&app.name, &tr(category.label).to_lowercase()]));
                     *picking = None;
                 }
                 ui.add_space(4.0);
@@ -850,7 +922,7 @@ fn keycap_pill(
     let mut remove_clicked = false;
     if can_remove && !capturing {
         let remove_rect = Rect::from_center_size(Pos2::new(rect.right() - 12.0, rect.center().y), Vec2::splat(material::KEYCAP_HEIGHT - 4.0));
-        let remove = ui.interact(remove_rect, id.with("rm"), egui::Sense::click()).on_hover_text("Remove shortcut");
+        let remove = ui.interact(remove_rect, id.with("rm"), egui::Sense::click()).on_hover_text(tr("Remove shortcut"));
         let rem_fx = material::fx(ui, id.with("rm"), &remove, true, &material::FxSpec::ICON);
         let rem_r = material::scaled(remove_rect, rem_fx.scale);
         let rem_bg = theme.with_alpha(theme.red, ((rem_fx.hover * 40.0) + (rem_fx.press * 24.0)).round() as u8);

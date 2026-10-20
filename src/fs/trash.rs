@@ -5,6 +5,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use super::ops::{move_path, remove_tree, unique_path};
+use crate::i18n::tr;
 
 pub fn root() -> Option<PathBuf> {
     dirs::data_dir().map(|d| d.join("Trash"))
@@ -64,12 +65,12 @@ fn trash_in(root: &Path, path: &Path) -> io::Result<PathBuf> {
 pub fn restore(trashed: &Path) -> io::Result<PathBuf> {
     let root = trashed.parent().and_then(Path::parent).ok_or_else(|| io::Error::other("not in the trash"))?;
     let record = record_of(root, trashed);
-    let text = std::fs::read_to_string(&record).map_err(|_| io::Error::other("The trash has no record of where this came from"))?;
+    let text = std::fs::read_to_string(&record).map_err(|_| io::Error::other(tr("The trash has no record of where this came from")))?;
     let original = text
         .lines()
         .find_map(|l| l.strip_prefix("Path="))
         .map(|p| PathBuf::from(decode(p.trim())))
-        .ok_or_else(|| io::Error::other("The trash has no record of where this came from"))?;
+        .ok_or_else(|| io::Error::other(tr("The trash has no record of where this came from")))?;
     let folder = original.parent().ok_or_else(|| io::Error::other("invalid original location"))?;
     std::fs::create_dir_all(folder)?;
     let target = unique_path(folder, original.file_name().unwrap_or_default(), "restored");

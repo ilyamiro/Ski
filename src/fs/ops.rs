@@ -1,16 +1,21 @@
 //! File operations: copy, move, compress and extract. Everything here blocks, so the app runs
-//! it on a worker thread through [`Jobs`].
+//! it on a worker thread through the engine (`fs::engine`).
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::mpsc;
 
-use eframe::egui;
+use crate::i18n::tr;
 
 /// A name for `name` inside `dir` that does not exist yet: `a.txt`, `a (copy).txt`, `a (copy 2).txt`, ...
 pub fn unique_path(dir: &Path, name: &std::ffi::OsStr, suffix: &str) -> PathBuf {
+    unique_path_where(dir, name, suffix, |_| false)
+}
+
+/// Like `unique_path`, and also steers clear of the paths `reserved` says are about to be used.
+pub fn unique_path_where(dir: &Path, name: &std::ffi::OsStr, suffix: &str, reserved: impl Fn(&Path) -> bool) -> PathBuf {
+    let free = |p: &Path| p.symlink_metadata().is_err() && !reserved(p);
     let direct = dir.join(name);
-    if !direct.exists() && direct.symlink_metadata().is_err() {
+    if free(&direct) {
         return direct;
     }
     let name = name.to_string_lossy();
@@ -18,7 +23,7 @@ pub fn unique_path(dir: &Path, name: &std::ffi::OsStr, suffix: &str) -> PathBuf 
     for n in 1.. {
         let tag = if n == 1 { format!(" ({suffix})") } else { format!(" ({suffix} {n})") };
         let candidate = dir.join(format!("{stem}{tag}{ext}"));
-        if candidate.symlink_metadata().is_err() {
+        if free(&candidate) {
             return candidate;
         }
     }
@@ -53,38 +58,6 @@ fn copy_tree(src: &Path, dst: &Path) -> io::Result<()> {
     } else {
         std::fs::copy(src, dst).map(|_| ())
     }
-}
-
-fn check_destination(src: &Path, dir: &Path) -> io::Result<()> {
-    if !dir.is_dir() {
-        return Err(io::Error::other(format!("{} is not a folder", dir.display())));
-    }
-    let dir = dir.canonicalize()?;
-    if src.is_dir() && dir.starts_with(src.canonicalize()?) {
-        return Err(io::Error::other(format!("Cannot put {} inside itself", src.display())));
-    }
-    Ok(())
-}
-
-/// Copy `src` into `dir`, never overwriting: a clash gets a " (copy)" name.
-pub fn copy_into(src: &Path, dir: &Path) -> io::Result<PathBuf> {
-    check_destination(src, dir)?;
-    let name = src.file_name().ok_or_else(|| io::Error::other("no file name"))?;
-    let target = unique_path(dir, name, "copy");
-    copy_tree(src, &target)?;
-    Ok(target)
-}
-
-/// Move `src` into `dir`. Moving to where it already is does nothing.
-pub fn move_into(src: &Path, dir: &Path) -> io::Result<PathBuf> {
-    check_destination(src, dir)?;
-    if src.parent().is_some_and(|p| p.canonicalize().ok() == dir.canonicalize().ok()) {
-        return Ok(src.to_path_buf());
-    }
-    let name = src.file_name().ok_or_else(|| io::Error::other("no file name"))?;
-    let target = unique_path(dir, name, "moved");
-    move_path(src, &target)?;
-    Ok(target)
 }
 
 /// Rename `src` to the exact path `dst`, copying across filesystems when it has to.
@@ -193,7 +166,7 @@ pub fn compress(sources: &[PathBuf], out: &Path, format: ArchiveFormat) -> io::R
     let base = sources
         .first()
         .and_then(|p| p.parent())
-        .ok_or_else(|| io::Error::other("nothing to compress"))?
+        .ok_or_else(|| io::Error::other(tr("Nothing to compress")))?
         .to_path_buf();
     let names: Vec<_> = sources.iter().filter_map(|p| p.file_name().map(|n| n.to_owned())).collect();
     let result = match format {
@@ -288,7 +261,7 @@ pub fn extract(archive: &Path, dest: &Path) -> io::Result<()> {
         cmd.arg("x").arg("-y").arg(out).arg(archive);
         run(cmd)
     } else {
-        Err(io::Error::other("No tool installed to unpack this kind of archive (install 7z)"))
+        Err(io::Error::other(tr("No tool installed to unpack this kind of archive (install 7z)")))
     }
 }
 
@@ -303,51 +276,6 @@ pub fn extract_beside(archive: &Path) -> io::Result<PathBuf> {
             let _ = std::fs::remove_dir_all(&dest);
             Err(e)
         }
-    }
-}
-
-/// Background runner: one worker thread per job, results polled once per frame.
-pub struct Jobs {
-    tx: mpsc::Sender<Outcome>,
-    rx: mpsc::Receiver<Outcome>,
-    running: usize,
-    ctx: egui::Context,
-}
-
-pub struct Outcome {
-    pub message: String,
-    pub ok: bool,
-}
-
-impl Jobs {
-    pub fn new(ctx: &egui::Context) -> Self {
-        let (tx, rx) = mpsc::channel();
-        Self { tx, rx, running: 0, ctx: ctx.clone() }
-    }
-
-    pub fn running(&self) -> bool {
-        self.running > 0
-    }
-
-    /// Run `work` off the UI thread; it returns the message to show when it finishes.
-    pub fn spawn(&mut self, work: impl FnOnce() -> Result<String, String> + Send + 'static) {
-        self.running += 1;
-        let tx = self.tx.clone();
-        let ctx = self.ctx.clone();
-        std::thread::spawn(move || {
-            let (message, ok) = match work() {
-                Ok(m) => (m, true),
-                Err(m) => (m, false),
-            };
-            let _ = tx.send(Outcome { message, ok });
-            ctx.request_repaint();
-        });
-    }
-
-    pub fn poll(&mut self) -> Vec<Outcome> {
-        let done: Vec<Outcome> = self.rx.try_iter().collect();
-        self.running = self.running.saturating_sub(done.len());
-        done
     }
 }
 
@@ -373,13 +301,7 @@ mod tests {
             assert_eq!(std::fs::read_to_string(dest.join("d/e/b.txt")).unwrap(), "world", "{fmt:?}");
             println!("ok {:?} -> {}", fmt, dest.display());
         }
-        let c = copy_into(&src.join("d"), &src).unwrap();
-        assert!(c.ends_with("d (copy)"));
-        let other = root.join("other");
-        std::fs::create_dir(&other).unwrap();
-        let m = move_into(&src.join("a.txt"), &other).unwrap();
-        assert!(m.exists() && !src.join("a.txt").exists());
-        assert!(copy_into(&src.join("d"), &src.join("d/e")).is_err());
+        assert!(unique_path(&src, std::ffi::OsStr::new("d"), "copy").ends_with("d (copy)"));
         std::fs::remove_dir_all(&root).unwrap();
     }
 }

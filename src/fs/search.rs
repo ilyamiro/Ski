@@ -7,12 +7,44 @@ use std::sync::{mpsc, Arc};
 use eframe::egui;
 
 use super::file_item::FileItem;
+use super::glob;
 use super::scanner::TypeFilter;
 use super::recent;
 
 pub const MAX_RESULTS: usize = 400;
 const MAX_DEPTH: usize = 8;
 const BATCH: usize = 24;
+/// Larger files are not read when searching inside files.
+const CONTENT_LIMIT: u64 = 1024 * 1024;
+
+/// Where a search looks.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum SearchScope {
+    /// The folder that was open when the search began.
+    ThisFolder,
+    /// The whole home folder.
+    #[default]
+    Everywhere,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SearchOptions {
+    pub match_case: bool,
+    /// Also find text files that contain the words, not only files named so.
+    pub contents: bool,
+}
+
+/// Does the text file at `path` contain `needle`? Binary and large files never do.
+fn file_contains(path: &std::path::Path, needle: &str, match_case: bool) -> bool {
+    use std::io::Read;
+    let Ok(mut file) = std::fs::File::open(path) else { return false };
+    let mut bytes = Vec::new();
+    if file.by_ref().take(CONTENT_LIMIT).read_to_end(&mut bytes).is_err() || bytes[..bytes.len().min(4096)].contains(&0) {
+        return false;
+    }
+    let text = String::from_utf8_lossy(&bytes);
+    if match_case { text.contains(needle) } else { text.to_lowercase().contains(&needle.to_lowercase()) }
+}
 
 pub struct Search {
     generation: Arc<AtomicU64>,
@@ -37,18 +69,17 @@ impl Search {
         self.rx.is_some() && !self.finished
     }
 
-    pub fn start(&mut self, ctx: &egui::Context, root: PathBuf, query: String, show_hidden: bool, filter: TypeFilter) {
+    pub fn start(&mut self, ctx: &egui::Context, root: PathBuf, query: String, show_hidden: bool, filter: TypeFilter, options: SearchOptions) {
         let my_gen = self.generation.fetch_add(1, Ordering::Relaxed) + 1;
         let generation = self.generation.clone();
         let (tx, rx) = mpsc::channel();
         self.rx = Some(rx);
         self.finished = false;
         let ctx = ctx.clone();
-        let needle = query.to_lowercase();
 
         std::thread::spawn(move || {
             let cancelled = || generation.load(Ordering::Relaxed) != my_gen;
-            let matches = |name: &str| name.to_lowercase().contains(&needle);
+            let matches = |name: &str| glob::matches(&query, name, options.match_case);
             let mut seen: HashSet<PathBuf> = HashSet::new();
             let mut found = 0usize;
 
@@ -90,7 +121,12 @@ impl Search {
                         let mtime = entry.metadata().and_then(|m| m.modified()).unwrap_or(std::time::UNIX_EPOCH);
                         subdirs.push((mtime, path.clone()));
                     }
-                    if matches(&name) && !seen.contains(&path) {
+                    let is_file = entry.file_type().map(|t| t.is_file()).unwrap_or(false);
+                    let hit = matches(&name)
+                        || options.contents && is_file && !seen.contains(&path)
+                            && entry.metadata().is_ok_and(|m| m.len() <= CONTENT_LIMIT)
+                            && file_contains(&path, &query, options.match_case);
+                    if hit && !seen.contains(&path) {
                         if let Some(item) = FileItem::from_path(&path).filter(|i| filter.accepts(i)) {
                             batch.push(item);
                             found += 1;
@@ -130,5 +166,24 @@ impl Search {
             }
         }
         out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn contents_match_text_files_only() {
+        let dir = std::env::temp_dir().join(format!("ski_search_test_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("note.txt"), "Remember the Milk").unwrap();
+        std::fs::write(dir.join("blob.bin"), b"milk\0\0\0").unwrap();
+        assert!(file_contains(&dir.join("note.txt"), "milk", false));
+        assert!(!file_contains(&dir.join("note.txt"), "milk", true));
+        assert!(file_contains(&dir.join("note.txt"), "Milk", true));
+        assert!(!file_contains(&dir.join("blob.bin"), "milk", false));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

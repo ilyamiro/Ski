@@ -3,6 +3,8 @@
 //! Both modes work on the name without its extension, so a file never loses its type by accident.
 
 use std::collections::HashSet;
+
+use crate::i18n::{tr, trf};
 use std::path::{Path, PathBuf};
 
 pub const TOKEN_NAME: &str = "[Original name]";
@@ -252,11 +254,11 @@ pub fn problem(entries: &[Entry], names: &[String]) -> Option<String> {
     for (entry, new) in entries.iter().zip(names) {
         let trimmed = new.trim();
         if trimmed.is_empty() || trimmed == "." || trimmed == ".." || trimmed.contains('/') {
-            return Some("Some names would be empty or invalid".to_owned());
+            return Some(tr("Some names would be empty or invalid").to_owned());
         }
         let dir = entry.path.parent().map(Path::to_path_buf).unwrap_or_default();
         if !seen.insert((dir, new.clone())) {
-            return Some(format!("More than one file would be named “{new}”"));
+            return Some(trf("More than one file would be named “{}”", &[&new]));
         }
     }
     // A target that already exists on disk is fine only when that file is renamed too
@@ -264,7 +266,7 @@ pub fn problem(entries: &[Entry], names: &[String]) -> Option<String> {
     for (entry, new) in entries.iter().zip(names) {
         let target = entry.path.with_file_name(new);
         if target != entry.path && target.symlink_metadata().is_ok() && !renamed.contains(target.as_path()) {
-            return Some(format!("“{new}” already exists"));
+            return Some(trf("“{}” already exists", &[&new]));
         }
     }
     None

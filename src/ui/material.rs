@@ -6,6 +6,7 @@ use eframe::egui::{
     self, text::LayoutJob, text::TextWrapping, Align2, Color32, CornerRadius, Pos2, Rect, Vec2,
 };
 use super::theme::SerpantinumTheme;
+use crate::i18n::tr;
 use crate::fs::file_item::{specific_icon, FileItem, FileType, Tint};
 use crate::fs::scanner::{SortBy, SortOrder};
 use crate::ui::icons;
@@ -625,7 +626,7 @@ pub fn nav_item(
     theme: &SerpantinumTheme,
     selected: bool,
 ) -> egui::Response {
-    let (rect, response) = ui.allocate_exact_size(Vec2::new(ui.available_width(), ENTRY_HEIGHT), egui::Sense::click());
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(ui.available_width(), ENTRY_HEIGHT), egui::Sense::click_and_drag());
     let id = ui.make_persistent_id(id_source);
     let fx = fx(ui, id, &response, true, &FxSpec::ROW);
     let sel_t = animate(ui.ctx(), id.with("sel"), selected);
@@ -681,7 +682,7 @@ fn paint_thumb(ui: &egui::Ui, tex: &egui::TextureHandle, rect: Rect, radius: u8)
 }
 
 /// Left edge of the name in a list row; the header lines its first label up with it.
-const ROW_NAME_X: f32 = 54.0;
+pub const ROW_NAME_X: f32 = 54.0;
 const ROW_PAD_RIGHT: f32 = 16.0;
 /// Narrowest the name may get before detail columns start dropping out.
 const ROW_NAME_MIN: f32 = 160.0;
@@ -715,12 +716,12 @@ impl Column {
 
     pub fn label(self) -> &'static str {
         match self {
-            Column::Size => "Size",
-            Column::Modified => "Modified",
-            Column::Created => "Created",
-            Column::Accessed => "Accessed",
-            Column::Owner => "Owner",
-            Column::Permissions => "Permissions",
+            Column::Size => tr("Size"),
+            Column::Modified => tr("Modified"),
+            Column::Created => tr("Created"),
+            Column::Accessed => tr("Accessed"),
+            Column::Owner => tr("Owner"),
+            Column::Permissions => tr("Permissions"),
         }
     }
 
@@ -846,7 +847,7 @@ pub fn list_header(
         Pos2::new(rect.left() + ROW_NAME_X - 10.0, rect.top() + 2.0),
         Pos2::new(name_right - 2.0, rect.bottom() - 2.0),
     );
-    cell(ui, "name", Some(SortBy::Name), "Name", name_cell);
+    cell(ui, "name", Some(SortBy::Name), tr("Name"), name_cell);
     for (column, edge) in edges {
         let width = column.width(widths);
         let slot = Rect::from_min_max(Pos2::new(edge - width + 2.0, rect.top() + 2.0), Pos2::new(edge, rect.bottom() - 2.0));
@@ -947,7 +948,7 @@ pub fn file_row(
         let pill_fg = theme.peach.gamma_multiply(cut_t);
         ui.painter().rect_filled(snap(ui.painter(), pill_rect), pill(pill_rect), pill_bg);
         paint_icon(ui.painter(), Pos2::new(pill_rect.left() + 13.0, pill_rect.center().y), icons::CUT, 11.0, pill_fg);
-        ui.painter().text(Pos2::new(pill_rect.left() + 24.0, pill_rect.center().y), Align2::LEFT_CENTER, "Cut", egui::FontId::proportional(11.5), pill_fg);
+        ui.painter().text(Pos2::new(pill_rect.left() + 24.0, pill_rect.center().y), Align2::LEFT_CENTER, tr("Cut"), egui::FontId::proportional(11.5), pill_fg);
         right -= (pill_w + 10.0) * cut_t;
     }
 
@@ -1228,7 +1229,7 @@ pub fn nav_pair(ui: &mut egui::Ui, theme: &SerpantinumTheme, can_back: bool, can
     ui.painter().rect_filled(snap(ui.painter(), body), pill(body), theme.surface0);
     let id = ui.make_persistent_id("nav_pair");
     let mut responses = Vec::with_capacity(2);
-    for (i, (icon, enabled, tip)) in [(icons::CHEVRON_LEFT, can_back, "Back"), (icons::CHEVRON_RIGHT, can_forward, "Forward")].into_iter().enumerate() {
+    for (i, (icon, enabled, tip)) in [(icons::CHEVRON_LEFT, can_back, tr("Back")), (icons::CHEVRON_RIGHT, can_forward, tr("Forward"))].into_iter().enumerate() {
         let cell = Rect::from_min_size(body.min + Vec2::new(W * i as f32, 0.0), Vec2::new(W, H));
         let btn_id = id.with(i);
         let resp = ui.interact(cell, btn_id, if enabled { egui::Sense::click() } else { egui::Sense::hover() });
@@ -1386,7 +1387,7 @@ pub fn dialog_header(
             }
         });
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
-            if filled_icon_button(ui, close_id, icons::CLOSE, theme, SIZE, "Close", Some(theme.red)).clicked() {
+            if filled_icon_button(ui, close_id, icons::CLOSE, theme, SIZE, tr("Close"), Some(theme.red)).clicked() {
                 close = true;
             }
         });
@@ -1432,7 +1433,7 @@ pub fn dialog_footer(ui: &mut egui::Ui, theme: &SerpantinumTheme, spec: FooterSp
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             let kind = if spec.danger { ButtonKind::Danger } else { ButtonKind::Filled };
             out.primary = button(ui, (spec.id, "primary"), spec.icon, spec.primary, theme, kind, spec.enabled).clicked() && spec.enabled;
-            out.cancel = button(ui, (spec.id, "cancel"), None, "Cancel", theme, ButtonKind::Text, true).clicked();
+            out.cancel = button(ui, (spec.id, "cancel"), None, tr("Cancel"), theme, ButtonKind::Text, true).clicked();
         });
     });
     out
@@ -1511,6 +1512,73 @@ pub fn paint_rubberband_faded(painter: &egui::Painter, rect: Rect, theme: &Serpa
     let fill = theme.with_alpha(theme.mauve, (34.0 * t).round() as u8);
     let stroke = egui::Stroke::new(1.0, theme.with_alpha(theme.mauve, (110.0 * t).round() as u8));
     painter.rect(rect, radius, fill, stroke, egui::StrokeKind::Inside);
+}
+
+/// Square tick box. Filled with the accent when ticked.
+pub fn checkbox(ui: &mut egui::Ui, id_source: impl std::hash::Hash + std::fmt::Debug, on: bool, enabled: bool, theme: &SerpantinumTheme) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(Vec2::splat(30.0), if enabled { egui::Sense::click() } else { egui::Sense::hover() });
+    let id = ui.make_persistent_id(id_source);
+    let fx = fx(ui, id, &response, enabled, &FxSpec::ICON);
+    let t = animate(ui.ctx(), id.with("on"), on);
+    let en_t = animate(ui.ctx(), id.with("en"), enabled);
+    let r = scaled(Rect::from_center_size(rect.center(), Vec2::splat(24.0)), fx.scale);
+    let off = lerp_color(theme.surface2, theme.surface2.gamma_multiply(1.0), fx.hover);
+    let hover_layer = row_layer(theme, &fx);
+    let fill = lerp_color(blend_over(off, hover_layer), theme.mauve, t);
+    paint_fill(ui.painter(), r, CornerRadius::same(RADIUS_SM), fill.gamma_multiply(lerp(0.55, 1.0, en_t)), &fx);
+    if t > 0.01 {
+        paint_icon(ui.painter(), r.center(), icons::CHECK, 16.0 * (0.6 + 0.4 * t), on_color(theme, theme.mauve).gamma_multiply(t * lerp(0.6, 1.0, en_t)));
+    }
+    response
+}
+
+/// Slim progress bar. `None` slides a short segment along for work whose size is not known.
+pub fn progress_bar(ui: &mut egui::Ui, id_source: impl std::hash::Hash + std::fmt::Debug, width: f32, fraction: Option<f32>, theme: &SerpantinumTheme, color: Color32) {
+    const HEIGHT: f32 = 6.0;
+    let id = ui.make_persistent_id(id_source);
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(width, HEIGHT), egui::Sense::hover());
+    let track = snap(ui.painter(), rect);
+    ui.painter().rect_filled(track, pill(track), theme.surface2);
+    match fraction {
+        Some(f) => {
+            let f = animate_value(ui.ctx(), id, f.clamp(0.0, 1.0), ANIM);
+            if f > 0.001 {
+                let fill = Rect::from_min_size(rect.min, Vec2::new((rect.width() * f).max(HEIGHT), HEIGHT));
+                ui.painter().rect_filled(fill, pill(fill), color);
+            }
+        }
+        None => {
+            let time = ui.input(|i| i.time) as f32;
+            let phase = (time * 0.8).fract();
+            let segment = rect.width() * 0.34;
+            let x = lerp(rect.left() - segment, rect.right(), phase);
+            let fill = Rect::from_min_size(Pos2::new(x, rect.top()), Vec2::new(segment, HEIGHT));
+            let clipped = ui.painter().with_clip_rect(rect);
+            clipped.rect_filled(fill, pill(fill), color);
+            ui.ctx().request_repaint();
+        }
+    }
+}
+
+/// A ring that fills clockwise from the top; `None` spins a short arc.
+pub fn progress_ring(painter: &egui::Painter, center: Pos2, radius: f32, fraction: Option<f32>, track: Color32, color: Color32, time: f64) {
+    let stroke_w = 2.6;
+    painter.circle_stroke(center, radius, egui::Stroke::new(stroke_w, track));
+    let (start, sweep) = match fraction {
+        Some(f) => (-std::f32::consts::FRAC_PI_2, f.clamp(0.0, 1.0) * std::f32::consts::TAU),
+        None => (time as f32 * 4.2 - std::f32::consts::FRAC_PI_2, std::f32::consts::TAU * 0.28),
+    };
+    if sweep < 0.02 {
+        return;
+    }
+    let steps = ((sweep / std::f32::consts::TAU) * 72.0).ceil().max(2.0) as usize;
+    let points: Vec<Pos2> = (0..=steps)
+        .map(|i| {
+            let a = start + sweep * i as f32 / steps as f32;
+            Pos2::new(center.x + radius * a.cos(), center.y + radius * a.sin())
+        })
+        .collect();
+    painter.add(egui::Shape::line(points, egui::Stroke::new(stroke_w, color)));
 }
 
 #[cfg(test)]

@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::SystemTime;
+use crate::i18n::{tr, trf};
 use crate::ui::icons;
 
 static DECIMAL_UNITS: AtomicBool = AtomicBool::new(false);
@@ -127,16 +128,16 @@ impl FileType {
 
     pub fn label(&self) -> &'static str {
         match self {
-            FileType::Directory => "Folder",
-            FileType::Document => "Document",
-            FileType::Image => "Image",
-            FileType::Audio => "Audio",
-            FileType::Video => "Video",
-            FileType::Archive => "Archive",
-            FileType::Code => "Source Code",
-            FileType::Executable => "Executable",
-            FileType::Symlink => "Symlink",
-            FileType::Other => "File",
+            FileType::Directory => tr("Folder"),
+            FileType::Document => tr("Document"),
+            FileType::Image => tr("Image"),
+            FileType::Audio => tr("Audio"),
+            FileType::Video => tr("Video"),
+            FileType::Archive => tr("Archive"),
+            FileType::Code => tr("Source Code"),
+            FileType::Executable => tr("Executable"),
+            FileType::Symlink => tr("Symlink"),
+            FileType::Other => tr("File"),
         }
     }
 }
@@ -259,22 +260,22 @@ impl FileItem {
                 Some(time) => {
                     let duration = match SystemTime::now().duration_since(time) {
                         Ok(d) => d,
-                        Err(_) => return "In the future".to_string(),
+                        Err(_) => return tr("In the future").to_string(),
                     };
                     let secs = duration.as_secs();
                     if secs < 60 {
-                        "Just now".to_string()
+                        tr("Just now").to_string()
                     } else if secs < 3600 {
-                        format!("{}m ago", secs / 60)
+                        trf("{}m ago", &[&(secs / 60)])
                     } else if secs < 86400 {
-                        format!("{}h ago", secs / 3600)
+                        trf("{}h ago", &[&(secs / 3600)])
                     } else if secs < 86400 * 7 {
-                        format!("{}d ago", secs / 86400)
+                        trf("{}d ago", &[&(secs / 86400)])
                     } else {
-                        format!("{}w ago", secs / (86400 * 7))
+                        trf("{}w ago", &[&(secs / (86400 * 7))])
                     }
                 }
-                None => "Unknown".to_string(),
+                None => tr("Unknown").to_string(),
             }
         } else {
             super::props::format_datetime(self.modified)
@@ -295,15 +296,15 @@ pub fn format_bytes_ext(bytes: u64, decimal: bool) -> String {
     let b = bytes as f64;
 
     if b < kb {
-        format!("{bytes} B")
+        trf("{} B", &[&bytes])
     } else if b < mb {
-        format!("{:.1} KB", b / kb)
+        trf("{} KB", &[&format!("{:.1}", b / kb)])
     } else if b < gb {
-        format!("{:.1} MB", b / mb)
+        trf("{} MB", &[&format!("{:.1}", b / mb)])
     } else if b < tb {
-        format!("{:.2} GB", b / gb)
+        trf("{} GB", &[&format!("{:.2}", b / gb)])
     } else {
-        format!("{:.2} TB", b / tb)
+        trf("{} TB", &[&format!("{:.2}", b / tb)])
     }
 }
 

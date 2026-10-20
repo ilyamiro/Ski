@@ -1,20 +1,34 @@
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use eframe::egui;
 
+use crate::i18n::{tr, tr_dyn, trf, trn};
+
+mod dnd;
+mod drives_ui;
+mod file_actions;
+mod jobs_ui;
+mod perms;
+mod tabs;
+use tabs::TabSlot;
+
 use crate::fs::{
+    drives::Drive,
     file_item::FileItem,
     apps::{self, AppEntry},
     places::{load_folder_icons, save_folder_icons, Place, PlaceGroup, PlaceKind, RECENT_PATH},
     props::{FolderScan, Properties},
     scanner::{read_directory, ListOptions, TypeFilter},
     recent,
-    search::Search,
+    search::{Search, SearchOptions, SearchScope},
     trash,
 };
 use crate::fs::batch_rename::{self, Entry as RenameEntry, Mode as RenameMode, Rules as RenameRules};
-use crate::fs::ops::{self, ArchiveFormat, Jobs};
+use crate::fs::engine::{self, ConflictRequest, Effect, Engine, JobKind, Op, Outcome};
+use crate::fs::history::{Edit, History, UndoEntry};
+use crate::fs::templates::{self, Template};
+use crate::fs::ops::{self, ArchiveFormat};
 use crate::fs::scanner::{SortBy, SortOrder};
 use crate::settings::{Density, Settings};
 use crate::thumbs::Thumbnails;
@@ -40,6 +54,10 @@ enum MenuTarget {
     Main,
     /// The Trash entry of the sidebar.
     TrashPlace(PathBuf),
+    /// A folder place of the sidebar.
+    Place(PathBuf),
+    /// A drive of the sidebar: its device, name and where it is mounted (empty when it is not).
+    Drive(Drive, String, PathBuf),
 }
 
 struct ContextMenu {
@@ -54,6 +72,8 @@ struct ContextMenu {
 enum MenuAction {
     Open(FileItem),
     OpenPath(PathBuf),
+    OpenInNewTab(PathBuf),
+    OpenInNewWindow(PathBuf),
     CopyPath(PathBuf),
     Properties(PathBuf),
     OpenWith(PathBuf),
@@ -82,6 +102,17 @@ enum MenuAction {
     NewWindow,
     OpenSettings,
     Shortcuts,
+    NewTab,
+    Undo,
+    Redo,
+    Duplicate(Vec<PathBuf>),
+    MakeLink(Vec<PathBuf>),
+    OpenTerminal(PathBuf),
+    InvertSelection,
+    SelectPattern,
+    Mount(String, String),
+    Unmount(String, String, PathBuf),
+    Eject(String, String, PathBuf),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -99,7 +130,7 @@ pub(crate) enum ConfirmAction {
 
 /// Action offered by a toast, such as undoing a move to the trash.
 enum ToastAction {
-    UndoTrash(Vec<PathBuf>),
+    Undo,
 }
 
 struct Toast {
@@ -118,11 +149,11 @@ struct MenuGhost {
 }
 
 pub(crate) enum Dialog {
-    Create { is_dir: bool, name: String, error: Option<String>, first_frame: bool },
+    Create { is_dir: bool, name: String, error: Option<String>, first_frame: bool, templates: Vec<Template>, template: usize, edited: bool },
     Rename { path: PathBuf, name: String, error: Option<String>, first_frame: bool },
     Confirm { title: String, body: String, confirm: String, action: ConfirmAction },
     Alert { title: String, body: String },
-    Properties { props: Box<Properties>, scan: Option<FolderScan> },
+    Properties { props: Box<Properties>, scan: Option<FolderScan>, tab: usize },
     OpenWith {
         path: PathBuf,
         mime: String,
@@ -155,6 +186,9 @@ pub(crate) enum Dialog {
         conflict_warning: Option<(String, crate::keymap::Action, crate::keymap::Action, Option<usize>)>,
     },
     Shortcuts,
+    /// A copy or move found its target name taken and waits for the answer.
+    Conflict { request: Option<ConflictRequest>, all: bool },
+    SelectPattern { pattern: String, case: bool, first_frame: bool },
 }
 
 /// Rubber-band drag selection started inside the file listing.
@@ -222,7 +256,26 @@ pub struct SkiApp {
     last_cursor: Option<usize>,
     /// Files copied or cut, waiting for a paste (`true` = cut).
     clipboard: Option<(Vec<PathBuf>, bool)>,
-    jobs: Jobs,
+    engine: Engine,
+    history: History,
+    /// The undo or redo that is running, so a second one waits for it.
+    history_job: Option<u64>,
+    pending_conflicts: VecDeque<ConflictRequest>,
+    jobs_popover: bool,
+    jobs_button_rect: egui::Rect,
+    /// Where each listed item was drawn last frame (for the menu key).
+    last_item_rects: Vec<(usize, egui::Rect)>,
+    /// Names that running duplications will create, so a second one picks another.
+    reserved: Vec<PathBuf>,
+    /// A folder another part of the app wants shown (settings buttons), opened at the next frame.
+    pub(crate) pending_open: Option<PathBuf>,
+    drive_state: drives_ui::DriveState,
+    /// Where each pinned row was drawn last frame, for reordering by dragging.
+    pin_rects: Vec<egui::Rect>,
+    dnd: Option<dnd::Dnd>,
+    drop_zones: Vec<dnd::DropZone>,
+    /// The part of the window the listing fills (drops on items must land inside it).
+    dnd_view: egui::Rect,
     error_message: Option<String>,
 
     // Dynamic shell theme from Serpantinum
@@ -234,6 +287,8 @@ pub struct SkiApp {
 
     // Search and display options
     search_query: String,
+    /// The folder a search began in (the one open when the query was first typed).
+    search_root: Option<PathBuf>,
     pub(crate) show_hidden: bool,
     pub(crate) folders_first: bool,
     type_filter: TypeFilter,
@@ -243,6 +298,8 @@ pub struct SkiApp {
 
     // Path edit mode (Ctrl+L)
     is_editing_path: bool,
+    /// The path field has been on screen since editing began.
+    path_field_open: bool,
     path_input: String,
 
     thumbs: Thumbnails,
@@ -295,6 +352,15 @@ pub struct SkiApp {
     last_rubberband: Option<egui::Rect>,
 
     pub(crate) capturing_key: bool,
+
+    // Tabs: the one on screen is the app itself, the others are parked in their slot
+    tabs: Vec<TabSlot>,
+    active_tab: usize,
+    next_tab_id: u64,
+    /// A tab that was just opened, so it grows in.
+    tab_enter: Option<u64>,
+    /// A parked tab with a search comes back; the search runs again.
+    restart_search: bool,
 }
 
 impl SkiApp {
@@ -324,12 +390,26 @@ impl SkiApp {
             anchor: None,
             last_cursor: None,
             clipboard: None,
-            jobs: Jobs::new(ctx),
+            engine: Engine::new(ctx),
+            history: History::default(),
+            history_job: None,
+            pending_conflicts: VecDeque::new(),
+            jobs_popover: false,
+            jobs_button_rect: egui::Rect::NOTHING,
+            last_item_rects: Vec::new(),
+            reserved: Vec::new(),
+            pending_open: None,
+            drive_state: drives_ui::DriveState::new(),
+            pin_rects: Vec::new(),
+            dnd: None,
+            drop_zones: Vec::new(),
+            dnd_view: egui::Rect::NOTHING,
             error_message: None,
             theme,
             back_history: Vec::new(),
             forward_history: Vec::new(),
             search_query: String::new(),
+            search_root: None,
             show_hidden: settings.show_hidden,
             folders_first: settings.folders_first,
             type_filter: TypeFilter::All,
@@ -337,6 +417,7 @@ impl SkiApp {
             sort_by: settings.sort_by,
             sort_order: settings.sort_order,
             is_editing_path: false,
+            path_field_open: false,
             path_input: canonical_path.to_string_lossy().to_string(),
             thumbs: Thumbnails::new(ctx),
             search: Search::new(),
@@ -372,6 +453,11 @@ impl SkiApp {
             drag_select: None,
             last_rubberband: None,
             capturing_key: false,
+            tabs: vec![TabSlot::live(0)],
+            active_tab: 0,
+            next_tab_id: 1,
+            tab_enter: None,
+            restart_search: false,
         };
 
         app.reload_items();
@@ -411,6 +497,7 @@ impl SkiApp {
         self.drag_select = None;
         self.last_rubberband = None;
         self.search_query.clear();
+        self.search_root = None;
         self.search.cancel();
         self.show_search = false;
         self.is_editing_path = false;
@@ -467,7 +554,7 @@ impl SkiApp {
         self.system_theme = SerpantinumTheme::load();
         self.rebuild_theme();
         self.reload_items();
-        self.set_toast("Refreshed");
+        self.set_toast(tr("Refreshed"));
     }
 
     pub fn reload_items(&mut self) {
@@ -538,7 +625,7 @@ impl SkiApp {
             match app {
                 Some(app) => {
                     if let Err(err) = apps::launch(&app, path) {
-                        self.set_toast(format!("Failed to start {}: {err}", app.name));
+                        self.set_toast(trf("Failed to start {}: {}", &[&app.name, &err]));
                     }
                     return;
                 }
@@ -550,7 +637,7 @@ impl SkiApp {
             }
         }
         if let Err(err) = open::that(path) {
-            self.set_toast(format!("Failed to open file: {err}"));
+            self.set_toast(trf("Failed to open file: {}", &[&err]));
         }
     }
 
@@ -616,7 +703,7 @@ impl SkiApp {
     fn describe_count(paths: &[PathBuf]) -> String {
         match paths {
             [one] => format!("“{}”", one.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()),
-            many => format!("{} items", many.len()),
+            many => trn(many.len(), "{} item", "{} items"),
         }
     }
 
@@ -630,18 +717,19 @@ impl SkiApp {
             .collect::<Vec<_>>()
             .join("\n");
         ctx.copy_text(text);
-        let message = format!("{} {}", if cut { "Cut" } else { "Copied" }, Self::describe_count(&paths));
+        let what = Self::describe_count(&paths);
+        let message = if cut { trf("Cut {}", &[&what]) } else { trf("Copied {}", &[&what]) };
         self.clipboard = Some((paths, cut));
         self.set_toast(message);
     }
 
     fn paste(&mut self) {
         let Some((paths, cut)) = self.clipboard.clone() else {
-            self.set_toast("Nothing to paste");
+            self.set_toast(tr("Nothing to paste"));
             return;
         };
         if !self.can_modify_here() {
-            self.set_toast("Open a regular folder to paste into");
+            self.set_toast(tr("Open a regular folder to paste into"));
             return;
         }
         let dest = self.current_path.clone();
@@ -654,16 +742,20 @@ impl SkiApp {
             });
             if same_folder {
                 let any_dir = paths.iter().any(|p| p.is_dir());
-                let (title, body) = if paths.len() == 1 {
-                    let kind = if any_dir { "folder" } else { "file" };
+                let (title, body) = if paths.len() == 1 && any_dir {
                     (
-                        format!("Can't move a {kind} over itself"),
-                        format!("The source {kind} is already in this folder and would overwrite itself."),
+                        tr("Can't move a folder over itself").to_owned(),
+                        tr("The source folder is already in this folder and would overwrite itself.").to_owned(),
+                    )
+                } else if paths.len() == 1 {
+                    (
+                        tr("Can't move a file over itself").to_owned(),
+                        tr("The source file is already in this folder and would overwrite itself.").to_owned(),
                     )
                 } else {
                     (
-                        "Can't move items over themselves".to_owned(),
-                        "The source items are already in this folder and would overwrite themselves.".to_owned(),
+                        tr("Can't move items over themselves").to_owned(),
+                        tr("The source items are already in this folder and would overwrite themselves.").to_owned(),
                     )
                 };
                 self.dialog = Some(Dialog::Alert { title, body });
@@ -680,34 +772,35 @@ impl SkiApp {
     fn transfer(&mut self, op: TransferOp, items: Vec<PathBuf>, dest: PathBuf) {
         let label = Self::describe_count(&items);
         let target = dest.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| dest.display().to_string());
-        self.set_toast(match op {
-            TransferOp::Copy => format!("Copying {label}…"),
-            TransferOp::Move => format!("Moving {label}…"),
-            TransferOp::Extract => format!("Extracting {label}…"),
-        });
-        self.jobs.spawn(move || {
-            let mut failures = Vec::new();
-            for item in &items {
-                let result = match op {
-                    TransferOp::Copy => ops::copy_into(item, &dest).map(|_| ()),
-                    TransferOp::Move => ops::move_into(item, &dest).map(|_| ()),
-                    TransferOp::Extract => ops::extract(item, &dest),
-                };
-                if let Err(err) = result {
-                    failures.push(format!("{}: {err}", item.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()));
-                }
+        let detail = trf("to “{}”", &[&target]);
+        match op {
+            TransferOp::Extract => {
+                let title = trf("Extracting {}…", &[&label]);
+                self.engine.spawn(JobKind::Extract, title, detail, move |w| {
+                    w.shared.files_total.store(items.len() as u64, std::sync::atomic::Ordering::Relaxed);
+                    let mut failures = Vec::new();
+                    for item in &items {
+                        if w.shared.checkpoint().is_err() {
+                            break;
+                        }
+                        if let Err(err) = ops::extract(item, &dest) {
+                            failures.push(format!("{}: {err}", item.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()));
+                        }
+                        w.shared.files_done.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    }
+                    if failures.is_empty() { Outcome::done(trf("Extracted {} to “{}”", &[&label, &target])) } else { Outcome::failed(failures.join(" · ")) }
+                });
             }
-            if failures.is_empty() {
-                let verb = match op {
-                    TransferOp::Copy => "Copied",
-                    TransferOp::Move => "Moved",
-                    TransferOp::Extract => "Extracted",
+            TransferOp::Copy | TransferOp::Move => {
+                let pairs: Vec<(PathBuf, PathBuf)> = items.iter().filter_map(|p| p.file_name().map(|n| (p.clone(), dest.join(n)))).collect();
+                let (kind, engine_op, title) = if op == TransferOp::Copy {
+                    (JobKind::Copy, Op::Copy, trf("Copying {}", &[&label]))
+                } else {
+                    (JobKind::Move, Op::Move, trf("Moving {}", &[&label]))
                 };
-                Ok(format!("{verb} {label} to “{target}”"))
-            } else {
-                Err(failures.join(" · "))
+                self.engine.spawn(kind, title, detail, move |w| engine::transfer(w, engine_op, pairs));
             }
-        });
+        }
     }
 
     fn extract_beside(&mut self, archives: Vec<PathBuf>) {
@@ -716,21 +809,32 @@ impl SkiApp {
             return;
         }
         let label = Self::describe_count(&archives);
-        self.set_toast(format!("Extracting {label}…"));
-        self.jobs.spawn(move || {
+        let title = trf("Extracting {}…", &[&label]);
+        self.engine.spawn(JobKind::Extract, title, String::new(), move |w| {
+            use std::sync::atomic::Ordering::Relaxed;
+            w.shared.files_total.store(archives.len() as u64, Relaxed);
             let mut failures = Vec::new();
-            let mut last = None;
+            let mut made = Vec::new();
             for archive in &archives {
+                if w.shared.checkpoint().is_err() {
+                    break;
+                }
                 match ops::extract_beside(archive) {
-                    Ok(dir) => last = Some(dir),
+                    Ok(dir) => made.push(dir),
                     Err(err) => failures.push(format!("{}: {err}", archive.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default())),
                 }
+                w.shared.files_done.fetch_add(1, Relaxed);
             }
-            if failures.is_empty() {
-                let folder = last.and_then(|d| d.file_name().map(|n| n.to_string_lossy().into_owned())).unwrap_or_default();
-                Ok(if archives.len() == 1 { format!("Extracted to “{folder}”") } else { format!("Extracted {label}") })
+            let effect = if made.is_empty() {
+                Effect::None
             } else {
-                Err(failures.join(" · "))
+                Effect::Record(UndoEntry::new(trf("Extraction of {}", &[&label]), made.iter().cloned().map(Edit::Trash).collect()))
+            };
+            if failures.is_empty() {
+                let folder = made.last().and_then(|d| d.file_name().map(|n| n.to_string_lossy().into_owned())).unwrap_or_default();
+                Outcome::done(if archives.len() == 1 { trf("Extracted to “{}”", &[&folder]) } else { trf("Extracted {}", &[&label]) }).with(effect)
+            } else {
+                Outcome::failed(failures.join(" · ")).with(effect)
             }
         });
     }
@@ -739,12 +843,12 @@ impl SkiApp {
         let base = self.current_path.clone();
         let sources: Vec<PathBuf> = sources.into_iter().filter(|p| p.parent() == Some(base.as_path())).collect();
         if sources.is_empty() {
-            self.set_toast("Open the folder first to compress its files");
+            self.set_toast(tr("Open the folder first to compress its files"));
             return;
         }
         let name = match sources.as_slice() {
             [one] => ops::archive_stem(one),
-            _ => base.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "Archive".to_owned()),
+            _ => base.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| tr("Archive").to_owned()),
         };
         self.dialog = Some(Dialog::Compress { sources, name, format: ArchiveFormat::Zip, first_frame: true });
     }
@@ -754,21 +858,6 @@ impl SkiApp {
         let mut picker = Picker { op, path_input: String::new(), dir: PathBuf::new(), items, chosen: None, folders: Vec::new(), icon_for: None, images: Vec::new() };
         picker.enter(dir);
         self.picker = Some(picker);
-    }
-
-    /// Called once per frame: report finished background jobs.
-    fn poll_jobs(&mut self) {
-        let outcomes = self.jobs.poll();
-        if outcomes.is_empty() {
-            return;
-        }
-        for outcome in outcomes {
-            let message = if outcome.ok { outcome.message } else { format!("Failed: {}", outcome.message) };
-            self.set_toast(message);
-        }
-        if self.search_query.trim().is_empty() {
-            self.reload_items();
-        }
     }
 
     /// Show the context menu right away. The "Open with <app>" label needs process calls
@@ -782,7 +871,7 @@ impl SkiApp {
                 let ctx = ctx.clone();
                 std::thread::spawn(move || {
                     let id = chosen.or_else(|| apps::default_for(&apps::mime_of(&path)));
-                    let label = id.and_then(|id| apps::installed().iter().find(|a| a.id == id).map(|a| format!("Open with {}", a.name)));
+                    let label = id.and_then(|id| apps::installed().iter().find(|a| a.id == id).map(|a| trf("Open with {}", &[&a.name])));
                     let _ = tx.send(label);
                     ctx.request_repaint();
                 });
@@ -805,10 +894,16 @@ impl SkiApp {
 
     /// Another Ski window on the current folder.
     fn new_window(&mut self) {
+        let here = self.current_path.clone();
+        self.open_window(&here);
+    }
+
+    /// Another Ski window on `path`.
+    fn open_window(&mut self, path: &Path) {
         let started = std::env::current_exe()
-            .and_then(|exe| std::process::Command::new(exe).arg(&self.current_path).spawn());
+            .and_then(|exe| std::process::Command::new(exe).arg(path).spawn());
         if let Err(err) = started {
-            self.set_toast(format!("Could not open a new window: {err}"));
+            self.set_toast(trf("Could not open a new window: {}", &[&err]));
         }
     }
 
@@ -831,6 +926,7 @@ impl SkiApp {
 
     /// Re-apply theme / font / scale to egui after a change, and write changed preferences to disk.
     fn sync_settings(&mut self, ctx: &egui::Context) {
+        crate::i18n::set_language(crate::i18n::resolve(&self.settings.language));
         material::set_animations(self.settings.animations);
         ctx.all_styles_mut(|s| s.animation_time = material::dur(material::ANIM));
 
@@ -914,7 +1010,7 @@ impl SkiApp {
                     return;
                 }
                 self.settings.grid_size = next;
-                format!("Icons {}", next.label())
+                trf("Icons {}", &[&next.label()])
             }
             ViewMode::List => {
                 let next = self.settings.density.step(delta);
@@ -922,7 +1018,7 @@ impl SkiApp {
                     return;
                 }
                 self.settings.density = next;
-                format!("{} rows", next.label())
+                trf("{} rows", &[&next.label()])
             }
         };
         self.set_toast(message);
@@ -932,6 +1028,7 @@ impl SkiApp {
         self.show_search = false;
         if !self.search_query.is_empty() {
             self.search_query.clear();
+            self.search_root = None;
             self.search.cancel();
             self.reload_items();
         }
@@ -940,15 +1037,22 @@ impl SkiApp {
     /// Search the whole home folder; results replace the folder listing until the query is cleared.
     fn on_query_changed(&mut self, ctx: &egui::Context) {
         if self.search_query.trim().is_empty() {
+            self.search_root = None;
             self.search.cancel();
             self.reload_items();
         } else {
+            if self.search_root.is_none() {
+                self.search_root = Some(self.current_path.clone());
+            }
             self.items.clear();
             self.selected_index = None;
             self.sync_selection(true);
             self.error_message = None;
-            let root = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
-            self.search.start(ctx, root, self.search_query.trim().to_owned(), self.show_hidden, self.type_filter);
+            let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
+            let here = self.search_root.clone().filter(|p| p.is_dir() && !trash::contains(p));
+            let root = if self.settings.search_scope == SearchScope::ThisFolder { here.unwrap_or(home) } else { home };
+            let options = SearchOptions { match_case: self.settings.search_case, contents: self.settings.search_contents };
+            self.search.start(ctx, root, self.search_query.trim().to_owned(), self.show_hidden, self.type_filter, options);
         }
     }
 
@@ -1000,20 +1104,20 @@ impl SkiApp {
             let dest = self.current_path.clone();
             self.transfer(TransferOp::Copy, dropped, dest);
         } else {
-            self.set_toast("Open a regular folder to drop files into");
+            self.set_toast(tr("Open a regular folder to drop files into"));
         }
     }
 
     /// Name of the place being shown, for the window title.
     fn location_name(&self) -> String {
         if !self.search_query.trim().is_empty() {
-            "Search".to_owned()
+            tr("Search").to_owned()
         } else if self.in_recent() {
-            "Recent".to_owned()
+            tr("Recent").to_owned()
         } else if trash::is_trash_folder(&self.current_path) {
-            "Trash".to_owned()
+            tr("Trash").to_owned()
         } else {
-            self.current_path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "Computer".to_owned())
+            self.current_path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| tr("Computer").to_owned())
         }
     }
 
@@ -1030,6 +1134,7 @@ impl SkiApp {
         }
 
         if ctx.input(|i| i.key_pressed(egui::Key::Escape))
+            && !matches!(self.dialog, Some(Dialog::Conflict { .. }))
             && (self.dialog.is_some() || self.menu.take().is_some()) {
                 if let Some(d) = self.dialog.take() {
                     self.closing_dialog = Some(d);
@@ -1162,8 +1267,13 @@ impl SkiApp {
         }
 
         if self.is_act_pressed(ctx, crate::keymap::Action::PinFolder) {
-            if self.in_recent() {
-                self.set_toast("Open a folder to pin it");
+            let picked: Vec<PathBuf> = self.selection.iter().filter_map(|i| self.items.get(*i)).map(|i| i.path.clone()).collect();
+            if !picked.is_empty() && !self.in_trash() {
+                for path in picked {
+                    self.toggle_pin(path);
+                }
+            } else if self.in_recent() {
+                self.set_toast(tr("Open a folder to pin it"));
             } else {
                 self.toggle_pin(self.current_path.clone());
             }
@@ -1213,6 +1323,67 @@ impl SkiApp {
             handled = true;
         }
 
+        if self.is_act_pressed(ctx, crate::keymap::Action::Undo) {
+            self.undo();
+            handled = true;
+        }
+        if self.is_act_pressed(ctx, crate::keymap::Action::Redo) {
+            self.redo();
+            handled = true;
+        }
+
+        if self.is_act_pressed(ctx, crate::keymap::Action::Duplicate) {
+            self.duplicate(self.selected_paths());
+            handled = true;
+        }
+        if self.is_act_pressed(ctx, crate::keymap::Action::MakeLink) {
+            self.make_links(self.selected_paths());
+            handled = true;
+        }
+        if self.is_act_pressed(ctx, crate::keymap::Action::OpenTerminal) {
+            let here = self.current_path.clone();
+            self.open_terminal(&here);
+            handled = true;
+        }
+        if self.is_act_pressed(ctx, crate::keymap::Action::InvertSelection) {
+            self.invert_selection();
+            handled = true;
+        }
+        if self.is_act_pressed(ctx, crate::keymap::Action::SelectNone) {
+            self.deselect_all();
+            handled = true;
+        }
+        if self.is_act_pressed(ctx, crate::keymap::Action::SelectPattern) {
+            self.open_select_pattern();
+            handled = true;
+        }
+        if self.is_act_pressed(ctx, crate::keymap::Action::ShowJobs) && !self.engine.jobs.is_empty() {
+            self.jobs_popover = !self.jobs_popover;
+            handled = true;
+        }
+        if self.is_act_pressed(ctx, crate::keymap::Action::ContextMenu) {
+            self.open_context_menu_here(ctx);
+            handled = true;
+        }
+
+        if self.is_act_pressed(ctx, crate::keymap::Action::NewTab) {
+            let here = self.current_path.clone();
+            self.new_tab(here);
+            handled = true;
+        }
+        if self.is_act_pressed(ctx, crate::keymap::Action::CloseTab) {
+            self.close_tab(ctx, self.active_tab);
+            handled = true;
+        }
+        if self.is_act_pressed(ctx, crate::keymap::Action::NextTab) {
+            self.cycle_tab(1);
+            handled = true;
+        }
+        if self.is_act_pressed(ctx, crate::keymap::Action::PrevTab) {
+            self.cycle_tab(-1);
+            handled = true;
+        }
+
         if self.is_act_pressed(ctx, crate::keymap::Action::Quit) {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             handled = true;
@@ -1233,7 +1404,7 @@ impl SkiApp {
             if let Some(item) = self.selected_index.and_then(|idx| self.items.get(idx)) {
                 let path_str = item.path.to_string_lossy().to_string();
                 ctx.copy_text(path_str);
-                self.set_toast(format!("Copied path: {}", item.name));
+                self.set_toast(trf("Copied path: {}", &[&item.name]));
             }
             handled = true;
         }
@@ -1337,9 +1508,16 @@ const CRUMB_ICON_STEP: f32 = material::INSET_LABEL - material::INSET_ICON + 8.0;
 impl eframe::App for SkiApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        self.resume_search(&ctx);
+        if let Some(dir) = self.pending_open.take() {
+            self.dialog = None;
+            self.navigate_to(dir);
+        }
         self.handle_keyboard_inputs(&ctx);
         self.sync_selection(false);
         self.poll_jobs();
+        self.poll_drives(&ctx);
+        self.drop_zones.clear();
         self.sync_settings(&ctx);
         self.thumbs.poll(&ctx);
 
@@ -1354,10 +1532,9 @@ impl eframe::App for SkiApp {
             self.window_title = title;
         }
 
-        let busy = self.jobs.running();
         if let Some(toast) = &mut self.status_toast {
             let lifetime = if toast.action.is_some() { 7.0 } else { 3.0 };
-            if !toast.leaving && !busy && toast.since.elapsed().as_secs_f32() > lifetime {
+            if !toast.leaving && toast.since.elapsed().as_secs_f32() > lifetime {
                 toast.leaving = true;
             }
         }
@@ -1388,6 +1565,7 @@ impl eframe::App for SkiApp {
                     .inner_margin(egui::Margin::symmetric(HEADER_MARGIN, 8)),
             )
             .show(ui, |ui| self.render_top_bar(ui, sidebar_visible));
+        self.render_tab_bar(ui);
 
         let status_t = material::animate(ui.ctx(), egui::Id::unique("status_bar_anim"), self.settings.show_status_bar);
         if status_t > 0.001 {
@@ -1436,22 +1614,22 @@ impl eframe::App for SkiApp {
                 });
 
                 if let Some(err) = &self.error_message {
-                    material::empty_state(ui, &self.theme, icons::INFO, "This folder can't be opened", Some(err));
+                    material::empty_state(ui, &self.theme, icons::INFO, tr("This folder can't be opened"), Some(err));
                 } else if self.items.is_empty() {
                     let (icon, title, hint) = if !self.search_query.trim().is_empty() {
                         if self.search.is_running() {
-                            (icons::SEARCH, "Searching…", None)
+                            (icons::SEARCH, tr("Searching…"), None)
                         } else {
-                            (icons::SEARCH_OFF, "No results", Some(if self.type_filter == TypeFilter::All { "Try a different name" } else { "Try a different name or file type" }))
+                            (icons::SEARCH_OFF, tr("No results"), Some(if self.type_filter == TypeFilter::All { tr("Try a different name") } else { tr("Try a different name or file type") }))
                         }
                     } else if self.in_recent() {
-                        (icons::RECENT, "Nothing recent yet", Some("Files you open show up here"))
+                        (icons::RECENT, tr("Nothing recent yet"), Some(tr("Files you open show up here")))
                     } else if self.in_trash() {
-                        (icons::TRASH, "The trash is empty", Some("Deleted files end up here"))
+                        (icons::TRASH, tr("The trash is empty"), Some(tr("Deleted files end up here")))
                     } else if self.type_filter != TypeFilter::All {
-                        (icons::SEARCH_OFF, "Nothing matches", Some("Try another file type in the view options"))
+                        (icons::SEARCH_OFF, tr("Nothing matches"), Some(tr("Try another file type in the view options")))
                     } else {
-                        (icons::FOLDER, "This folder is empty", Some("Right-click to create a file or folder"))
+                        (icons::FOLDER, tr("This folder is empty"), Some(tr("Right-click to create a file or folder")))
                     };
                     material::empty_state(ui, &self.theme, icon, title, hint);
                 } else {
@@ -1468,11 +1646,13 @@ impl eframe::App for SkiApp {
             });
 
         self.render_settings(&ctx);
+        self.render_jobs_popover(&ctx);
         self.render_menu(&ctx);
         self.render_dialog(&ctx);
         self.render_picker(&ctx);
         self.render_toast(&ctx);
         self.render_drop_overlay(&ctx);
+        self.update_item_drag(&ctx);
     }
 }
 
@@ -1521,7 +1701,9 @@ impl SkiApp {
                 }
 
                 // Search lives in the sidebar; without a sidebar it becomes a header button.
-                let right_w = if sidebar_visible { 0.0 } else { button_w } + if show_search_btn { button_w } else { 0.0 } + if show_view { CONTROL_HEIGHT } else { 0.0 };
+                let show_jobs = !self.engine.jobs.is_empty();
+                let jobs_w = if show_jobs { button_w } else { 0.0 };
+                let right_w = jobs_w + if sidebar_visible { 0.0 } else { button_w } + if show_search_btn { button_w } else { 0.0 } + if show_view { CONTROL_HEIGHT } else { 0.0 };
                 let title_width = (ui.available_width() - right_w - TITLE_GAP).max(40.0);
 
                 let (title_rect, title_resp) =
@@ -1549,7 +1731,7 @@ impl SkiApp {
 
                 if show_search_btn {
                     let icon = if self.show_search { icons::CLOSE } else { icons::SEARCH };
-                    if icon_button(ui, "btn_search", icon, &self.theme, true, "Search (/)").clicked() {
+                    if icon_button(ui, "btn_search", icon, &self.theme, true, tr("Search (/)")).clicked() {
                         if self.show_search {
                             self.close_search();
                         } else {
@@ -1561,7 +1743,7 @@ impl SkiApp {
                     ui.add_space(gap);
                 }
                 if !sidebar_visible {
-                    let menu = icon_button(ui, "btn_main_menu", icons::MENU, &self.theme, true, "Main menu");
+                    let menu = icon_button(ui, "btn_main_menu", icons::MENU, &self.theme, true, tr("Main menu"));
                     self.main_button_rect = menu.rect;
                     if menu.clicked() {
                         self.toggle_main_menu(ui.ctx());
@@ -1569,6 +1751,10 @@ impl SkiApp {
                     ui.add_space(gap);
                 }
 
+                if show_jobs {
+                    self.jobs_button(ui);
+                    ui.add_space(gap);
+                }
                 if !show_view {
                     return;
                 }
@@ -1576,7 +1762,7 @@ impl SkiApp {
                     ViewMode::List => icons::VIEW_LIST,
                     ViewMode::Grid => icons::GRID_VIEW,
                 };
-                let view = icon_button(ui, "btn_view_options", view_icon, &self.theme, true, "View options");
+                let view = icon_button(ui, "btn_view_options", view_icon, &self.theme, true, tr("View options"));
                 self.settings_button_rect = view.rect;
                 let filter_dot_t = material::animate(ui.ctx(), egui::Id::unique("view_filter_dot"), self.type_filter != TypeFilter::All);
                 if filter_dot_t > 0.01 {
@@ -1626,7 +1812,7 @@ impl SkiApp {
                 .frame(egui::Frame::NONE)
                 .align(egui::Align2::LEFT_CENTER)
                 .font(egui::FontId::proportional(material::FONT_BODY))
-                .hint_text("Search files"),
+                .hint_text(tr("Search files")),
         );
         if self.focus_search {
             resp.request_focus();
@@ -1650,10 +1836,19 @@ impl SkiApp {
                 .frame(egui::Frame::NONE)
                 .align(egui::Align2::LEFT_CENTER)
                 .font(egui::FontId::proportional(material::FONT_BODY))
-                .hint_text("Type a path and press Enter"),
+                .hint_text(tr("Type a path and press Enter")),
         );
         if !resp.has_focus() && !resp.lost_focus() {
             resp.request_focus();
+        }
+        // The whole path is selected when editing starts, so typing replaces it
+        if !self.path_field_open {
+            self.path_field_open = true;
+            if let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), resp.id) {
+                let end = self.path_input.chars().count();
+                state.cursor.set_char_range(Some(egui::text::CCursorRange::two(egui::text::CCursor::new(0), egui::text::CCursor::new(end))));
+                state.store(ui.ctx(), resp.id);
+            }
         }
         if resp.lost_focus() {
             if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
@@ -1667,15 +1862,16 @@ impl SkiApp {
     }
 
     fn render_title(&mut self, ui: &mut egui::Ui, rect: egui::Rect, field: &egui::Response) {
+        self.path_field_open = false;
         let theme = self.theme;
         let cy = rect.center().y;
 
         let searching = !self.search_query.trim().is_empty();
         if searching || self.in_recent() {
             let (icon, text) = if searching {
-                (icons::SEARCH, format!("Results for “{}”", self.search_query.trim()))
+                (icons::SEARCH, trf("Results for “{}”", &[&self.search_query.trim()]))
             } else {
-                (icons::RECENT, "Recent".to_owned())
+                (icons::RECENT, tr("Recent").to_owned())
             };
             material::paint_icon(ui.painter(), egui::pos2(rect.left() + material::INSET_ICON, cy), icon, material::ICON_MD, theme.subtext1);
             let mut job = egui::text::LayoutJob::simple_singleline(text, egui::FontId::proportional(material::FONT_SUBTITLE), theme.text);
@@ -1731,9 +1927,11 @@ impl SkiApp {
             x += sep;
         }
         let last = crumbs.len().saturating_sub(1);
+        let mut crumb_zones = Vec::new();
         for (i, (crumb, w)) in crumbs.iter().zip(&widths).enumerate() {
             let cell = egui::Rect::from_min_size(egui::pos2(x, cy - CRUMB_HEIGHT / 2.0), egui::vec2(*w, CRUMB_HEIGHT));
             let (resp, color) = crumb_button(ui, ui.make_persistent_id(("crumb", &crumb.path)), cell, i == last);
+            crumb_zones.push(dnd::DropZone { rect: cell, dest: crumb.path.clone() });
             let mut tx = cell.left() + 10.0;
             if let Some(icon) = crumb.icon {
                 material::paint_icon(ui.painter(), egui::pos2(tx + 8.0, cy), icon, material::ICON_MD, color);
@@ -1753,6 +1951,7 @@ impl SkiApp {
             }
         }
 
+        self.drop_zones.extend(crumb_zones);
         if let Some(path) = go {
             self.navigate_to(path);
         } else if edit || field.clicked() {
@@ -1774,7 +1973,32 @@ impl SkiApp {
                 }
             }
         });
+        let mut options_changed = false;
+        if !self.search_query.trim().is_empty() {
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing = egui::vec2(6.0, 6.0);
+                ui.add_space(f32::from(CONTENT_INSET));
+                for (scope, label) in [(SearchScope::ThisFolder, tr("This folder")), (SearchScope::Everywhere, tr("Everywhere"))] {
+                    if chip(ui, ("bar_scope", label), None, label, &theme, self.settings.search_scope == scope).clicked() && self.settings.search_scope != scope {
+                        self.settings.search_scope = scope;
+                        options_changed = true;
+                    }
+                }
+                if chip(ui, "bar_case", None, tr("Match case"), &theme, self.settings.search_case).clicked() {
+                    self.settings.search_case = !self.settings.search_case;
+                    options_changed = true;
+                }
+                if chip(ui, "bar_contents", None, tr("File contents"), &theme, self.settings.search_contents).clicked() {
+                    self.settings.search_contents = !self.settings.search_contents;
+                    options_changed = true;
+                }
+            });
+        }
         ui.add_space(2.0);
+        if options_changed && picked.is_none() {
+            let ctx = ui.ctx().clone();
+            self.on_query_changed(&ctx);
+        }
         if let Some(filter) = picked {
             self.type_filter = filter;
             if self.search_query.trim().is_empty() {
@@ -1793,11 +2017,11 @@ impl SkiApp {
         let trash_root = trash::files_dir().map(canon);
         let home = dirs::home_dir().map(canon);
         let (root, icon, name) = if let Some(t) = trash_root.filter(|t| path.starts_with(t)) {
-            (t, icons::TRASH, "Trash")
+            (t, icons::TRASH, tr("Trash"))
         } else if let Some(h) = home.filter(|h| path.starts_with(h)) {
-            (h, icons::HOME, "Home")
+            (h, icons::HOME, tr("Home"))
         } else {
-            (PathBuf::from("/"), icons::STORAGE, "Computer")
+            (PathBuf::from("/"), icons::STORAGE, tr("Computer"))
         };
         let mut crumbs = vec![Crumb { icon: Some(icon), label: name.to_owned(), path: root.clone() }];
         let mut acc = root.clone();
@@ -1817,6 +2041,12 @@ impl SkiApp {
 
         let browsing = self.search_query.trim().is_empty();
         let mut destination: Option<PathBuf> = None;
+        let mut new_tab_at: Option<PathBuf> = None;
+        let mut mount: Option<(String, String)> = None;
+        let mut zones: Vec<dnd::DropZone> = Vec::new();
+        let mut open_pinned: Option<PathBuf> = None;
+        let mut reorder: Option<(usize, usize)> = None;
+        let mut eject: Option<(String, String, PathBuf)> = None;
         let mut menu_at: Option<(egui::Pos2, MenuTarget)> = None;
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
             ui.spacing_mut().item_spacing.y = 2.0;
@@ -1838,45 +2068,113 @@ impl SkiApp {
                 first = false;
 
                 if section == 2 {
-                    for pin in &self.pins {
-                        let selected = browsing && self.current_path == *pin;
+                    let mut rects = Vec::with_capacity(self.pins.len());
+                    for (idx, pin) in self.pins.iter().enumerate() {
+                        let is_dir = pin.is_dir();
+                        let selected = browsing && is_dir && self.current_path == *pin;
                         let name = pin.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| pin.display().to_string());
-                        let resp = nav_item(ui, ("pin", pin), icons::FOLDER, &name, &self.theme, selected);
+                        let icon = if is_dir { icons::FOLDER } else { FileItem::from_path(pin).map_or(icons::FILE, |i| i.file_type.icon()) };
+                        let resp = nav_item(ui, ("pin", pin), icon, &name, &self.theme, selected);
+                        rects.push(resp.rect);
+                        if is_dir {
+                            zones.push(dnd::DropZone { rect: resp.rect, dest: pin.clone() });
+                        }
                         if resp.clicked() {
-                            destination = Some(pin.clone());
+                            if is_dir { destination = Some(pin.clone()) } else { open_pinned = Some(pin.clone()) }
+                        }
+                        if resp.middle_clicked() && is_dir {
+                            new_tab_at = Some(pin.clone());
+                        }
+                        if resp.dragged() {
+                            ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+                            if let Some(p) = resp.interact_pointer_pos()
+                                && let Some(over) = self.pin_rects.iter().position(|r| p.y >= r.top() && p.y < r.bottom())
+                                && over != idx {
+                                    reorder = Some((idx, over));
+                                }
                         }
                         if resp.secondary_clicked()
                             && let Some(pos) = resp.interact_pointer_pos() {
                                 menu_at = Some((pos, MenuTarget::Pin(pin.clone())));
                             }
                     }
+                    self.pin_rects = rects;
                     continue;
                 }
                 for (idx, place) in places {
                     let here = match place.kind {
                         PlaceKind::Recent => self.in_recent(),
-                        PlaceKind::Folder => self.current_path == place.path,
+                        PlaceKind::Folder => place.drive.as_ref().is_none_or(|d| d.mounted) && self.current_path == place.path,
                     };
-                    let resp = nav_item(ui, ("place", idx), place.icon, &place.name, &self.theme, browsing && here);
+                    let resp = nav_item(ui, ("place", idx), place.icon, &tr_dyn(&place.name), &self.theme, browsing && here);
+                    if place.kind == PlaceKind::Folder && place.drive.as_ref().is_none_or(|d| d.mounted) {
+                        zones.push(dnd::DropZone { rect: resp.rect, dest: place.path.clone() });
+                    }
+                    if let Some(drive) = &place.drive {
+                        let busy = self.drive_state.busy.contains(&drive.dev);
+                        if busy {
+                            ui.ctx().request_repaint();
+                        }
+                        if drive.mounted && drive.removable && !busy
+                            && drives_ui::row_eject_button(ui, resp.rect, resp.hovered(), ("eject", idx), &self.theme) {
+                            eject = Some((drive.dev.clone(), place.name.clone(), place.path.clone()));
+                            continue;
+                        }
+                        if resp.clicked() {
+                            if drive.mounted {
+                                destination = Some(place.path.clone());
+                            } else if !busy {
+                                mount = Some((drive.dev.clone(), place.name.clone()));
+                            }
+                        }
+                        if resp.middle_clicked() && drive.mounted {
+                            new_tab_at = Some(place.path.clone());
+                        }
+                        if resp.secondary_clicked()
+                            && let Some(pos) = resp.interact_pointer_pos() {
+                                menu_at = Some((pos, MenuTarget::Drive(drive.clone(), place.name.clone(), place.path.clone())));
+                            }
+                        continue;
+                    }
                     if resp.clicked() {
                         destination = Some(place.path.clone());
                     }
+                    if resp.middle_clicked() && place.kind == PlaceKind::Folder {
+                        new_tab_at = Some(place.path.clone());
+                    }
                     if resp.secondary_clicked()
                         && place.kind == PlaceKind::Folder
-                        && trash::is_trash_folder(&place.path)
                         && let Some(pos) = resp.interact_pointer_pos() {
-                            menu_at = Some((pos, MenuTarget::TrashPlace(place.path.clone())));
+                            menu_at = Some((pos, if trash::is_trash_folder(&place.path) { MenuTarget::TrashPlace(place.path.clone()) } else { MenuTarget::Place(place.path.clone()) }));
                         }
                 }
             }
         });
 
+        self.drop_zones.extend(zones);
+        if let Some((from, to)) = reorder {
+            let pin = self.pins.remove(from);
+            self.pins.insert(to, pin);
+            Place::save_pins(&self.pins);
+        }
+        if let Some(path) = open_pinned {
+            self.open_file(&path);
+        }
         if let Some((pos, target)) = menu_at {
             self.open_menu(ui.ctx(), pos, target);
         }
         if let Some(dest) = destination {
             self.close_search();
             self.navigate_to(dest);
+        }
+        if let Some(path) = new_tab_at {
+            self.new_tab(path);
+        }
+        if let Some((dev, name)) = mount {
+            self.mount_drive(ui.ctx(), dev, name, true);
+        }
+        if let Some((dev, name, path)) = eject {
+            self.unmount_drive(ui.ctx(), dev, name, path, true);
         }
     }
 
@@ -1886,7 +2184,7 @@ impl SkiApp {
         // Round buttons are inset so their icons sit on the same column as the destinations' icons
         let menu_rect = egui::Rect::from_min_size(egui::pos2(row.right() - HEADER_INSET - CONTROL_HEIGHT, row.top()), egui::vec2(CONTROL_HEIGHT, CONTROL_HEIGHT));
         let menu = ui.scope_builder(egui::UiBuilder::new().max_rect(menu_rect), |ui| {
-            icon_button(ui, "sidebar_main_menu", icons::MENU, &self.theme, true, "Main menu")
+            icon_button(ui, "sidebar_main_menu", icons::MENU, &self.theme, true, tr("Main menu"))
         });
         self.main_button_rect = menu.inner.rect;
         if menu.inner.clicked() {
@@ -1895,7 +2193,7 @@ impl SkiApp {
 
         let search_rect = egui::Rect::from_min_size(egui::pos2(row.left() + HEADER_INSET, row.top()), egui::vec2(CONTROL_HEIGHT, CONTROL_HEIGHT));
         let button = ui.scope_builder(egui::UiBuilder::new().max_rect(search_rect), |ui| {
-            icon_button(ui, "sidebar_search_btn", icons::SEARCH, &self.theme, true, "Search (/)")
+            icon_button(ui, "sidebar_search_btn", icons::SEARCH, &self.theme, true, tr("Search (/)"))
         });
         if button.inner.clicked() {
             if self.show_search {
@@ -1914,7 +2212,7 @@ impl SkiApp {
                 let started = std::env::current_exe()
                     .and_then(|exe| std::process::Command::new(exe).arg(&item.path).spawn());
                 if let Err(err) = started {
-                    self.set_toast(format!("Could not open a new window: {err}"));
+                    self.set_toast(trf("Could not open a new window: {}", &[&err]));
                 }
             } else {
                 self.navigate_to(item.path);
@@ -1959,10 +2257,12 @@ impl SkiApp {
             _ => &[],
         };
         let mut clicked: Option<(usize, egui::Modifiers)> = None;
+        let mut new_tab_at: Option<PathBuf> = None;
         let mut menu_at: Option<(egui::Pos2, MenuTarget)> = None;
         let mut item_rects: Vec<(usize, egui::Rect)> = Vec::with_capacity(self.items.len());
         let mut scroll_delta = 0.0;
-        let scroll_out = egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+        let tab_scroll_id = ("files_scroll", self.tabs[self.active_tab].id);
+        let scroll_out = egui::ScrollArea::vertical().id_salt(tab_scroll_id).auto_shrink([false, false]).show(ui, |ui| {
             ui.spacing_mut().item_spacing.y = 1.0;
             for (idx, item) in self.items.iter().enumerate() {
                 let selected = self.selection.contains(&idx);
@@ -1984,6 +2284,9 @@ impl SkiApp {
                 if resp.double_clicked() {
                     opened = Some(item.clone());
                 }
+                if resp.middle_clicked() && item.is_dir {
+                    new_tab_at = Some(item.path.clone());
+                }
                 if resp.secondary_clicked()
                     && let Some(pos) = resp.interact_pointer_pos() {
                         menu_at = Some((pos, MenuTarget::Item(item.clone())));
@@ -1996,6 +2299,7 @@ impl SkiApp {
             }
         });
 
+        self.last_item_rects = item_rects.clone();
         let drag_consumed = self.handle_drag_select(ui, scroll_out.inner_rect, scroll_out.state.clamped_offset().y, scroll_delta, &item_rects);
 
         if !drag_consumed {
@@ -2008,6 +2312,9 @@ impl SkiApp {
         }
         if let Some((pos, target)) = menu_at {
             self.open_menu(ui.ctx(), pos, target);
+        }
+        if let Some(path) = new_tab_at {
+            self.new_tab(path);
         }
     }
 
@@ -2027,10 +2334,12 @@ impl SkiApp {
             _ => &[],
         };
         let mut clicked: Option<(usize, egui::Modifiers)> = None;
+        let mut new_tab_at: Option<PathBuf> = None;
         let mut menu_at: Option<(egui::Pos2, MenuTarget)> = None;
         let mut item_rects: Vec<(usize, egui::Rect)> = Vec::with_capacity(self.items.len());
         let mut scroll_delta = 0.0;
-        let scroll_out = egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+        let tab_scroll_id = ("files_scroll", self.tabs[self.active_tab].id);
+        let scroll_out = egui::ScrollArea::vertical().id_salt(tab_scroll_id).auto_shrink([false, false]).show(ui, |ui| {
             let spacing = 4.0;
             let cols = ((ui.available_width() + spacing) / (cell.x + spacing)).floor().max(1.0) as usize;
             // Leftover width is shared between the columns, so the grid fills the view like Nautilus does
@@ -2069,6 +2378,9 @@ impl SkiApp {
                     if resp.double_clicked() {
                         opened = Some(item.clone());
                     }
+                    if resp.middle_clicked() && item.is_dir {
+                        new_tab_at = Some(item.path.clone());
+                    }
                     if resp.secondary_clicked()
                         && let Some(pos) = resp.interact_pointer_pos() {
                             menu_at = Some((pos, MenuTarget::Item(item.clone())));
@@ -2082,6 +2394,7 @@ impl SkiApp {
             }
         });
 
+        self.last_item_rects = item_rects.clone();
         let drag_consumed = self.handle_drag_select(ui, scroll_out.inner_rect, scroll_out.state.clamped_offset().y, scroll_delta, &item_rects);
 
         if !drag_consumed {
@@ -2094,6 +2407,9 @@ impl SkiApp {
         }
         if let Some((pos, target)) = menu_at {
             self.open_menu(ui.ctx(), pos, target);
+        }
+        if let Some(path) = new_tab_at {
+            self.new_tab(path);
         }
     }
 
@@ -2134,8 +2450,10 @@ impl SkiApp {
         if self.dialog.is_some() || self.menu.is_some() || self.show_settings {
             self.drag_select = None;
             self.last_rubberband = None;
+            self.dnd = None;
             return false;
         }
+        self.dnd_view = viewport;
 
         let (pressed, down, released, pos, mods) = ui.input(|i| {
             (
@@ -2154,6 +2472,14 @@ impl SkiApp {
         );
 
         if pressed
+            && let Some(p) = pos
+            && interactive_viewport.contains(p)
+            && !mods.command
+            && !mods.shift
+            && self.begin_item_drag(ui, p, item_rects)
+        {
+            self.drag_select = None;
+        } else if pressed
             && let Some(p) = pos
             && interactive_viewport.contains(p)
         {
@@ -2234,7 +2560,7 @@ impl SkiApp {
             self.last_rubberband = None;
         }
 
-        was_active
+        was_active || self.item_drag_active()
     }
 
     /// One quiet line under the listing: what is shown or selected, and what waits in the clipboard.
@@ -2246,16 +2572,22 @@ impl SkiApp {
 
         let total = self.items.len();
         let text = if self.selection.is_empty() {
-            let noun = if self.is_mixed_listing() && !self.in_recent() { ("result", "results") } else { ("item", "items") };
+            let results = self.is_mixed_listing() && !self.in_recent();
             let more = if self.search.is_running() { "…" } else { "" };
             let filter = if self.type_filter == TypeFilter::All { String::new() } else { format!(" · {}", self.type_filter.label()) };
             // A search stops collecting at its limit, so the count is a floor
-            let capped = if self.search_query.trim().is_empty() || total < crate::fs::search::MAX_RESULTS { "" } else { "+" };
-            format!("{total}{capped} {}{more}{filter}", if total == 1 { noun.0 } else { noun.1 })
+            let capped = !self.search_query.trim().is_empty() && total >= crate::fs::search::MAX_RESULTS;
+            let count = match (results, capped) {
+                (true, true) => trf("{}+ results", &[&total]),
+                (true, false) => trn(total, "{} result", "{} results"),
+                (false, true) => trf("{}+ items", &[&total]),
+                (false, false) => trn(total, "{} item", "{} items"),
+            };
+            format!("{count}{more}{filter}")
         } else {
             let selected: Vec<&FileItem> = self.selection.iter().filter_map(|i| self.items.get(*i)).collect();
             let size: u64 = selected.iter().filter(|i| !i.is_dir).map(|i| i.size).sum();
-            let mut text = format!("{} of {total} selected", selected.len());
+            let mut text = trf("{} of {} selected", &[&selected.len(), &total]);
             if selected.iter().any(|i| !i.is_dir) {
                 text.push_str(&format!(" · {}", crate::fs::file_item::format_bytes(size)));
             }
@@ -2264,7 +2596,7 @@ impl SkiApp {
         ui.painter().text(egui::pos2(rect.left(), cy), egui::Align2::LEFT_CENTER, text, font.clone(), theme.subtext1);
 
         if let Some((paths, cut)) = &self.clipboard {
-            let label = format!("{} {}", paths.len(), if *cut { "ready to move" } else { "ready to copy" });
+            let label = if *cut { trf("{} ready to move", &[&paths.len()]) } else { trf("{} ready to copy", &[&paths.len()]) };
             let galley = ui.painter().layout_no_wrap(label, font, theme.subtext1);
             let x = rect.right() - galley.size().x;
             ui.painter().galley(egui::pos2(x, cy - galley.size().y / 2.0), galley, theme.subtext1);
@@ -2281,7 +2613,7 @@ impl SkiApp {
         }
         let theme = self.theme;
         let screen = ctx.content_rect();
-        let target = if self.can_modify_here() { format!("Drop to copy into “{}”", self.location_name()) } else { "Open a regular folder to drop files".to_owned() };
+        let target = if self.can_modify_here() { trf("Drop to copy into “{}”", &[&self.location_name()]) } else { tr("Open a regular folder to drop files").to_owned() };
         egui::Area::new(egui::Id::unique("drop_overlay")).order(egui::Order::Foreground).fixed_pos(screen.min).interactable(false).show(ctx, |ui| {
             let (rect, _) = ui.allocate_exact_size(screen.size(), egui::Sense::hover());
             ui.painter().rect_filled(rect, 0, theme.with_alpha(theme.mauve, (28.0 * t).round() as u8));
@@ -2325,16 +2657,16 @@ impl SkiApp {
                             ui.label(egui::RichText::new(message).size(material::FONT_BODY).color(theme.text));
                             if has_action {
                                 ui.add_space(8.0);
-                                act = material::button(ui, "toast_action", None, "Undo", &theme, ButtonKind::Text, true).clicked();
+                                act = material::button(ui, "toast_action", None, tr("Undo"), &theme, ButtonKind::Text, true).clicked();
                             }
                         });
                     });
             });
         if act
             && let Some(toast) = self.status_toast.as_mut()
-            && let Some(ToastAction::UndoTrash(paths)) = toast.action.take() {
+            && let Some(ToastAction::Undo) = toast.action.take() {
                 toast.leaving = true;
-                self.restore_paths(paths);
+                self.undo();
             }
         ctx.request_repaint_after(std::time::Duration::from_millis(400));
     }
@@ -2410,21 +2742,21 @@ impl SkiApp {
         let hidden_hint = crate::keymap::hint(&self.settings.keybinds, crate::keymap::Action::ToggleHidden, self.settings.vim_keys);
         ui.spacing_mut().item_spacing.y = 2.0;
 
-        if let Some(i) = segmented(ui, "vo_view", &["List", "Grid"], usize::from(self.view_mode == ViewMode::Grid), &theme) {
+        if let Some(i) = segmented(ui, "vo_view", &[tr("List"), tr("Grid")], usize::from(self.view_mode == ViewMode::Grid), &theme) {
             self.view_mode = if i == 0 { ViewMode::List } else { ViewMode::Grid };
         }
 
         match self.view_mode {
             ViewMode::Grid => {
                 let size = self.settings.grid_size;
-                let (less, more) = material::stepper_row(ui, "vo_icon_size", "Icon size", &theme, &size.label(), size.can_step(-1), size.can_step(1));
+                let (less, more) = material::stepper_row(ui, "vo_icon_size", tr("Icon size"), &theme, &size.label(), size.can_step(-1), size.can_step(1));
                 if less || more {
                     self.settings.grid_size = self.settings.grid_size.step(if more { 1 } else { -1 });
                 }
             }
             ViewMode::List => {
                 let at = Density::ALL.iter().position(|d| *d == self.settings.density).unwrap_or(1);
-                let (less, more) = material::stepper_row(ui, "vo_row_height", "Row height", &theme, self.settings.density.label(), at > 0, at + 1 < Density::ALL.len());
+                let (less, more) = material::stepper_row(ui, "vo_row_height", tr("Row height"), &theme, self.settings.density.label(), at > 0, at + 1 < Density::ALL.len());
                 if less || more {
                     self.settings.density = Density::ALL[if more { at + 1 } else { at - 1 }];
                 }
@@ -2432,32 +2764,32 @@ impl SkiApp {
         }
 
         material::divider(ui, &theme);
-        self.section_title(ui, "Sort by");
-        for (field, label) in [(SortBy::Name, "Name"), (SortBy::Size, "Size"), (SortBy::Modified, "Last modified")] {
+        self.section_title(ui, tr("Sort by"));
+        for (field, label) in [(SortBy::Name, tr("Name")), (SortBy::Size, tr("Size")), (SortBy::Modified, tr("Last modified"))] {
             if material::radio_row(ui, ("vo_sort", label), label, &theme, self.sort_by == field).clicked() && self.sort_by != field {
                 self.sort_by = field;
                 reload = true;
             }
         }
         let descending = self.sort_order == SortOrder::Descending;
-        if material::toggle_row(ui, "vo_reverse", "Reverse order", None, &theme, descending).clicked() {
+        if material::toggle_row(ui, "vo_reverse", tr("Reverse order"), None, &theme, descending).clicked() {
             self.sort_order = if descending { SortOrder::Ascending } else { SortOrder::Descending };
             reload = true;
         }
 
         material::divider(ui, &theme);
-        if material::toggle_row(ui, "vo_hidden", "Hidden files", hidden_hint.as_deref(), &theme, self.show_hidden).clicked() {
+        if material::toggle_row(ui, "vo_hidden", tr("Hidden files"), hidden_hint.as_deref(), &theme, self.show_hidden).clicked() {
             self.show_hidden = !self.show_hidden;
             reload = true;
         }
-        if material::toggle_row(ui, "vo_folders_first", "Folders first", None, &theme, self.folders_first).clicked() {
+        if material::toggle_row(ui, "vo_folders_first", tr("Folders first"), None, &theme, self.folders_first).clicked() {
             self.folders_first = !self.folders_first;
             reload = true;
         }
 
         material::collapsible(ui, "vo_list_columns", self.view_mode == ViewMode::List, |ui| {
             material::divider(ui, &theme);
-            self.section_title(ui, "List columns");
+            self.section_title(ui, tr("List columns"));
             ui.horizontal_wrapped(|ui| {
                 ui.spacing_mut().item_spacing = egui::vec2(6.0, 6.0);
                 for column in Column::ALL {
@@ -2473,7 +2805,7 @@ impl SkiApp {
         });
 
         material::divider(ui, &theme);
-        self.section_title(ui, "File type");
+        self.section_title(ui, tr("File type"));
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing = egui::vec2(6.0, 6.0);
             for filter in TypeFilter::ALL {
@@ -2493,10 +2825,10 @@ impl SkiApp {
 
     fn shortcuts_contents(&mut self, ui: &mut egui::Ui) -> bool {
         let theme = self.theme;
-        let close = material::dialog_header(ui, "Keyboard shortcuts", None, &theme, "sc_close");
+        let close = material::dialog_header(ui, tr("Keyboard shortcuts"), None, &theme, "sc_close");
         let max_height = (ui.ctx().content_rect().height() - 200.0).clamp(200.0, 540.0);
         egui::ScrollArea::vertical().max_height(max_height).auto_shrink([false, true]).show(ui, |ui| {
-            for group in ["Navigation", "Files", "View"] {
+            for group in [tr("Navigation"), tr("Files"), tr("View")] {
                 material::section_label(ui, group, &theme);
                 material::group_card(ui, &theme, |ui| {
                     for action in crate::keymap::Action::ALL {
@@ -2535,13 +2867,13 @@ impl SkiApp {
         let path = path.canonicalize().unwrap_or(path);
         if let Some(idx) = self.pins.iter().position(|p| *p == path) {
             self.pins.remove(idx);
-            self.set_toast("Unpinned from sidebar");
+            self.set_toast(tr("Unpinned from sidebar"));
         } else if self.places.iter().any(|p| p.path == path) {
-            self.set_toast("Already in the sidebar");
+            self.set_toast(tr("Already in the sidebar"));
             return;
         } else {
             self.pins.push(path);
-            self.set_toast("Pinned to sidebar");
+            self.set_toast(tr("Pinned to sidebar"));
         }
         Place::save_pins(&self.pins);
     }
@@ -2550,40 +2882,53 @@ impl SkiApp {
         match Properties::load(path) {
             Some(props) => {
                 let scan = props.item.is_dir.then(|| FolderScan::start(path.to_path_buf()));
-                self.dialog = Some(Dialog::Properties { props: Box::new(props), scan });
+                self.dialog = Some(Dialog::Properties { props: Box::new(props), scan, tab: 0 });
             }
-            None => self.set_toast("Could not read properties"),
+            None => self.set_toast(tr("Could not read properties")),
         }
     }
 
     fn open_create_dialog(&mut self, is_dir: bool) {
         if !self.can_modify_here() {
-            self.set_toast("Open a regular folder to create files in it");
+            self.set_toast(tr("Open a regular folder to create files in it"));
             return;
         }
-        let base = if is_dir { "New Folder" } else { "Untitled" };
-        let mut name = base.to_owned();
-        let mut n = 2;
-        while self.current_path.join(&name).exists() {
-            name = format!("{base} {n}");
-            n += 1;
-        }
-        self.dialog = Some(Dialog::Create { is_dir, name, error: None, first_frame: true });
+        let templates = if is_dir { Vec::new() } else { templates::load(self.settings.templates_dir.as_deref()) };
+        let base = if is_dir { tr("New Folder") } else { templates.first().map_or(tr("Untitled"), |t| t.file_name.as_str()) };
+        let name = self.free_name(base);
+        self.dialog = Some(Dialog::Create { is_dir, name, error: None, first_frame: true, templates, template: 0, edited: false });
     }
 
-    fn create_entry(&mut self, is_dir: bool, name: &str) -> Result<(), String> {
+    /// `name` if nothing in the folder has it, otherwise `name 2`, `name 3`… (before the extension).
+    fn free_name(&self, name: &str) -> String {
+        let (stem, ext) = match name.rfind('.') {
+            Some(i) if i > 0 => (&name[..i], &name[i..]),
+            _ => (name, ""),
+        };
+        let mut candidate = name.to_owned();
+        let mut n = 2;
+        while self.current_path.join(&candidate).symlink_metadata().is_ok() {
+            candidate = format!("{stem} {n}{ext}");
+            n += 1;
+        }
+        candidate
+    }
+
+    fn create_entry(&mut self, is_dir: bool, name: &str, template: Option<&Template>) -> Result<(), String> {
         let name = name.trim();
         if name.is_empty() || name == "." || name == ".." || name.contains('/') {
-            return Err("Enter a valid name".to_owned());
+            return Err(tr("Enter a valid name").to_owned());
         }
         let path = self.current_path.join(name);
         let result = if is_dir {
             std::fs::create_dir(&path)
+        } else if let Some(template) = template {
+            templates::create(template, &path)
         } else {
             std::fs::OpenOptions::new().write(true).create_new(true).open(&path).map(|_| ())
         };
         result.map_err(|err| match err.kind() {
-            std::io::ErrorKind::AlreadyExists => format!("“{name}” already exists"),
+            std::io::ErrorKind::AlreadyExists => trf("“{}” already exists", &[&name]),
             _ => err.to_string(),
         })?;
 
@@ -2592,7 +2937,8 @@ impl SkiApp {
             self.selected_index = Some(idx);
             self.scroll_to_selected = true;
         }
-        self.set_toast(format!("Created {name}"));
+        self.history.record(UndoEntry::new(trf("Creation of {}", &[&name]), vec![Edit::Trash(path)]));
+        self.set_toast_action(trf("Created {}", &[&name]), ToastAction::Undo);
         Ok(())
     }
 
@@ -2605,14 +2951,14 @@ impl SkiApp {
     fn rename_entry(&mut self, path: &Path, new_name: &str) -> Result<(), String> {
         let new_name = new_name.trim();
         if new_name.is_empty() || new_name == "." || new_name == ".." || new_name.contains('/') {
-            return Err("Enter a valid name".to_owned());
+            return Err(tr("Enter a valid name").to_owned());
         }
         if path.file_name().is_some_and(|n| n.to_string_lossy() == new_name) {
             return Ok(());
         }
         let target = path.with_file_name(new_name);
         if target.symlink_metadata().is_ok() {
-            return Err(format!("“{new_name}” already exists"));
+            return Err(trf("“{}” already exists", &[&new_name]));
         }
         std::fs::rename(path, &target).map_err(|err| err.to_string())?;
 
@@ -2631,7 +2977,8 @@ impl SkiApp {
             self.sync_selection(true);
             self.scroll_to_selected = true;
         }
-        self.set_toast(format!("Renamed to “{new_name}”"));
+        self.history.record(UndoEntry::new(trf("Renaming of {}", &[&path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()]), vec![Edit::Move { from: target.clone(), to: path.to_path_buf() }]));
+        self.set_toast_action(trf("Renamed to “{}”", &[&new_name]), ToastAction::Undo);
         Ok(())
     }
 
@@ -2651,30 +2998,36 @@ impl SkiApp {
         self.selected_index = None;
         self.refresh_listing();
         if trashed.is_empty() {
-            self.set_toast(format!("Could not move to trash: {}", failed.join(" · ")));
+            self.set_toast(trf("Could not move to trash: {}", &[&failed.join(" · ")]));
             return;
         }
-        let mut message = format!("Moved {label} to trash");
+        let mut message = trf("Moved {} to trash", &[&label]);
         if !failed.is_empty() {
-            message.push_str(&format!(" · {} failed", failed.len()));
+            message.push_str(&format!(" · {}", trf("{} failed", &[&failed.len()])));
         }
-        self.set_toast_action(message, ToastAction::UndoTrash(trashed));
+        self.history.record(UndoEntry::new(trf("Move of {} to trash", &[&label]), trashed.into_iter().map(Edit::Restore).collect()));
+        self.set_toast_action(message, ToastAction::Undo);
     }
 
     fn restore_paths(&mut self, paths: Vec<PathBuf>) {
         let label = Self::describe_count(&paths);
         let mut failed = Vec::new();
+        let mut restored = Vec::new();
         for path in &paths {
-            if let Err(err) = trash::restore(path) {
-                failed.push(err.to_string());
+            match trash::restore(path) {
+                Ok(back) => restored.push(back),
+                Err(err) => failed.push(err.to_string()),
             }
         }
         self.selected_index = None;
         self.refresh_listing();
+        if !restored.is_empty() {
+            self.history.record(UndoEntry::new(trf("Restoring {}", &[&label]), restored.into_iter().map(Edit::Trash).collect()));
+        }
         if failed.is_empty() {
-            self.set_toast(format!("Restored {label}"));
+            self.set_toast(trf("Restored {}", &[&label]));
         } else {
-            self.set_toast(format!("Could not restore: {}", failed.join(" · ")));
+            self.set_toast(trf("Could not restore: {}", &[&failed.join(" · ")]));
         }
     }
 
@@ -2688,21 +3041,21 @@ impl SkiApp {
             return;
         }
         self.dialog = Some(Dialog::Confirm {
-            title: "Delete permanently?".to_owned(),
-            body: format!("{} will be deleted for good. This can't be undone.", Self::describe_count(&paths)),
-            confirm: "Delete".to_owned(),
+            title: tr("Delete permanently?").to_owned(),
+            body: trf("{} will be deleted for good. This can't be undone.", &[&Self::describe_count(&paths)]),
+            confirm: tr("Delete").to_owned(),
             action: ConfirmAction::DeleteForever(paths),
         });
     }
 
     fn request_empty_trash(&mut self) {
         if trash::is_empty() {
-            self.set_toast("The trash is already empty");
+            self.set_toast(tr("The trash is already empty"));
         } else if self.settings.confirm_delete {
             self.dialog = Some(Dialog::Confirm {
-                title: "Empty the trash?".to_owned(),
-                body: "Everything in the trash will be deleted for good. This can't be undone.".to_owned(),
-                confirm: "Empty trash".to_owned(),
+                title: tr("Empty the trash?").to_owned(),
+                body: tr("Everything in the trash will be deleted for good. This can't be undone.").to_owned(),
+                confirm: tr("Empty trash").to_owned(),
                 action: ConfirmAction::EmptyTrash,
             });
         } else {
@@ -2713,29 +3066,28 @@ impl SkiApp {
     fn delete_forever(&mut self, paths: Vec<PathBuf>) {
         let label = Self::describe_count(&paths);
         self.selected_index = None;
-        self.set_toast(format!("Deleting {label}…"));
-        self.jobs.spawn(move || {
-            let failures: Vec<String> = paths
-                .iter()
-                .filter_map(|p| trash::delete_forever(p).err().map(|e| format!("{}: {e}", p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default())))
-                .collect();
-            if failures.is_empty() { Ok(format!("Deleted {label}")) } else { Err(failures.join(" · ")) }
-        });
+        let title = trf("Deleting {}", &[&label]);
+        self.engine.spawn(JobKind::Delete, title, String::new(), move |w| engine::delete_forever(w, paths));
     }
 
     fn empty_trash(&mut self) {
         self.selected_index = None;
-        self.set_toast("Emptying the trash…");
-        self.jobs.spawn(|| trash::empty().map(|_| "The trash is empty".to_owned()).map_err(|e| e.to_string()));
+        let title = tr("Emptying the trash").to_owned();
+        self.engine.spawn(JobKind::Delete, title, String::new(), |_| match trash::empty() {
+            Ok(()) => Outcome::done(tr("The trash is empty").to_owned()),
+            Err(err) => Outcome::failed(err.to_string()),
+        });
     }
 
     fn run_action(&mut self, ctx: &egui::Context, action: MenuAction) {
         match action {
             MenuAction::Open(item) => self.open_item(item),
             MenuAction::OpenPath(path) => self.navigate_to(path),
+            MenuAction::OpenInNewTab(path) => self.new_tab(path),
+            MenuAction::OpenInNewWindow(path) => self.open_window(&path),
             MenuAction::CopyPath(path) => {
                 ctx.copy_text(path.to_string_lossy().to_string());
-                self.set_toast("Copied path");
+                self.set_toast(tr("Copied path"));
             }
             MenuAction::Properties(path) => self.open_properties(&path),
             MenuAction::OpenWith(path) => self.open_open_with(path),
@@ -2756,6 +3108,20 @@ impl SkiApp {
             MenuAction::NewFolder => self.open_create_dialog(true),
             MenuAction::Refresh => self.refresh(),
             MenuAction::NewWindow => self.new_window(),
+            MenuAction::NewTab => {
+                let here = self.current_path.clone();
+                self.new_tab(here);
+            }
+            MenuAction::Undo => self.undo(),
+            MenuAction::Duplicate(paths) => self.duplicate(paths),
+            MenuAction::MakeLink(paths) => self.make_links(paths),
+            MenuAction::OpenTerminal(path) => self.open_terminal(&path),
+            MenuAction::InvertSelection => self.invert_selection(),
+            MenuAction::SelectPattern => self.open_select_pattern(),
+            MenuAction::Mount(dev, name) => self.mount_drive(ctx, dev, name, true),
+            MenuAction::Unmount(dev, name, mount) => self.unmount_drive(ctx, dev, name, mount, false),
+            MenuAction::Eject(dev, name, mount) => self.unmount_drive(ctx, dev, name, mount, true),
+            MenuAction::Redo => self.redo(),
             MenuAction::OpenSettings => self.open_settings_dialog(),
             MenuAction::Shortcuts => self.dialog = Some(Dialog::Shortcuts),
             MenuAction::Copy(paths) => self.set_clipboard(ctx, paths, false),
@@ -2776,48 +3142,54 @@ impl SkiApp {
     fn menu_entries(&self, target: &MenuTarget) -> Vec<Vec<(&'static str, &'static str, MenuAction)>> {
         let pin_entry = |path: &PathBuf| {
             if self.pins.contains(path) {
-                (icons::PIN_OFF, "Unpin from sidebar", MenuAction::Unpin(path.clone()))
+                (icons::PIN_OFF, tr("Unpin from sidebar"), MenuAction::Unpin(path.clone()))
             } else {
-                (icons::PIN, "Pin to sidebar", MenuAction::Pin(path.clone()))
+                (icons::PIN, tr("Pin to sidebar"), MenuAction::Pin(path.clone()))
             }
         };
-        let icon_entry = |path: &PathBuf| (icons::IMAGE, "Custom icon…", MenuAction::SetIcon(path.clone()));
+        let icon_entry = |path: &PathBuf| (icons::IMAGE, tr("Custom icon…"), MenuAction::SetIcon(path.clone()));
         let (in_trash, mixed) = (self.in_trash(), self.is_mixed_listing());
         // Clipboard / transfer / archive entries shared by every selection
         let file_groups = |paths: Vec<PathBuf>, archives: bool| {
             let mut manage = Vec::new();
             match paths.as_slice() {
-                [one] => manage.push((icons::RENAME, "Rename", MenuAction::Rename(one.clone()))),
-                many => manage.push((icons::RENAME, "Rename…", MenuAction::RenameMany(many.to_vec()))),
+                [one] => manage.push((icons::RENAME, tr("Rename"), MenuAction::Rename(one.clone()))),
+                many => manage.push((icons::RENAME, tr("Rename…"), MenuAction::RenameMany(many.to_vec()))),
             }
-            manage.push((icons::TRASH, "Move to trash", MenuAction::Trash(paths.clone())));
+            manage.push((icons::DUPLICATE, tr("Duplicate"), MenuAction::Duplicate(paths.clone())));
+            manage.push((icons::LINK, tr("Create link"), MenuAction::MakeLink(paths.clone())));
+            manage.push((icons::TRASH, tr("Move to trash"), MenuAction::Trash(paths.clone())));
             let mut groups = vec![
                 vec![
-                    (icons::COPY, "Copy", MenuAction::Copy(paths.clone())),
-                    (icons::CUT, "Cut", MenuAction::Cut(paths.clone())),
+                    (icons::COPY, tr("Copy"), MenuAction::Copy(paths.clone())),
+                    (icons::CUT, tr("Cut"), MenuAction::Cut(paths.clone())),
                 ],
                 vec![
-                    (icons::FOLDER_COPY, "Copy to…", MenuAction::CopyTo(paths.clone())),
-                    (icons::FOLDER_MOVE, "Move to…", MenuAction::MoveTo(paths.clone())),
+                    (icons::FOLDER_COPY, tr("Copy to…"), MenuAction::CopyTo(paths.clone())),
+                    (icons::FOLDER_MOVE, tr("Move to…"), MenuAction::MoveTo(paths.clone())),
                 ],
                 manage,
             ];
-            let mut pack = vec![(icons::COMPRESS, "Compress…", MenuAction::Compress(paths.clone()))];
+            let mut pack = vec![(icons::COMPRESS, tr("Compress…"), MenuAction::Compress(paths.clone()))];
             if archives {
-                pack.push((icons::EXTRACT, "Extract here", MenuAction::ExtractHere(paths.clone())));
-                pack.push((icons::EXTRACT, "Extract to…", MenuAction::ExtractTo(paths)));
+                pack.push((icons::EXTRACT, tr("Extract here"), MenuAction::ExtractHere(paths.clone())));
+                pack.push((icons::EXTRACT, tr("Extract to…"), MenuAction::ExtractTo(paths)));
             }
             groups.push(pack);
             groups
         };
         // Results and Recent items live in many folders: offer a way to the one that holds them
         let open_group = |item: &FileItem, with: bool| {
-            let mut group = vec![(icons::OPEN, "Open", MenuAction::Open(item.clone()))];
+            let mut group = vec![(icons::OPEN, tr("Open"), MenuAction::Open(item.clone()))];
+            if item.is_dir {
+                group.push((icons::NEW_TAB, tr("Open in new tab"), MenuAction::OpenInNewTab(item.path.clone())));
+                group.push((icons::NEW_WINDOW, tr("Open in new window"), MenuAction::OpenInNewWindow(item.path.clone())));
+            }
             if with {
-                group.push((icons::APPS, "Open with…", MenuAction::OpenWith(item.path.clone())));
+                group.push((icons::APPS, tr("Open with…"), MenuAction::OpenWith(item.path.clone())));
             }
             if mixed && let Some(parent) = item.path.parent() {
-                group.push((icons::FOLDER, "Show in folder", MenuAction::OpenPath(parent.to_path_buf())));
+                group.push((icons::FOLDER, tr("Show in folder"), MenuAction::OpenPath(parent.to_path_buf())));
             }
             group
         };
@@ -2826,10 +3198,10 @@ impl SkiApp {
                 let paths: Vec<PathBuf> = self.menu_group(item).into_iter().map(|i| i.path).collect();
                 vec![
                     vec![
-                        (icons::RESTORE, "Restore", MenuAction::Restore(paths.clone())),
-                        (icons::DELETE_FOREVER, "Delete permanently", MenuAction::DeleteForever(paths)),
+                        (icons::RESTORE, tr("Restore"), MenuAction::Restore(paths.clone())),
+                        (icons::DELETE_FOREVER, tr("Delete permanently"), MenuAction::DeleteForever(paths)),
                     ],
-                    vec![(icons::INFO, "Properties", MenuAction::Properties(item.path.clone()))],
+                    vec![(icons::INFO, tr("Properties"), MenuAction::Properties(item.path.clone()))],
                 ]
             }
             MenuTarget::Item(item) if self.menu_group(item).len() > 1 => {
@@ -2837,72 +3209,134 @@ impl SkiApp {
                 let paths: Vec<PathBuf> = group.iter().map(|i| i.path.clone()).collect();
                 let archives = group.iter().any(|i| !i.is_dir && ops::is_archive(&i.path));
                 let mut groups = file_groups(paths, archives);
-                groups.push(vec![(icons::INFO, "Properties", MenuAction::Properties(item.path.clone()))]);
+                groups.push(vec![(icons::INFO, tr("Properties"), MenuAction::Properties(item.path.clone()))]);
                 groups
             }
             MenuTarget::Item(item) if item.is_dir => {
-                let mut groups = vec![open_group(item, false), vec![pin_entry(&item.path), icon_entry(&item.path)]];
+                let mut groups = vec![
+                    open_group(item, false),
+                    vec![pin_entry(&item.path), icon_entry(&item.path), (icons::TERMINAL, tr("Open in terminal"), MenuAction::OpenTerminal(item.path.clone()))],
+                ];
                 groups.extend(file_groups(vec![item.path.clone()], false));
                 groups.push(vec![
-                    (icons::COPY, "Copy path", MenuAction::CopyPath(item.path.clone())),
-                    (icons::INFO, "Properties", MenuAction::Properties(item.path.clone())),
+                    (icons::COPY, tr("Copy path"), MenuAction::CopyPath(item.path.clone())),
+                    (icons::INFO, tr("Properties"), MenuAction::Properties(item.path.clone())),
                 ]);
                 groups
             }
             MenuTarget::Item(item) => {
-                let mut groups = vec![open_group(item, true)];
+                let mut groups = vec![open_group(item, true), vec![pin_entry(&item.path)]];
                 if crate::thumbs::is_image(&item.path) {
-                    groups.push(vec![(icons::IMAGE, "Use as folder icon", MenuAction::UseAsIcon(item.path.clone()))]);
+                    groups.push(vec![(icons::IMAGE, tr("Use as folder icon"), MenuAction::UseAsIcon(item.path.clone()))]);
                 }
                 groups.extend(file_groups(vec![item.path.clone()], ops::is_archive(&item.path)));
                 groups.push(vec![
-                    (icons::COPY, "Copy path", MenuAction::CopyPath(item.path.clone())),
-                    (icons::INFO, "Properties", MenuAction::Properties(item.path.clone())),
+                    (icons::COPY, tr("Copy path"), MenuAction::CopyPath(item.path.clone())),
+                    (icons::INFO, tr("Properties"), MenuAction::Properties(item.path.clone())),
                 ]);
                 groups
             }
             MenuTarget::Folder if in_trash => vec![
-                vec![(icons::DELETE_FOREVER, "Empty trash", MenuAction::EmptyTrash)],
-                vec![(icons::SELECT_ALL, "Select all", MenuAction::SelectAll)],
-                vec![(icons::REFRESH, "Refresh", MenuAction::Refresh)],
+                vec![(icons::DELETE_FOREVER, tr("Empty trash"), MenuAction::EmptyTrash)],
+                vec![(icons::SELECT_ALL, tr("Select all"), MenuAction::SelectAll)],
+                vec![(icons::REFRESH, tr("Refresh"), MenuAction::Refresh)],
             ],
             MenuTarget::Folder => vec![
                 vec![
-                    (icons::FILE_PLUS, "New file", MenuAction::NewFile),
-                    (icons::FOLDER_PLUS, "New folder", MenuAction::NewFolder),
+                    (icons::FILE_PLUS, tr("New file"), MenuAction::NewFile),
+                    (icons::FOLDER_PLUS, tr("New folder"), MenuAction::NewFolder),
                 ],
+                self.history_entries(),
                 {
-                    let mut edit = vec![(icons::SELECT_ALL, "Select all", MenuAction::SelectAll)];
+                    let mut edit = vec![
+                        (icons::SELECT_ALL, tr("Select all"), MenuAction::SelectAll),
+                        (icons::SELECT_INVERSE, tr("Invert selection"), MenuAction::InvertSelection),
+                        (icons::SELECT_PATTERN, tr("Select matching…"), MenuAction::SelectPattern),
+                    ];
                     if self.clipboard.is_some() {
-                        edit.insert(0, (icons::PASTE, "Paste", MenuAction::Paste));
+                        edit.insert(0, (icons::PASTE, tr("Paste"), MenuAction::Paste));
                     }
                     edit
                 },
-                vec![pin_entry(&self.current_path), icon_entry(&self.current_path)],
-                vec![(icons::REFRESH, "Refresh", MenuAction::Refresh)],
+                vec![pin_entry(&self.current_path), icon_entry(&self.current_path), (icons::TERMINAL, tr("Open in terminal"), MenuAction::OpenTerminal(self.current_path.clone()))],
+                vec![(icons::REFRESH, tr("Refresh"), MenuAction::Refresh)],
                 vec![
-                    (icons::COPY, "Copy path", MenuAction::CopyPath(self.current_path.clone())),
-                    (icons::INFO, "Properties", MenuAction::Properties(self.current_path.clone())),
+                    (icons::COPY, tr("Copy path"), MenuAction::CopyPath(self.current_path.clone())),
+                    (icons::INFO, tr("Properties"), MenuAction::Properties(self.current_path.clone())),
                 ],
             ],
             MenuTarget::Main => vec![
-                vec![(icons::NEW_WINDOW, "New window", MenuAction::NewWindow)],
+                vec![(icons::NEW_WINDOW, tr("New window"), MenuAction::NewWindow), (icons::NEW_TAB, tr("New tab"), MenuAction::NewTab)],
+                self.history_entries(),
                 vec![
-                    (icons::REFRESH, "Refresh", MenuAction::Refresh),
-                    (icons::SETTINGS, "Settings", MenuAction::OpenSettings),
+                    (icons::REFRESH, tr("Refresh"), MenuAction::Refresh),
+                    (icons::SETTINGS, tr("Settings"), MenuAction::OpenSettings),
                 ],
-                vec![(icons::KEYBOARD, "Keyboard shortcuts", MenuAction::Shortcuts)],
+                vec![(icons::KEYBOARD, tr("Keyboard shortcuts"), MenuAction::Shortcuts)],
             ],
             MenuTarget::TrashPlace(path) => vec![
-                vec![(icons::OPEN, "Open", MenuAction::OpenPath(path.clone()))],
-                vec![(icons::DELETE_FOREVER, "Empty trash", MenuAction::EmptyTrash)],
+                vec![(icons::OPEN, tr("Open"), MenuAction::OpenPath(path.clone()))],
+                vec![(icons::DELETE_FOREVER, tr("Empty trash"), MenuAction::EmptyTrash)],
             ],
+            MenuTarget::Place(path) => vec![
+                vec![
+                    (icons::OPEN, tr("Open"), MenuAction::OpenPath(path.clone())),
+                    (icons::NEW_TAB, tr("Open in new tab"), MenuAction::OpenInNewTab(path.clone())),
+                    (icons::NEW_WINDOW, tr("Open in new window"), MenuAction::OpenInNewWindow(path.clone())),
+                ],
+                vec![pin_entry(path)],
+            ],
+            MenuTarget::Drive(drive, name, mount) => {
+                let (dev, name) = (drive.dev.clone(), name.clone());
+                if !drive.mounted {
+                    vec![vec![(icons::USB, tr("Mount"), MenuAction::Mount(dev, name))]]
+                } else {
+                    let mut leave = vec![(icons::EJECT, tr("Unmount"), MenuAction::Unmount(dev.clone(), name.clone(), mount.clone()))];
+                    if drive.removable {
+                        leave.push((icons::EJECT, tr("Eject"), MenuAction::Eject(dev, name, mount.clone())));
+                    }
+                    vec![
+                        vec![
+                            (icons::OPEN, tr("Open"), MenuAction::OpenPath(mount.clone())),
+                            (icons::NEW_TAB, tr("Open in new tab"), MenuAction::OpenInNewTab(mount.clone())),
+                            (icons::NEW_WINDOW, tr("Open in new window"), MenuAction::OpenInNewWindow(mount.clone())),
+                        ],
+                        leave,
+                        vec![(icons::INFO, tr("Properties"), MenuAction::Properties(mount.clone()))],
+                    ]
+                }
+            }
             MenuTarget::Pin(path) => vec![
-                vec![(icons::OPEN, "Open", MenuAction::OpenPath(path.clone()))],
-                vec![(icons::PIN_OFF, "Unpin from sidebar", MenuAction::Unpin(path.clone())), icon_entry(path)],
-                vec![(icons::INFO, "Properties", MenuAction::Properties(path.clone()))],
+                match FileItem::from_path(path).filter(|i| !i.is_dir) {
+                    Some(file) => {
+                        let mut open = vec![(icons::OPEN, tr("Open"), MenuAction::Open(file))];
+                        if let Some(parent) = path.parent() {
+                            open.push((icons::FOLDER, tr("Show in folder"), MenuAction::OpenPath(parent.to_path_buf())));
+                        }
+                        open
+                    }
+                    None => vec![
+                        (icons::OPEN, tr("Open"), MenuAction::OpenPath(path.clone())),
+                        (icons::NEW_TAB, tr("Open in new tab"), MenuAction::OpenInNewTab(path.clone())),
+                        (icons::NEW_WINDOW, tr("Open in new window"), MenuAction::OpenInNewWindow(path.clone())),
+                    ],
+                },
+                if path.is_dir() { vec![(icons::PIN_OFF, tr("Unpin from sidebar"), MenuAction::Unpin(path.clone())), icon_entry(path)] } else { vec![(icons::PIN_OFF, tr("Unpin from sidebar"), MenuAction::Unpin(path.clone()))] },
+                vec![(icons::INFO, tr("Properties"), MenuAction::Properties(path.clone()))],
             ],
         }
+    }
+
+    /// Undo and redo entries of the menus: only those that have something to do.
+    fn history_entries(&self) -> Vec<(&'static str, &'static str, MenuAction)> {
+        let mut entries = Vec::new();
+        if self.history.undo_label().is_some() {
+            entries.push((icons::UNDO, tr("Undo"), MenuAction::Undo));
+        }
+        if self.history.redo_label().is_some() {
+            entries.push((icons::REDO, tr("Redo"), MenuAction::Redo));
+        }
+        entries
     }
 
     /// Keyboard shortcut to show next to a menu entry.
@@ -2919,6 +3353,14 @@ impl SkiApp {
             MenuAction::NewFile => A::NewFile,
             MenuAction::Refresh => A::Refresh,
             MenuAction::NewWindow => A::NewWindow,
+            MenuAction::NewTab => A::NewTab,
+            MenuAction::Duplicate(_) => A::Duplicate,
+            MenuAction::MakeLink(_) => A::MakeLink,
+            MenuAction::OpenTerminal(_) => A::OpenTerminal,
+            MenuAction::InvertSelection => A::InvertSelection,
+            MenuAction::SelectPattern => A::SelectPattern,
+            MenuAction::Undo => A::Undo,
+            MenuAction::Redo => A::Redo,
             MenuAction::OpenSettings => A::Settings,
             MenuAction::Shortcuts => A::ShowShortcuts,
             MenuAction::Rename(_) | MenuAction::RenameMany(_) => A::Rename,
@@ -3083,6 +3525,8 @@ impl SkiApp {
                             Dialog::BatchRename { .. } => self.batch_rename_contents(ui, &mut dialog),
                             Dialog::Compress { .. } => self.compress_contents(ui, &mut dialog),
                             Dialog::Shortcuts => self.shortcuts_contents(ui),
+                            Dialog::Conflict { .. } => self.conflict_dialog_contents(ui, &mut dialog),
+                            Dialog::SelectPattern { .. } => self.select_pattern_contents(ui, &mut dialog),
                         };
                     });
             });
@@ -3090,6 +3534,7 @@ impl SkiApp {
         // Click outside the dialog card dismisses it
         let dialog_rect = dialog_area.response.rect;
         let outside_click = is_open
+            && !matches!(dialog, Dialog::Conflict { .. })
             && !click_consumed
             && ctx.input(|i| {
                 i.pointer.primary_clicked()
@@ -3114,23 +3559,59 @@ impl SkiApp {
     }
 
     fn create_dialog_contents(&mut self, ui: &mut egui::Ui, dialog: &mut Dialog) -> bool {
-        let Dialog::Create { is_dir, name, error, first_frame } = dialog else { return false };
+        let Dialog::Create { is_dir, name, error, first_frame, templates, template, edited } = dialog else { return false };
         let theme = self.theme;
-        let mut close = material::dialog_header(ui, if *is_dir { "New folder" } else { "New file" }, None, &theme, "create_close");
+        let mut close = material::dialog_header(ui, if *is_dir { tr("New folder") } else { tr("New file") }, None, &theme, "create_close");
 
         let (changed, mut submit) = name_field(ui, &theme, name, first_frame, !*is_dir);
         if changed {
             *error = None;
+            *edited = true;
         }
         if let Some(err) = error.as_ref() {
             ui.label(egui::RichText::new(err).size(material::FONT_CAPTION).color(theme.red));
         }
 
-        let footer = material::dialog_footer(ui, &theme, FooterSpec::new("create", icons::CHECK, "Create"));
+        // Starting points for a file: nothing, a built-in skeleton, or a file from the templates folder
+        if !*is_dir && templates.len() > 1 {
+            material::section_label(ui, tr("Template"), &theme);
+            let mut picked = None;
+            material::group_card(ui, &theme, |ui| {
+                egui::ScrollArea::vertical().max_height(176.0).auto_shrink([false, true]).id_salt("create_templates").show(ui, |ui| {
+                    ui.spacing_mut().item_spacing.y = 2.0;
+                    for (i, t) in templates.iter().enumerate() {
+                        if nav_item(ui, ("create_tpl", i), t.icon, &t.name, &theme, *template == i).clicked() {
+                            picked = Some(i);
+                        }
+                    }
+                });
+            });
+            if let Some(i) = picked {
+                *template = i;
+                let chosen = &templates[i];
+                let stem_of = |n: &str| match n.rfind('.') {
+                    Some(at) if at > 0 => n[..at].to_owned(),
+                    _ => n.to_owned(),
+                };
+                // A name nobody has typed follows the template; a typed one only changes its extension
+                let base = if *edited {
+                    match chosen.extension() {
+                        Some(ext) => format!("{}.{ext}", stem_of(name)),
+                        None => stem_of(name),
+                    }
+                } else {
+                    chosen.file_name.clone()
+                };
+                *name = if *edited { base } else { self.free_name(&base) };
+                *first_frame = true;
+            }
+        }
+
+        let footer = material::dialog_footer(ui, &theme, FooterSpec::new("create", icons::CHECK, tr("Create")));
         submit |= footer.primary;
         close |= footer.cancel;
         if submit {
-            match self.create_entry(*is_dir, name) {
+            match self.create_entry(*is_dir, name, templates.get(*template)) {
                 Ok(()) => close = true,
                 Err(err) => *error = Some(err),
             }
@@ -3141,7 +3622,7 @@ impl SkiApp {
     fn rename_dialog_contents(&mut self, ui: &mut egui::Ui, dialog: &mut Dialog) -> bool {
         let Dialog::Rename { path, name, error, first_frame } = dialog else { return false };
         let theme = self.theme;
-        let mut close = material::dialog_header(ui, "Rename", None, &theme, "rename_close");
+        let mut close = material::dialog_header(ui, tr("Rename"), None, &theme, "rename_close");
 
         let (changed, mut submit) = name_field(ui, &theme, name, first_frame, !path.is_dir());
         if changed {
@@ -3151,7 +3632,7 @@ impl SkiApp {
             ui.label(egui::RichText::new(err).size(material::FONT_CAPTION).color(theme.red));
         }
 
-        let footer = material::dialog_footer(ui, &theme, FooterSpec::new("rename", icons::CHECK, "Rename"));
+        let footer = material::dialog_footer(ui, &theme, FooterSpec::new("rename", icons::CHECK, tr("Rename")));
         submit |= footer.primary;
         close |= footer.cancel;
         if submit {
@@ -3190,7 +3671,7 @@ impl SkiApp {
         ui.add_space(8.0);
         // Fixed height: a bare right-to-left layout would claim all remaining height and stretch the card
         ui.allocate_ui_with_layout(egui::vec2(ui.available_width(), 36.0), egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            close |= material::button(ui, "alert_ok", Some(icons::CHECK), "Got it", &theme, ButtonKind::Filled, true).clicked();
+            close |= material::button(ui, "alert_ok", Some(icons::CHECK), tr("Got it"), &theme, ButtonKind::Filled, true).clicked();
         });
         close |= ui.input(|i| i.key_pressed(egui::Key::Enter));
         if close {
@@ -3234,6 +3715,10 @@ impl SkiApp {
         for (old, new) in done {
             self.retarget_path(old, new);
         }
+        if !done.is_empty() {
+            let back = done.iter().map(|(old, new)| (new.clone(), old.clone())).collect();
+            self.history.record(UndoEntry::new(trn(done.len(), "Renaming of {} item", "Renaming of {} items"), vec![Edit::Renames(back)]));
+        }
         if self.is_mixed_listing() {
             for (old, new) in done {
                 if let Some(idx) = self.items.iter().position(|i| &i.path == old)
@@ -3264,21 +3749,21 @@ impl SkiApp {
         ui.painter().text(
             row.center(),
             egui::Align2::CENTER_CENTER,
-            format!("Rename {} items", entries.len()),
+            trf("Rename {} items", &[&entries.len()]),
             egui::FontId::proportional(material::FONT_TITLE),
             theme.text,
         );
         ui.scope_builder(egui::UiBuilder::new().max_rect(row).layout(egui::Layout::left_to_right(egui::Align::Center)), |ui| {
-            close |= material::button(ui, "br_cancel", None, "Cancel", &theme, ButtonKind::Tonal, true).clicked();
+            close |= material::button(ui, "br_cancel", None, tr("Cancel"), &theme, ButtonKind::Tonal, true).clicked();
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let ready = problem.is_none() && changed;
-                submit |= material::button(ui, "br_go", None, "Rename", &theme, ButtonKind::Filled, ready).clicked() && ready;
+                submit |= material::button(ui, "br_go", None, tr("Rename"), &theme, ButtonKind::Filled, ready).clicked() && ready;
             });
         });
 
         ui.vertical_centered(|ui| {
             let current = usize::from(rules.mode == RenameMode::Replace);
-            if let Some(i) = segmented(ui, "br_mode", &["Use a template", "Find and replace"], current, &theme) {
+            if let Some(i) = segmented(ui, "br_mode", &[tr("Use a template"), tr("Find and replace")], current, &theme) {
                 rules.mode = if i == 0 { RenameMode::Template } else { RenameMode::Replace };
                 *first_frame = true;
             }
@@ -3304,70 +3789,70 @@ impl SkiApp {
         let focus = std::mem::take(first_frame);
         match rules.mode {
             RenameMode::Template => {
-                submit |= field(ui, &mut rules.template, "Template", focus);
+                submit |= field(ui, &mut rules.template, tr("Template"), focus);
                 ui.horizontal_wrapped(|ui| {
                     for (token, label) in batch_rename::TOKENS {
-                        if chip(ui, ("br_token", label), None, &format!("+ {label}"), &theme, false).clicked() {
+                        if chip(ui, ("br_token", label), None, &format!("+ {}", tr(label)), &theme, false).clicked() {
                             rules.template.push_str(token);
                         }
                     }
                 });
             }
             RenameMode::Replace => {
-                submit |= field(ui, &mut rules.find, "Text to find", focus);
-                submit |= field(ui, &mut rules.replace, "Replace with", false);
+                submit |= field(ui, &mut rules.find, tr("Text to find"), focus);
+                submit |= field(ui, &mut rules.replace, tr("Replace with"), false);
             }
         }
 
-        egui::CollapsingHeader::new(egui::RichText::new("More options").size(material::FONT_CAPTION).color(theme.subtext1))
+        egui::CollapsingHeader::new(egui::RichText::new(tr("More options")).size(material::FONT_CAPTION).color(theme.subtext1))
             .id_salt("br_more")
             .show(ui, |ui| {
                 if rules.mode == RenameMode::Replace {
                     ui.horizontal_wrapped(|ui| {
-                        if chip(ui, "br_match_case", None, "Match case", &theme, rules.match_case).clicked() {
+                        if chip(ui, "br_match_case", None, tr("Match case"), &theme, rules.match_case).clicked() {
                             rules.match_case = !rules.match_case;
                         }
                     });
                 }
                 ui.columns(2, |cols| {
-                    field(&mut cols[0], &mut rules.prefix, "Add at start", false);
-                    field(&mut cols[1], &mut rules.suffix, "Add at end", false);
+                    field(&mut cols[0], &mut rules.prefix, tr("Add at start"), false);
+                    field(&mut cols[1], &mut rules.suffix, tr("Add at end"), false);
                 });
                 ui.columns(2, |cols| {
-                    field(&mut cols[0], &mut rules.trim_start, "Remove first N characters", false);
-                    field(&mut cols[1], &mut rules.trim_end, "Remove last N characters", false);
+                    field(&mut cols[0], &mut rules.trim_start, tr("Remove first N characters"), false);
+                    field(&mut cols[1], &mut rules.trim_end, tr("Remove last N characters"), false);
                 });
-                material::section_label(ui, "Letter case", &theme);
+                material::section_label(ui, tr("Letter case"), &theme);
                 ui.horizontal_wrapped(|ui| {
                     for (case, label) in batch_rename::Case::ALL {
-                        if chip(ui, ("br_case", label), None, label, &theme, rules.case == case).clicked() {
+                        if chip(ui, ("br_case", label), None, tr(label), &theme, rules.case == case).clicked() {
                             rules.case = case;
                         }
                     }
                 });
-                material::section_label(ui, "Spaces", &theme);
+                material::section_label(ui, tr("Spaces"), &theme);
                 ui.horizontal_wrapped(|ui| {
                     for (spaces, label) in batch_rename::Spaces::ALL {
-                        if chip(ui, ("br_spaces", label), None, label, &theme, rules.spaces == spaces).clicked() {
+                        if chip(ui, ("br_spaces", label), None, tr(label), &theme, rules.spaces == spaces).clicked() {
                             rules.spaces = spaces;
                         }
                     }
-                    if chip(ui, "br_lower_ext", None, "Lowercase extension", &theme, rules.lowercase_ext).clicked() {
+                    if chip(ui, "br_lower_ext", None, tr("Lowercase extension"), &theme, rules.lowercase_ext).clicked() {
                         rules.lowercase_ext = !rules.lowercase_ext;
                     }
                 });
                 if rules.mode == RenameMode::Template {
-                    material::section_label(ui, "Numbering", &theme);
+                    material::section_label(ui, tr("Numbering"), &theme);
                     ui.horizontal_wrapped(|ui| {
                         for (order, label) in batch_rename::Order::ALL {
-                            if chip(ui, ("br_order", label), None, label, &theme, rules.order == order).clicked() {
+                            if chip(ui, ("br_order", label), None, tr(label), &theme, rules.order == order).clicked() {
                                 rules.order = order;
                             }
                         }
                     });
                     ui.columns(2, |cols| {
-                        field(&mut cols[0], &mut rules.start, "Start at", false);
-                        field(&mut cols[1], &mut rules.step, "Step", false);
+                        field(&mut cols[0], &mut rules.start, tr("Start at"), false);
+                        field(&mut cols[1], &mut rules.step, tr("Step"), false);
                     });
                 }
             });
@@ -3402,8 +3887,8 @@ impl SkiApp {
             let count = done.len();
             self.finish_batch_rename(&done);
             match error {
-                None => self.set_toast(format!("Renamed {count} items")),
-                Some(err) => self.set_toast(format!("Renamed {count} items, then: {err}")),
+                None => self.set_toast(trn(count, "Renamed {} item", "Renamed {} items")),
+                Some(err) => self.set_toast(trf("Renamed {} items, then: {}", &[&count, &err])),
             }
             close = true;
         }
@@ -3417,10 +3902,10 @@ impl SkiApp {
         let theme = self.theme;
         let icon_for = picker.icon_for.clone();
         let (title, verb) = match picker.op {
-            _ if icon_for.is_some() => ("Folder icon", "Set icon"),
-            TransferOp::Copy => ("Copy to", "Copy"),
-            TransferOp::Move => ("Move to", "Move"),
-            TransferOp::Extract => ("Extract to", "Extract"),
+            _ if icon_for.is_some() => (tr("Folder icon"), tr("Set icon")),
+            TransferOp::Copy => (tr("Copy to"), tr("Copy")),
+            TransferOp::Move => (tr("Move to"), tr("Move")),
+            TransferOp::Extract => (tr("Extract to"), tr("Extract")),
         };
         let what = match &icon_for {
             Some(f) => format!("“{}”", f.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()),
@@ -3455,7 +3940,7 @@ impl SkiApp {
                             if place.kind != PlaceKind::Folder || trash::contains(&place.path) {
                                 continue;
                             }
-                            if nav_item(ui, ("pk_place", idx), place.icon, &place.name, &theme, picker.dir == place.path).clicked() {
+                            if nav_item(ui, ("pk_place", idx), place.icon, &tr_dyn(&place.name), &theme, picker.dir == place.path).clicked() {
                                 goto = Some(place.path.clone());
                             }
                         }
@@ -3480,7 +3965,7 @@ impl SkiApp {
                         |ui| {
                             ui.spacing_mut().item_spacing.x = TITLE_GAP;
                             let can_up = picker.dir.parent().is_some();
-                            if icon_button(ui, "pk_up", icons::ARROW_UP, &theme, can_up, "Parent folder").clicked()
+                            if icon_button(ui, "pk_up", icons::ARROW_UP, &theme, can_up, tr("Parent folder")).clicked()
                                 && let Some(parent) = picker.dir.parent() {
                                     goto = Some(parent.to_path_buf());
                                 }
@@ -3494,7 +3979,7 @@ impl SkiApp {
                                     .frame(egui::Frame::NONE)
                                     .align(egui::Align2::LEFT_CENTER)
                                     .font(egui::FontId::proportional(material::FONT_BODY))
-                                    .hint_text("Type a folder path and press Enter"),
+                                    .hint_text(tr("Type a folder path and press Enter")),
                             );
                             if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                                 let typed = PathBuf::from(picker.path_input.trim());
@@ -3517,17 +4002,17 @@ impl SkiApp {
                     let ready = icon_for.is_none() || picker.chosen.as_ref().is_some_and(|c| !c.is_dir());
                     ui.horizontal(|ui| {
                         if icon_for.is_some() {
-                            let text = if ready { format!("Icon for {what}: “{name}”") } else { format!("Choose an image for {what}") };
+                            let text = if ready { trf("Icon for {}: “{}”", &[&what, &name]) } else { trf("Choose an image for {}", &[&what]) };
                             ui.label(egui::RichText::new(text).size(material::FONT_BODY).color(theme.text));
                         } else {
-                            ui.label(egui::RichText::new(format!("{verb} {what} to")).size(material::FONT_CAPTION).color(theme.subtext1));
+                            ui.label(egui::RichText::new(trf("{} {} to", &[&verb, &what])).size(material::FONT_CAPTION).color(theme.subtext1));
                             ui.label(egui::RichText::new(format!("“{name}”")).size(material::FONT_BODY).color(theme.text));
                         }
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             confirmed |= material::button(ui, "pk_go", Some(icons::CHECK), verb, &theme, ButtonKind::Filled, ready).clicked() && ready;
-                            cancelled |= material::button(ui, "pk_cancel", None, "Cancel", &theme, ButtonKind::Text, true).clicked();
+                            cancelled |= material::button(ui, "pk_cancel", None, tr("Cancel"), &theme, ButtonKind::Text, true).clicked();
                             if has_icon {
-                                reset |= material::button(ui, "pk_reset", None, "Reset", &theme, ButtonKind::Text, true).clicked();
+                                reset |= material::button(ui, "pk_reset", None, tr("Reset"), &theme, ButtonKind::Text, true).clicked();
                             }
                         });
                     });
@@ -3562,7 +4047,7 @@ impl SkiApp {
                             picker.chosen = pick;
                         }
                         if picker.folders.is_empty() && picker.images.is_empty() {
-                            material::empty_state(ui, &theme, icons::FOLDER, "No subfolders", Some("Choose this folder with the button below"));
+                            material::empty_state(ui, &theme, icons::FOLDER, tr("No subfolders"), Some(tr("Choose this folder with the button below")));
                         }
                     });
                 });
@@ -3590,7 +4075,7 @@ impl SkiApp {
     fn compress_contents(&mut self, ui: &mut egui::Ui, dialog: &mut Dialog) -> bool {
         let Dialog::Compress { sources, name, format, first_frame } = dialog else { return false };
         let theme = self.theme;
-        let mut close = material::dialog_header(ui, "Compress", Some(&Self::describe_count(sources)), &theme, "cz_close");
+        let mut close = material::dialog_header(ui, tr("Compress"), Some(&Self::describe_count(sources)), &theme, "cz_close");
 
         let mut submit = false;
         material::input_frame(&theme).show(ui, |ui| {
@@ -3623,7 +4108,7 @@ impl SkiApp {
             }
         });
 
-        let footer = material::dialog_footer(ui, &theme, FooterSpec { enabled: !name.trim().is_empty(), ..FooterSpec::new("cz", icons::COMPRESS, "Compress") });
+        let footer = material::dialog_footer(ui, &theme, FooterSpec { enabled: !name.trim().is_empty(), ..FooterSpec::new("cz", icons::COMPRESS, tr("Compress")) });
         submit |= footer.primary;
         close |= footer.cancel;
 
@@ -3632,9 +4117,10 @@ impl SkiApp {
             let out = ops::unique_path(&self.current_path, std::ffi::OsStr::new(&file_name), "copy");
             let (sources, format) = (sources.clone(), *format);
             let shown = out.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-            self.set_toast(format!("Compressing into {shown}…"));
-            self.jobs.spawn(move || {
-                ops::compress(&sources, &out, format).map(|_| format!("Created “{shown}”")).map_err(|e| e.to_string())
+            let title = trf("Compressing into {}", &[&shown]);
+            self.engine.spawn(JobKind::Compress, title, String::new(), move |_| match ops::compress(&sources, &out, format) {
+                Ok(()) => Outcome::done(trf("Created “{}”", &[&shown])).with(Effect::Record(UndoEntry::new(trf("Compression into {}", &[&shown]), vec![Edit::Trash(out)]))),
+                Err(err) => Outcome::failed(err.to_string()),
             });
             close = true;
         }
@@ -3672,7 +4158,7 @@ impl SkiApp {
         let Dialog::OpenWith { path, mime, apps: listed, default, recommended, others, selected, query, first_frame, for_file, for_type } = dialog else { return false };
         let theme = self.theme;
         let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-        let mut close = material::dialog_header(ui, "Open with", Some(&format!("{name} · {mime}")), &theme, "ow_close");
+        let mut close = material::dialog_header(ui, tr("Open with"), Some(&format!("{name} · {mime}")), &theme, "ow_close");
 
         // Search over every installed application
         material::input_frame(&theme).show(ui, |ui| {
@@ -3682,7 +4168,7 @@ impl SkiApp {
                     egui::TextEdit::singleline(query)
                         .frame(egui::Frame::NONE)
                         .desired_width(f32::INFINITY)
-                        .hint_text("Search applications")
+                        .hint_text(tr("Search applications"))
                         .font(egui::FontId::proportional(material::FONT_BODY)),
                 );
                 if *first_frame {
@@ -3695,9 +4181,9 @@ impl SkiApp {
         let needle = query.trim().to_lowercase();
         let matches = |i: &usize| needle.is_empty() || listed[*i].name.to_lowercase().contains(&needle);
         let sections: [(&str, Vec<usize>); 3] = [
-            ("Default", default.iter().copied().filter(matches).collect()),
-            ("Recommended", recommended.iter().copied().filter(matches).collect()),
-            ("Other applications", others.iter().copied().filter(matches).collect()),
+            (tr("Default"), default.iter().copied().filter(matches).collect()),
+            (tr("Recommended"), recommended.iter().copied().filter(matches).collect()),
+            (tr("Other applications"), others.iter().copied().filter(matches).collect()),
         ];
 
         let max_height = (ui.ctx().content_rect().height() - 330.0).clamp(160.0, 380.0);
@@ -3706,7 +4192,7 @@ impl SkiApp {
         material::group_card(ui, &theme, |ui| {
             if sections.iter().all(|(_, rows)| rows.is_empty()) {
                 ui.add_space(6.0);
-                material::hint_label(ui, "No applications found", &theme);
+                material::hint_label(ui, tr("No applications found"), &theme);
                 ui.add_space(6.0);
             }
             egui::ScrollArea::vertical().max_height(max_height).auto_shrink([false, true]).id_salt("ow_scroll").show(ui, |ui| {
@@ -3719,7 +4205,7 @@ impl SkiApp {
                     for &idx in rows {
                         let app = &listed[idx];
                         let is_pinned = self.open_overrides.get(path.as_path()) == Some(&app.id);
-                        let label = if is_pinned { format!("{}  ·  this file", app.name) } else { app.name.clone() };
+                        let label = if is_pinned { trf("{}  ·  this file", &[&app.name]) } else { app.name.clone() };
                         // Icons are only resolved and decoded for rows that are actually on screen
                         let probe = egui::Rect::from_min_size(ui.cursor().min, egui::vec2(ui.available_width(), 44.0));
                         let tex = if ui.is_rect_visible(probe) {
@@ -3746,10 +4232,10 @@ impl SkiApp {
         });
 
         material::group_card(ui, &theme, |ui| {
-            if material::switch_row(ui, "ow_file", icons::FILE, "Always for this file", &theme, *for_file).clicked() {
+            if material::switch_row(ui, "ow_file", icons::FILE, tr("Always for this file"), &theme, *for_file).clicked() {
                 *for_file = !*for_file;
             }
-            if material::switch_row(ui, "ow_type", icons::APPS, "Always for this file type", &theme, *for_type).clicked() {
+            if material::switch_row(ui, "ow_type", icons::APPS, tr("Always for this file type"), &theme, *for_type).clicked() {
                 *for_type = !*for_type;
             }
         });
@@ -3758,14 +4244,14 @@ impl SkiApp {
         let footer = material::dialog_footer(
             ui,
             &theme,
-            FooterSpec { enabled: selected.is_some(), extra: has_choice.then_some("Forget file choice"), ..FooterSpec::new("ow", icons::OPEN, "Open") },
+            FooterSpec { enabled: selected.is_some(), extra: has_choice.then_some(tr("Forget file choice")), ..FooterSpec::new("ow", icons::OPEN, tr("Open")) },
         );
         close |= footer.cancel;
         launch |= footer.primary;
         if footer.extra {
             self.open_overrides.remove(path.as_path());
             apps::save_overrides(&self.open_overrides);
-            self.set_toast("File choice removed");
+            self.set_toast(tr("File choice removed"));
             close = true;
         }
 
@@ -3780,14 +4266,14 @@ impl SkiApp {
                         }
                         if *for_type {
                             if apps::set_default(mime, &app.id) {
-                                self.set_toast(format!("{} is now the default for {mime}", app.name));
+                                self.set_toast(trf("{} is now the default for {}", &[&app.name, &mime]));
                             } else {
-                                self.set_toast("Could not change the default application");
+                                self.set_toast(tr("Could not change the default application"));
                             }
                         }
                         close = true;
                     }
-                    Err(err) => self.set_toast(format!("Failed to start {}: {err}", app.name)),
+                    Err(err) => self.set_toast(trf("Failed to start {}: {}", &[&app.name, &err])),
                 }
             }
         close
@@ -3822,11 +4308,11 @@ impl SkiApp {
             Some(img) => {
                 self.thumbs.ensure(img);
                 self.folder_icons.insert(folder.to_path_buf(), img.to_path_buf());
-                self.set_toast("Folder icon set");
+                self.set_toast(tr("Folder icon set"));
             }
             None => {
                 self.folder_icons.remove(folder);
-                self.set_toast("Folder icon reset");
+                self.set_toast(tr("Folder icon reset"));
             }
         }
         save_folder_icons(&self.folder_icons);
@@ -3835,7 +4321,7 @@ impl SkiApp {
     /// Nautilus-style properties: a centered header, then grouped cards of label / value rows.
     /// Returns true when the dialog should close.
     fn properties_contents(&mut self, ui: &mut egui::Ui, dialog: &mut Dialog) -> bool {
-        let Dialog::Properties { props, scan } = dialog else { return false };
+        let Dialog::Properties { props, scan, tab } = dialog else { return false };
         let ctx = ui.ctx().clone();
         let item = &props.item;
         let theme = self.theme;
@@ -3847,8 +4333,8 @@ impl SkiApp {
             use std::sync::atomic::Ordering::Relaxed;
             let s = &scan.state;
             let (size, files, folders, done) = (s.size.load(Relaxed), s.files.load(Relaxed), s.folders.load(Relaxed), s.done.load(Relaxed));
-            let total = format!("{}{}", crate::fs::file_item::format_bytes(size), if done { "" } else { " so far…" });
-            groups[0].1.push(("Total size", format!("{total} · {files} files, {folders} folders")));
+            let total = format!("{}{}", crate::fs::file_item::format_bytes(size), if done { "" } else { tr(" so far…") });
+            groups[0].1.push((tr("Total size"), format!("{total} · {} · {}", trn(files as usize, "{} file", "{} files"), trn(folders as usize, "{} folder", "{} folders"))));
             subtitle = format!("{} · {total}", props.kind);
             if !done {
                 ctx.request_repaint();
@@ -3858,11 +4344,22 @@ impl SkiApp {
         }
 
         let mut copied: Option<String> = None;
+        let mut perm_action = perms::PermAction::default();
         let mut change_icon = false;
         let mut reset_icon = false;
         let mut close = false;
 
-        close |= material::dialog_header(ui, "Properties", None, &theme, "dlg_close");
+        close |= material::dialog_header(ui, tr("Properties"), None, &theme, "dlg_close");
+        if !ctx.egui_wants_keyboard_input() {
+            ctx.input(|i| {
+                if i.key_pressed(egui::Key::ArrowRight) {
+                    *tab = 1;
+                }
+                if i.key_pressed(egui::Key::ArrowLeft) {
+                    *tab = 0;
+                }
+            });
+        }
         ui.add_space(2.0);
 
         egui::ScrollArea::vertical()
@@ -3895,19 +4392,27 @@ impl SkiApp {
                     ui.label(egui::RichText::new(subtitle).size(material::FONT_CAPTION).color(theme.subtext1));
                     if item.is_dir {
                         ui.add_space(6.0);
-                        if material::button(ui, "props_icon", Some(icons::IMAGE), "Custom icon…", &theme, ButtonKind::Tonal, true).clicked() {
+                        if material::button(ui, "props_icon", Some(icons::IMAGE), tr("Custom icon…"), &theme, ButtonKind::Tonal, true).clicked() {
                             change_icon = true;
                         }
                         if self.folder_icons.contains_key(&item.path)
-                            && material::button(ui, "props_icon_reset", Some(icons::TRASH), "Reset icon", &theme, ButtonKind::Text, true).clicked()
+                            && material::button(ui, "props_icon_reset", Some(icons::TRASH), tr("Reset icon"), &theme, ButtonKind::Text, true).clicked()
                         {
                             reset_icon = true;
                         }
                     }
                 });
-                ui.add_space(8.0);
+                ui.add_space(6.0);
+                ui.vertical_centered(|ui| {
+                    if let Some(i) = segmented(ui, "props_tab", &[tr("Details"), tr("Permissions")], *tab, &theme) {
+                        *tab = i;
+                    }
+                });
+                ui.add_space(4.0);
 
-                for (title, rows) in &groups {
+                // Ownership belongs to the permissions tab, everything else to the details
+                let ownership = tr("Ownership");
+                for (title, rows) in groups.iter().filter(|(title, _)| (*title == ownership) == (*tab == 1)) {
                     material::section_label(ui, title, &theme);
                     egui::Frame::new().fill(theme.surface1).corner_radius(egui::CornerRadius::same(material::RADIUS_CONTAINER)).show(ui, |ui| {
                         ui.set_width(full);
@@ -3931,26 +4436,36 @@ impl SkiApp {
                             if copy_alpha > 0 {
                                 material::paint_icon(painter, egui::pos2(rect.right() - 22.0, rect.center().y), icons::COPY, 14.0, theme.with_alpha(theme.subtext1, copy_alpha));
                             }
-                            if resp.on_hover_text("Click to copy").clicked() {
+                            if resp.on_hover_text(tr("Click to copy")).clicked() {
                                 copied = Some(value.clone());
                             }
                         }
                     });
                     ui.add_space(6.0);
                 }
+                if *tab == 1 && !item.is_symlink {
+                    perm_action = perms::permission_card(ui, &theme, full, item.mode, item.is_dir, perms::can_change(item));
+                }
             });
 
         ui.add_space(6.0);
         ui.allocate_ui_with_layout(egui::vec2(ui.available_width(), material::BUTTON_HEIGHT), egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if material::button(ui, "dlg_copy_path", Some(icons::COPY), "Copy path", &theme, ButtonKind::Tonal, true).clicked() {
+            if material::button(ui, "dlg_copy_path", Some(icons::COPY), tr("Copy path"), &theme, ButtonKind::Tonal, true).clicked() {
                 copied = Some(props.item.path.to_string_lossy().into_owned());
             }
         });
 
         let folder = props.item.path.clone();
+        if let Some(mode) = perm_action.new_mode {
+            self.set_mode(props, mode);
+        }
+        if perm_action.apply_to_contents {
+            self.apply_mode_to_contents(folder.clone(), props.item.mode & 0o7777);
+            self.set_toast(tr("Changing permissions…"));
+        }
         if let Some(text) = copied {
             ctx.copy_text(text);
-            self.set_toast("Copied to clipboard");
+            self.set_toast(tr("Copied to clipboard"));
         }
         if reset_icon {
             self.apply_folder_icon(&folder, None);
@@ -4074,26 +4589,43 @@ mod tests {
         assert_eq!(app.selected_index.map(|i| app.items[i].name.as_str()), Some("b.txt"));
         assert!(app.rename_entry(&app.current_path.join("b.txt"), "b.txt").is_ok(), "same name is a no-op");
 
+        let settle = |app: &mut SkiApp| {
+            for _ in 0..200 {
+                app.poll_jobs();
+                if !app.engine.running() { break; }
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            app.poll_jobs();
+        };
+
         // Trash removes it from the listing, offers Undo, and Undo brings it back
         let b = app.current_path.join("b.txt");
         app.trash_paths(vec![b.clone()]);
         assert_eq!(names(&app), ["sub", "taken.txt"]);
         assert!(!b.exists());
-        let Some(Toast { action: Some(ToastAction::UndoTrash(trashed)), .. }) = app.status_toast.take() else { panic!("no undo offered") };
-        assert!(trashed[0].exists() && trash::contains(&trashed[0].canonicalize().unwrap()));
-        app.restore_paths(trashed);
+        assert!(matches!(app.status_toast.take(), Some(Toast { action: Some(ToastAction::Undo), .. })), "no undo offered");
+        app.undo();
+        settle(&mut app);
         assert_eq!(names(&app), ["sub", "b.txt", "taken.txt"]);
         assert_eq!(std::fs::read_to_string(&b).unwrap(), "a");
 
-        // Delete forever runs on a worker; the trash record goes with the file
+        // Redo trashes it again; rename can be undone too
+        app.redo();
+        settle(&mut app);
+        assert_eq!(names(&app), ["sub", "taken.txt"]);
+        app.undo();
+        settle(&mut app);
+        app.rename_entry(&b, "c.txt").unwrap();
+        app.undo();
+        settle(&mut app);
+        assert_eq!(names(&app), ["sub", "b.txt", "taken.txt"]);
+
+        // Delete forever runs as a job; the trash record goes with the file
         app.trash_paths(vec![b.clone()]);
-        let Some(Toast { action: Some(ToastAction::UndoTrash(trashed)), .. }) = app.status_toast.take() else { panic!("no undo offered") };
+        let trashed: Vec<PathBuf> = std::fs::read_dir(trash::files_dir().unwrap()).unwrap().flatten().map(|e| e.path()).collect();
+        assert_eq!(trashed.len(), 1);
         app.delete_forever(trashed.clone());
-        for _ in 0..100 {
-            if !app.jobs.running() { break; }
-            std::thread::sleep(std::time::Duration::from_millis(20));
-            app.poll_jobs();
-        }
+        settle(&mut app);
         assert!(!trashed[0].exists());
         assert!(trash::is_empty());
 
@@ -4104,6 +4636,46 @@ mod tests {
         assert_eq!(app.current_path, work.canonicalize().unwrap());
         assert!(app.can_modify_here());
 
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn tabs_keep_their_own_folder_history_and_selection() {
+        let base = std::env::temp_dir().join(format!("ski_tabs_test_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let (one, two) = (base.join("one"), base.join("two"));
+        std::fs::create_dir_all(one.join("inner")).unwrap();
+        std::fs::create_dir_all(&two).unwrap();
+        std::fs::write(one.join("a.txt"), "a").unwrap();
+        std::fs::write(one.join("b.txt"), "b").unwrap();
+        std::fs::write(two.join("c.txt"), "c").unwrap();
+
+        let ctx = egui::Context::default();
+        let mut app = SkiApp::new(one.clone(), SerpantinumTheme::default(), Settings::default(), &ctx);
+        app.selection = BTreeSet::from([1, 2]);
+        app.selected_index = Some(1);
+        app.last_cursor = Some(1);
+
+        app.new_tab(two.clone());
+        assert_eq!((app.tabs.len(), app.active_tab), (2, 1));
+        assert_eq!(app.current_path, two.canonicalize().unwrap());
+        assert_eq!(app.items.len(), 1);
+        assert!(app.selection.is_empty() && app.back_history.is_empty());
+
+        app.switch_tab(0);
+        assert_eq!(app.current_path, one.canonicalize().unwrap());
+        assert_eq!(app.selected_paths().len(), 2, "selection survives a round trip");
+
+        app.navigate_to(one.join("inner"));
+        assert_eq!(app.back_history.len(), 1);
+        app.switch_tab(1);
+        assert!(app.back_history.is_empty(), "history belongs to the tab");
+        app.switch_tab(0);
+        assert_eq!(app.back_history.len(), 1);
+
+        app.close_tab(&ctx, 0);
+        assert_eq!((app.tabs.len(), app.active_tab), (1, 0));
+        assert_eq!(app.current_path, two.canonicalize().unwrap());
         std::fs::remove_dir_all(&base).unwrap();
     }
 
@@ -4128,11 +4700,12 @@ mod tests {
             (3, egui::Rect::from_min_size(egui::pos2(380.0, 20.0), egui::vec2(100.0, 100.0))),
         ];
 
-        // Start drag right on top of item 0 and drag across to item 2
+        // Start dragging in the gap above item 0 (a press on an item itself picks the item up
+        // instead, see app/dnd.rs) and drag across to item 2
         let mut raw = egui::RawInput::default();
-        raw.events.push(egui::Event::PointerMoved(egui::pos2(50.0, 50.0)));
+        raw.events.push(egui::Event::PointerMoved(egui::pos2(10.0, 10.0)));
         raw.events.push(egui::Event::PointerButton {
-            pos: egui::pos2(50.0, 50.0),
+            pos: egui::pos2(10.0, 10.0),
             button: egui::PointerButton::Primary,
             pressed: true,
             modifiers: egui::Modifiers::NONE,

@@ -4,6 +4,7 @@ use std::io;
 use std::path::Path;
 
 use super::file_item::{FileItem, FileType};
+use crate::i18n::tr;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum SortBy {
@@ -48,14 +49,14 @@ impl TypeFilter {
 
     pub fn label(&self) -> &'static str {
         match self {
-            TypeFilter::All => "All",
-            TypeFilter::Folders => "Folders",
-            TypeFilter::Documents => "Documents",
-            TypeFilter::Images => "Images",
-            TypeFilter::Audio => "Audio",
-            TypeFilter::Video => "Video",
-            TypeFilter::Archives => "Archives",
-            TypeFilter::Code => "Code",
+            TypeFilter::All => tr("All"),
+            TypeFilter::Folders => tr("Folders"),
+            TypeFilter::Documents => tr("Documents"),
+            TypeFilter::Images => tr("Images"),
+            TypeFilter::Audio => tr("Audio"),
+            TypeFilter::Video => tr("Video"),
+            TypeFilter::Archives => tr("Archives"),
+            TypeFilter::Code => tr("Code"),
         }
     }
 
