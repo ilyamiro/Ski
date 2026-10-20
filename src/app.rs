@@ -3406,7 +3406,8 @@ impl SkiApp {
         let live = self.menu.as_ref().map(|m| (m.pos, m.target.clone(), m.open_label.clone()));
         let interactive = live.is_some();
         let (origin, groups, open_label) = if let Some((pos, target, open_label)) = live {
-            let groups = self.menu_entries(&target);
+            let mut groups = self.menu_entries(&target);
+            groups.retain(|g| !g.is_empty());
             let count: usize = groups.iter().map(Vec::len).sum();
             let dividers = groups.len().saturating_sub(1);
             let gaps = (count + dividers).saturating_sub(1);

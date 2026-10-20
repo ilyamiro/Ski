@@ -381,7 +381,8 @@ impl SkiApp {
         let list_top = ui.cursor().top();
         group_card(ui, &theme, |ui| {
             egui::ScrollArea::vertical()
-                .max_height(360.0)
+                .max_height((ui.available_height() - 24.0).clamp(360.0, 640.0))
+                .min_scrolled_height(360.0)
                 .auto_shrink([false, true])
                 .id_salt("font_list")
                 .show_rows(ui, row_h, total, |ui, range| {
