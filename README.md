@@ -74,6 +74,8 @@ environment.systemPackages = [ (pkgs.callPackage /path/to/Ski { }) ];
 
 It sets `inode/directory` to Ski, adds Ski as an xdg-desktop-portal backend for `org.freedesktop.impl.portal.FileChooser`, and sets `GTK_USE_PORTAL=1`. Log out and in after `nixos-rebuild switch`. Programs that use the portal then show Ski for "Open" and "Save as". Firefox also needs `widget.use-xdg-desktop-portal.file-picker = 1` (`programs.firefox.preferences` on NixOS); Chromium needs `--enable-features=UseXdgDesktopPortal` unless it picks it up itself. Programs with a dialog of their own don't use the portal and keep it.
 
+The dialog is a window with the app id `ski-chooser`. On X11 it opens centered; on Wayland the compositor decides, so add a rule to float and center it, e.g. Hyprland: `windowrule = float, class:^ski-chooser$` and `windowrule = center, class:^ski-chooser$`; sway: `for_window [app_id="ski-chooser"] floating enable, move position center`.
+
 ### Application menu and default file manager
 
 ```sh
