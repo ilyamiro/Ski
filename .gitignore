@@ -1,3 +1,15 @@
 /target
-.codebase-memory
 AGENTS.md
+CLAUDE.md
+
+# AI agent tooling
+.claude/
+.agents/
+.omc/
+.codebase-memory/
+
+# Misc
+.direnv/
+.env
+*.log
+.DS_Store
