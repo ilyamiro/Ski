@@ -21,6 +21,8 @@ pub struct Settings {
     pub font: Option<PathBuf>,
     pub font_name: Option<String>,
     pub scale: f32,
+    /// How round the corners are, relative to the default: 1.0 is the Material look, 0.0 square.
+    pub corner_scale: f32,
 
     pub view_mode: ViewMode,
     pub sort_by: SortBy,
@@ -189,6 +191,7 @@ impl Default for Settings {
             font: None,
             font_name: None,
             scale: 1.0,
+            corner_scale: 1.0,
             view_mode: ViewMode::List,
             sort_by: SortBy::Name,
             sort_order: SortOrder::Ascending,

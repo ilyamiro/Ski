@@ -242,7 +242,7 @@ impl SkiApp {
                     let fx = material::fx(ui, tab_id, &resp, true, &material::FxSpec::ROW);
                     let on = material::animate(&ctx, tab_id.with("on"), idx == active);
                     let base = material::selectable_bg(&theme, &fx, on);
-                    let rounded = egui::CornerRadius::same(material::RADIUS_MD);
+                    let rounded = egui::CornerRadius::same(material::radius_md());
                     material::paint_fill(ui.painter(), rect, rounded, base, &fx);
 
                     let color = material::lerp_color(material::lerp_color(theme.subtext0, theme.text, fx.hover), theme.mauve, on);

@@ -1,7 +1,7 @@
 //! Flat Material 3 style widgets. Nothing here draws a stroke: shape and state are
 //! communicated purely through fill colors (tonal surfaces and state layers). The one exception
 //! is the keyboard focus ring, which only shows while the keyboard drives the interface.
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use eframe::egui::{
     self, text::LayoutJob, text::TextWrapping, Align2, Color32, CornerRadius, Pos2, Rect, Vec2,
@@ -26,11 +26,22 @@ pub const SETTING_HEIGHT: f32 = 48.0;
 pub const KEYCAP_HEIGHT: f32 = 24.0;
 
 /// Shared Corner Radii (Material 3 scale)
-pub const RADIUS_SM: u8 = 8;         // Small elements, previews, thumbnails
-pub const RADIUS_MD: u8 = 12;        // Rows, cards, list items
-pub const RADIUS_LG: u8 = 18;        // Tiles, input fields, large controls
-pub const RADIUS_CONTAINER: u8 = 22; // Menus, popups, sub-panels, scroll boxes
-pub const RADIUS_WINDOW: u8 = 26;    // Dialogs and modal frames
+/// Each step is the Material size scaled by the theme's `border_radius` (16 px is the default).
+static RADIUS_SCALE: AtomicU32 = AtomicU32::new(1.0_f32.to_bits());
+
+pub fn set_radius_scale(scale: f32) {
+    RADIUS_SCALE.store(scale.clamp(0.0, 2.0).to_bits(), Ordering::Relaxed);
+}
+
+fn radius(base: u8) -> u8 {
+    (base as f32 * f32::from_bits(RADIUS_SCALE.load(Ordering::Relaxed))).round() as u8
+}
+
+pub fn radius_sm() -> u8 { radius(8) }          // Small elements, previews, thumbnails
+pub fn radius_md() -> u8 { radius(12) }         // Rows, cards, list items
+pub fn radius_lg() -> u8 { radius(18) }         // Tiles, input fields, large controls
+pub fn radius_container() -> u8 { radius(22) } // Menus, popups, sub-panels, scroll boxes
+pub fn radius_window() -> u8 { radius(26) }     // Dialogs and modal frames
 
 /// Shared Font Sizes
 pub const FONT_SECTION: f32 = 12.0;
@@ -50,10 +61,10 @@ pub const INSET_ICON: f32 = 22.0;
 pub const INSET_LABEL: f32 = 46.0;
 
 /// Shared State Layer / Tonal Fill Alphas
-pub const ALPHA_HOVER: u8 = 20;
-pub const ALPHA_PRESS: u8 = 36;
-pub const ALPHA_SEL_BG: u8 = 58;
-pub const ALPHA_SEL_HOVER: u8 = 74;
+pub const ALPHA_HOVER: u8 = 14;
+pub const ALPHA_PRESS: u8 = 26;
+pub const ALPHA_SEL_BG: u8 = 38;
+pub const ALPHA_SEL_HOVER: u8 = 50;
 pub const ALPHA_DIVIDER: u8 = 24;
 
 /// Shared motion
@@ -441,7 +452,7 @@ pub(crate) fn row_layer(theme: &SerpantinumTheme, fx: &Fx) -> Color32 {
 /// Row background that fades to the accent tint when selected.
 pub(crate) fn selectable_bg(theme: &SerpantinumTheme, fx: &Fx, sel_t: f32) -> Color32 {
     let sel_alpha = (ALPHA_SEL_BG as f32 + fx.hover * (ALPHA_SEL_HOVER - ALPHA_SEL_BG) as f32 + fx.press * 12.0).round() as u8;
-    lerp_color(row_layer(theme, fx), theme.with_alpha(theme.mauve, sel_alpha), sel_t)
+    lerp_color(row_layer(theme, fx), theme.tint(sel_alpha), sel_t)
 }
 
 pub(crate) fn scaled(rect: Rect, scale: f32) -> Rect {
@@ -576,8 +587,8 @@ pub fn chip(
         lerp_color(theme.surface2, theme.text, 0.08),
         fx.press,
     );
-    let active_alpha = (64.0 + fx.hover * 20.0 + fx.press * 16.0).round() as u8;
-    let active = blend_over(theme.surface1, theme.with_alpha(theme.mauve, active_alpha));
+    let active_alpha = (44.0 + fx.hover * 14.0 + fx.press * 12.0).round() as u8;
+    let active = blend_over(theme.surface1, theme.tint(active_alpha));
     paint_fill(ui.painter(), r, pill(r), lerp_color(idle, active, sel_t), &fx);
 
     let color = lerp_color(lerp_color(theme.subtext0, theme.text, fx.hover), theme.mauve, sel_t);
@@ -643,8 +654,8 @@ pub fn button(
         ),
         ButtonKind::Text => (
             lerp_color(
-                lerp_color(Color32::TRANSPARENT, theme.with_alpha(theme.mauve, 30), fx.hover),
-                theme.with_alpha(theme.mauve, 48),
+                lerp_color(Color32::TRANSPARENT, theme.tint(20), fx.hover),
+                theme.tint(34),
                 fx.press,
             ),
             theme.mauve,
@@ -717,7 +728,7 @@ pub fn segmented_in(
     let raw_indicator = Rect::from_min_size(Pos2::new(ix, inner.top()), Vec2::new(iw, inner.height()));
     let at_rest = (rel_x - target_rel_x).abs() <= 0.05 && (iw - target_w).abs() <= 0.05;
     let indicator = if at_rest { snap(ui.painter(), raw_indicator) } else { raw_indicator };
-    ui.painter().rect_filled(indicator, pill(indicator), blend_over(theme.surface1, theme.with_alpha(theme.mauve, 72)));
+    ui.painter().rect_filled(indicator, pill(indicator), blend_over(theme.surface1, theme.tint(52)));
 
     let mut clicked = None;
     let focus_rect = focus_rect.unwrap_or(rect);
@@ -761,7 +772,7 @@ pub fn segmented_in(
             clicked = Some(i);
         }
     }
-    let ring_radius = if focus_rect == rect { pill(rect) } else { CornerRadius::same(RADIUS_LG) };
+    let ring_radius = if focus_rect == rect { pill(rect) } else { CornerRadius::same(radius_lg()) };
     paint_focus_ring(ui.painter(), snap(ui.painter(), focus_rect), ring_radius, focus);
     clicked
 }
@@ -1015,7 +1026,7 @@ pub fn list_header(
         let active_t = animate(ui.ctx(), resp.id.with("act"), active);
         let bg_alpha = (hover * ALPHA_HOVER as f32 + press * (ALPHA_PRESS - ALPHA_HOVER) as f32).round() as u8;
         if bg_alpha > 0 {
-            ui.painter().rect_filled(snap(ui.painter(), cell), CornerRadius::same(RADIUS_SM), theme.with_alpha(theme.text, bg_alpha));
+            ui.painter().rect_filled(snap(ui.painter(), cell), CornerRadius::same(radius_sm()), theme.with_alpha(theme.text, bg_alpha));
         }
         let color = lerp_color(theme.subtext1, theme.text, hover.max(active_t));
         let font = egui::FontId::proportional(FONT_CAPTION);
@@ -1100,7 +1111,7 @@ pub fn file_row(
         theme.with_alpha(theme.peach, 28),
         cut_t * (1.0 - sel_t * 0.5),
     );
-    paint_fill(ui.painter(), r, CornerRadius::same(RADIUS_MD), bg, &fx);
+    paint_fill(ui.painter(), r, CornerRadius::same(radius_md()), bg, &fx);
 
     let fade = lerp(1.0, 0.58, cut_t);
     let icon_center = Pos2::new(r.left() + 28.0, r.center().y);
@@ -1111,7 +1122,7 @@ pub fn file_row(
     if let Some(tex) = thumb {
         ui.scope(|ui| {
             ui.set_opacity(fade * thumb_t);
-            paint_thumb(ui, tex, Rect::from_center_size(icon_center, Vec2::splat(32.0)), RADIUS_SM);
+            paint_thumb(ui, tex, Rect::from_center_size(icon_center, Vec2::splat(32.0)), radius_sm());
         });
     }
     if cut_t > 0.01 {
@@ -1215,7 +1226,7 @@ pub fn file_tile(
         theme.with_alpha(theme.peach, 28),
         cut_t * (1.0 - sel_t * 0.5),
     );
-    paint_fill(ui.painter(), r, CornerRadius::same(RADIUS_LG), bg, &fx);
+    paint_fill(ui.painter(), r, CornerRadius::same(radius_lg()), bg, &fx);
 
     let fade = lerp(1.0, 0.58, cut_t);
     // Anchor layout positions to `rect` so multi-line text baselines stay rock-steady during hover/press scaling
@@ -1234,7 +1245,7 @@ pub fn file_tile(
     if let Some(tex) = thumb {
         ui.scope(|ui| {
             ui.set_opacity(fade * thumb_t);
-            paint_thumb(ui, tex, scaled_picture, RADIUS_SM);
+            paint_thumb(ui, tex, scaled_picture, radius_sm());
         });
     }
     if cut_t > 0.01 {
@@ -1291,7 +1302,7 @@ pub fn switch_row_with(
     let id = ui.make_persistent_id(id_source);
     let fx = fx(ui, id, &response, true, &FxSpec::ROW);
     let t = animate(ui.ctx(), id.with("on"), on);
-    paint_fill(ui.painter(), rect, CornerRadius::same(RADIUS_LG), row_layer(theme, &fx), &fx);
+    paint_fill(ui.painter(), rect, CornerRadius::same(radius_lg()), row_layer(theme, &fx), &fx);
 
     paint_icon(ui.painter(), Pos2::new(rect.left() + INSET_ICON + 2.0, rect.center().y), icon, ICON_MD, lerp_color(theme.subtext0, theme.mauve, t));
     let text_x = rect.left() + INSET_LABEL + 2.0;
@@ -1324,7 +1335,7 @@ fn menu_row_frame(ui: &mut egui::Ui, id_source: impl std::hash::Hash + std::fmt:
     let (rect, response) = ui.allocate_exact_size(Vec2::new(ui.available_width(), MENU_ROW_HEIGHT), egui::Sense::click());
     let id = ui.make_persistent_id(id_source);
     let fx = fx(ui, id, &response, true, &FxSpec::ROW);
-    paint_fill(ui.painter(), rect, CornerRadius::same(RADIUS_SM), row_layer(theme, &fx), &fx);
+    paint_fill(ui.painter(), rect, CornerRadius::same(radius_sm()), row_layer(theme, &fx), &fx);
     (rect, response, fx)
 }
 
@@ -1575,7 +1586,7 @@ pub fn section_label(ui: &mut egui::Ui, text: &str, theme: &SerpantinumTheme) {
 pub fn group_card<R>(ui: &mut egui::Ui, theme: &SerpantinumTheme, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
     egui::Frame::new()
         .fill(theme.surface0)
-        .corner_radius(CornerRadius::same(RADIUS_CONTAINER))
+        .corner_radius(CornerRadius::same(radius_container()))
         .inner_margin(egui::Margin::same(6))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
@@ -1693,7 +1704,7 @@ pub fn divider(ui: &mut egui::Ui, theme: &SerpantinumTheme) {
 pub fn input_frame(theme: &SerpantinumTheme) -> egui::Frame {
     egui::Frame::new()
         .fill(theme.surface1)
-        .corner_radius(CornerRadius::same(RADIUS_LG))
+        .corner_radius(CornerRadius::same(radius_lg()))
         .inner_margin(egui::Margin::symmetric(14, 8))
 }
 
@@ -1726,7 +1737,7 @@ pub fn empty_state(ui: &mut egui::Ui, theme: &SerpantinumTheme, icon: &str, titl
 pub fn keycap(ui: &mut egui::Ui, text: &str, theme: &SerpantinumTheme) -> egui::Response {
     let galley = ui.painter().layout_no_wrap(text.to_owned(), egui::FontId::proportional(FONT_CAPTION), theme.subtext0);
     let (rect, response) = ui.allocate_exact_size(Vec2::new(galley.size().x + 20.0, KEYCAP_HEIGHT), egui::Sense::hover());
-    ui.painter().rect_filled(snap(ui.painter(), rect), CornerRadius::same(RADIUS_SM), theme.surface2);
+    ui.painter().rect_filled(snap(ui.painter(), rect), CornerRadius::same(radius_sm()), theme.surface2);
     ui.painter().galley(Pos2::new(rect.left() + 10.0, rect.center().y - galley.size().y / 2.0), galley, theme.subtext0);
     response
 }
@@ -1751,9 +1762,9 @@ pub fn paint_rubberband_faded(painter: &egui::Painter, rect: Rect, theme: &Serpa
         return;
     }
     let rect = snap(painter, rect);
-    let radius = CornerRadius::same(RADIUS_MD);
-    let fill = theme.with_alpha(theme.mauve, (34.0 * t).round() as u8);
-    let stroke = egui::Stroke::new(1.0, theme.with_alpha(theme.mauve, (110.0 * t).round() as u8));
+    let radius = CornerRadius::same(radius_md());
+    let fill = theme.tint((26.0 * t).round() as u8);
+    let stroke = egui::Stroke::new(1.0, theme.tint((80.0 * t).round() as u8));
     painter.rect(rect, radius, fill, stroke, egui::StrokeKind::Inside);
 }
 
@@ -1768,7 +1779,7 @@ pub fn checkbox(ui: &mut egui::Ui, id_source: impl std::hash::Hash + std::fmt::D
     let off = lerp_color(theme.surface2, theme.surface2.gamma_multiply(1.0), fx.hover);
     let hover_layer = row_layer(theme, &fx);
     let fill = lerp_color(blend_over(off, hover_layer), theme.mauve, t);
-    paint_fill(ui.painter(), r, CornerRadius::same(RADIUS_SM), fill.gamma_multiply(lerp(0.55, 1.0, en_t)), &fx);
+    paint_fill(ui.painter(), r, CornerRadius::same(radius_sm()), fill.gamma_multiply(lerp(0.55, 1.0, en_t)), &fx);
     if t > 0.01 {
         paint_icon(ui.painter(), r.center(), icons::CHECK, 16.0 * (0.6 + 0.4 * t), on_color(theme, theme.mauve).gamma_multiply(t * lerp(0.6, 1.0, en_t)));
     }

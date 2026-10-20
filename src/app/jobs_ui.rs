@@ -242,7 +242,7 @@ impl SkiApp {
                 ui.set_opacity(t);
                 egui::Frame::new()
                     .fill(theme.mantle)
-                    .corner_radius(egui::CornerRadius::same(material::RADIUS_CONTAINER))
+                    .corner_radius(egui::CornerRadius::same(material::radius_container()))
                     .shadow(ctx.global_style().visuals.window_shadow)
                     .inner_margin(egui::Margin::same(10))
                     .show(ui, |ui| {
@@ -280,7 +280,7 @@ impl SkiApp {
         let running = row.state == JobState::Running;
         let height = if running { 76.0 } else { 56.0 };
         let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), height), egui::Sense::hover());
-        ui.painter().rect_filled(material::snap(ui.painter(), rect), egui::CornerRadius::same(material::RADIUS_MD), theme.surface1);
+        ui.painter().rect_filled(material::snap(ui.painter(), rect), egui::CornerRadius::same(material::radius_md()), theme.surface1);
 
         let (icon, tint) = match row.state {
             JobState::Running => (job_icon(row.kind), theme.mauve),

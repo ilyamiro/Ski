@@ -338,6 +338,13 @@ impl SkiApp {
                 ui.ctx().set_zoom_factor(scales[i]);
                 self.persist_settings();
             }
+            const CORNERS: [f32; 4] = [0.0, 0.6, 1.0, 1.4];
+            let corners = CORNERS.iter().position(|c| (self.settings.corner_scale - c).abs() < 0.01).unwrap_or(2);
+            if let Some(i) = choice_row(ui, "corners", icons::GRID_VIEW, tr("Corners"), &[tr("Square"), tr("Soft"), tr("Default"), tr("Round")], corners, &theme) {
+                self.settings.corner_scale = CORNERS[i];
+                self.rebuild_theme();
+                self.persist_settings();
+            }
             if switch_row_with(ui, "app_animations", icons::REFRESH, tr("Animations"), None, &theme, self.settings.animations).clicked() {
                 self.settings.animations = !self.settings.animations;
                 self.persist_settings();
@@ -701,7 +708,7 @@ impl SkiApp {
             ui.add_space(4.0);
             egui::Frame::new()
                 .fill(theme.with_alpha(theme.yellow, 30))
-                .corner_radius(CornerRadius::same(material::RADIUS_MD))
+                .corner_radius(CornerRadius::same(material::radius_md()))
                 .inner_margin(egui::Margin::symmetric(14, 10))
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
@@ -1043,8 +1050,8 @@ fn keycap_pill(
 
     // Flat tonal fill only: lighter on hover/press, accent tint while waiting for a key
     let idle = material::lerp_color(theme.surface2, theme.text, 0.10 * fx.hover + 0.06 * fx.press);
-    let bg = material::lerp_color(idle, material::lerp_color(theme.surface2, theme.mauve, 0.28), on);
-    material::paint_fill(ui.painter(), r, CornerRadius::same(material::RADIUS_SM), bg, &fx);
+    let bg = material::lerp_color(idle, material::lerp_color(theme.surface2, theme.mauve, 0.2), on);
+    material::paint_fill(ui.painter(), r, CornerRadius::same(material::radius_sm()), bg, &fx);
 
     let text_color = material::lerp_color(material::lerp_color(theme.subtext0, theme.text, fx.hover.max(fx.press)), theme.mauve, on);
     let text_pos = Pos2::new(rect.left() + 10.0, rect.center().y - galley.size().y / 2.0);
@@ -1108,14 +1115,14 @@ fn theme_card(
     let r = material::scaled(rect, fx.scale);
 
     let idle = material::lerp_color(theme.surface1, theme.surface2, fx.hover.max(fx.press * 0.8));
-    let selected_fill = material::lerp_color(theme.surface1, theme.mauve, 0.35 + fx.hover * 0.06);
+    let selected_fill = material::lerp_color(theme.surface1, theme.mauve, 0.26 + fx.hover * 0.05);
     let back = material::lerp_color(idle, selected_fill, sel);
-    material::paint_fill(ui.painter(), r, CornerRadius::same(material::RADIUS_LG), back, &fx);
+    material::paint_fill(ui.painter(), r, CornerRadius::same(material::radius_lg()), back, &fx);
     let swatch_rect = egui::Rect::from_min_size(r.min + egui::vec2(8.0, 8.0), egui::vec2(r.width() - 16.0, 46.0));
     let painter = ui.painter();
-    painter.rect_filled(swatch_rect, CornerRadius::same(material::RADIUS_MD), preview.base);
+    painter.rect_filled(swatch_rect, CornerRadius::same(material::radius_md()), preview.base);
     let bar = egui::Rect::from_min_size(swatch_rect.min + egui::vec2(6.0, 6.0), egui::vec2(swatch_rect.width() * 0.5, 34.0));
-    painter.rect_filled(bar, CornerRadius::same(material::RADIUS_SM), preview.surface1);
+    painter.rect_filled(bar, CornerRadius::same(material::radius_sm()), preview.surface1);
     painter.rect_filled(
         egui::Rect::from_min_size(bar.min + egui::vec2(6.0, 6.0), egui::vec2(bar.width() - 12.0, 6.0)),
         CornerRadius::same(3),

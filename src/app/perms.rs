@@ -21,7 +21,7 @@ pub(super) fn permission_card(ui: &mut egui::Ui, theme: &SerpantinumTheme, full:
     let mut action = PermAction::default();
     let mut mode = mode & 0o7777;
     material::section_label(ui, tr("Permissions"), theme);
-    egui::Frame::new().fill(theme.surface1).corner_radius(egui::CornerRadius::same(material::RADIUS_CONTAINER)).show(ui, |ui| {
+    egui::Frame::new().fill(theme.surface1).corner_radius(egui::CornerRadius::same(material::radius_container())).show(ui, |ui| {
         ui.set_width(full);
         ui.spacing_mut().item_spacing.y = 0.0;
         ui.add_space(4.0);

@@ -335,6 +335,8 @@ pub struct SkiApp {
     menu: Option<ContextMenu>,
     pub(crate) dialog: Option<Dialog>,
     picker: Option<Picker>,
+    /// The selection summary the pill still shows while it fades out.
+    pill_text: String,
     /// Set when Ski runs as the open / save dialog of other programs.
     pub(crate) chooser: Option<crate::chooser::Chooser>,
     pub(crate) closing_dialog: Option<Dialog>,
@@ -448,6 +450,7 @@ impl SkiApp {
             menu: None,
             dialog: None,
             picker: None,
+            pill_text: String::new(),
             chooser: None,
             closing_dialog: None,
             dialog_kind: None,
@@ -927,6 +930,7 @@ impl SkiApp {
                 theme.blue = a;
             }
         }
+        theme.border_radius = crate::ui::theme::BASE_RADIUS * self.settings.corner_scale;
         if theme != self.target_theme {
             self.from_theme = self.theme;
             self.target_theme = theme;
@@ -1596,21 +1600,9 @@ impl eframe::App for SkiApp {
             .show(ui, |ui| self.render_top_bar(ui, sidebar_visible));
         self.render_tab_bar(ui);
 
-        let status_t = material::animate(ui.ctx(), egui::Id::unique("status_bar_anim"), self.settings.show_status_bar);
-        if status_t > 0.001 {
-            egui::Panel::bottom("status_bar")
-                .exact_size((30.0 * status_t).max(1.0))
-                .resizable(false)
-                .frame(egui::Frame::new().fill(self.theme.base).inner_margin(egui::Margin::symmetric(PAGE_MARGIN + CONTENT_INSET, 0)))
-                .show(ui, |ui| {
-                    ui.set_opacity(status_t);
-                    self.render_status_bar(ui);
-                });
-        }
-
         self.render_chooser_bar(ui);
 
-        egui::CentralPanel::default()
+        let central = egui::CentralPanel::default()
             .frame(
                 egui::Frame::new()
                     .fill(self.theme.base)
@@ -1675,6 +1667,7 @@ impl eframe::App for SkiApp {
                     });
                 }
             });
+        self.render_selection_pill(&ctx, central.response.rect);
 
         self.render_settings(&ctx);
         self.render_jobs_popover(&ctx);
@@ -1749,7 +1742,7 @@ impl SkiApp {
                     self.theme.surface2,
                     pill_edit,
                 );
-                let pill_radius = if self.show_search { egui::CornerRadius::same(material::RADIUS_MD) } else { material::pill(title_rect) };
+                let pill_radius = if self.show_search { egui::CornerRadius::same(material::radius_md()) } else { material::pill(title_rect) };
                 ui.painter().rect_filled(material::snap(ui.painter(), title_rect), pill_radius, pill_fill);
 
                 if self.show_search {
@@ -2601,43 +2594,68 @@ impl SkiApp {
     }
 
     /// One quiet line under the listing: what is shown or selected, and what waits in the clipboard.
-    fn render_status_bar(&self, ui: &mut egui::Ui) {
-        let theme = self.theme;
-        let rect = ui.max_rect();
-        let cy = rect.center().y;
-        let font = egui::FontId::proportional(material::FONT_CAPTION);
-
-        let total = self.items.len();
-        let text = if self.selection.is_empty() {
-            let results = self.is_mixed_listing() && !self.in_recent();
-            let more = if self.search.is_running() { "…" } else { "" };
-            let filter = if self.type_filter == TypeFilter::All { String::new() } else { format!(" · {}", self.type_filter.label()) };
-            // A search stops collecting at its limit, so the count is a floor
-            let capped = !self.search_query.trim().is_empty() && total >= crate::fs::search::MAX_RESULTS;
-            let count = match (results, capped) {
-                (true, true) => trf("{}+ results", &[&total]),
-                (true, false) => trn(total, "{} result", "{} results"),
-                (false, true) => trf("{}+ items", &[&total]),
-                (false, false) => trn(total, "{} item", "{} items"),
-            };
-            format!("{count}{more}{filter}")
-        } else {
-            let selected: Vec<&FileItem> = self.selection.iter().filter_map(|i| self.items.get(*i)).collect();
+    /// What the selection holds, e.g. "2 folders, 5 files selected · 11.8 GB"; `None` when nothing is selected.
+    fn selection_summary(&self) -> Option<String> {
+        let selected: Vec<&FileItem> = self.selection.iter().filter_map(|i| self.items.get(*i)).collect();
+        if selected.is_empty() {
+            return None;
+        }
+        let folders = selected.iter().filter(|i| i.is_dir).count();
+        let files = selected.len() - folders;
+        let mut parts = Vec::new();
+        if folders > 0 {
+            parts.push(trn(folders, "{} folder", "{} folders"));
+        }
+        if files > 0 {
+            parts.push(trn(files, "{} file", "{} files"));
+        }
+        let mut text = trf("{} selected", &[&parts.join(", ")]);
+        if files > 0 {
             let size: u64 = selected.iter().filter(|i| !i.is_dir).map(|i| i.size).sum();
-            let mut text = trf("{} of {} selected", &[&selected.len(), &total]);
-            if selected.iter().any(|i| !i.is_dir) {
-                text.push_str(&format!(" · {}", crate::fs::file_item::format_bytes(size)));
-            }
-            text
-        };
-        ui.painter().text(egui::pos2(rect.left(), cy), egui::Align2::LEFT_CENTER, text, font.clone(), theme.subtext1);
+            text.push_str(&format!(" · {}", crate::fs::file_item::format_bytes(size)));
+        }
+        Some(text)
+    }
 
+    /// Floating pill over the lower left of the listing, there only while something is selected;
+    /// a second one on the right while files wait to be pasted. Clicks pass through both.
+    fn render_selection_pill(&mut self, ctx: &egui::Context, area: egui::Rect) {
+        let theme = self.theme;
+        let summary = self.selection_summary().filter(|_| self.settings.show_status_bar);
+        if let Some(text) = &summary {
+            self.pill_text.clone_from(text);
+        }
+        let t = material::animate(ctx, egui::Id::unique("selection_pill"), summary.is_some());
+        let pill = |id: &'static str, pos: egui::Pos2, align: egui::Align2, t: f32, icon: Option<&str>, text: &str| {
+            egui::Area::new(egui::Id::unique(id))
+                .order(egui::Order::Foreground)
+                .pivot(align)
+                .fixed_pos(pos + egui::vec2(0.0, (1.0 - t) * 6.0))
+                .interactable(false)
+                .show(ctx, |ui| {
+                    ui.set_opacity(t);
+                    egui::Frame::new()
+                        .fill(theme.surface1)
+                        .corner_radius(egui::CornerRadius::same(255))
+                        .shadow(ctx.global_style().visuals.popup_shadow)
+                        .inner_margin(egui::Margin::symmetric(14, 6))
+                        .show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.spacing_mut().item_spacing.x = 6.0;
+                                if let Some(icon) = icon {
+                                    material::inline_icon(ui, icon, material::ICON_XS, theme.subtext1);
+                                }
+                                ui.label(egui::RichText::new(text).size(material::FONT_CAPTION).color(theme.text));
+                            });
+                        });
+                });
+        };
+        if t > 0.001 {
+            pill("selection_pill_area", area.left_bottom() + egui::vec2(14.0, -12.0), egui::Align2::LEFT_BOTTOM, t, None, &self.pill_text);
+        }
         if let Some((paths, cut)) = &self.clipboard {
-            let label = if *cut { trf("{} ready to move", &[&paths.len()]) } else { trf("{} ready to copy", &[&paths.len()]) };
-            let galley = ui.painter().layout_no_wrap(label, font, theme.subtext1);
-            let x = rect.right() - galley.size().x;
-            ui.painter().galley(egui::pos2(x, cy - galley.size().y / 2.0), galley, theme.subtext1);
-            material::paint_icon(ui.painter(), egui::pos2(x - 14.0, cy), if *cut { icons::CUT } else { icons::COPY }, material::ICON_XS, theme.subtext1);
+            let (label, icon) = if *cut { (trf("{} ready to move", &[&paths.len()]), icons::CUT) } else { (trf("{} ready to copy", &[&paths.len()]), icons::COPY) };
+            pill("clipboard_pill_area", area.right_bottom() + egui::vec2(-14.0, -12.0), egui::Align2::RIGHT_BOTTOM, 1.0, Some(icon), &label);
         }
     }
 
@@ -2653,7 +2671,7 @@ impl SkiApp {
         let target = if self.can_modify_here() { trf("Drop to copy into “{}”", &[&self.location_name()]) } else { tr("Open a regular folder to drop files").to_owned() };
         egui::Area::new(egui::Id::unique("drop_overlay")).order(egui::Order::Foreground).fixed_pos(screen.min).interactable(false).show(ctx, |ui| {
             let (rect, _) = ui.allocate_exact_size(screen.size(), egui::Sense::hover());
-            ui.painter().rect_filled(rect, 0, theme.with_alpha(theme.mauve, (28.0 * t).round() as u8));
+            ui.painter().rect_filled(rect, 0, theme.tint((20.0 * t).round() as u8));
             let galley = ui.painter().layout_no_wrap(target, egui::FontId::proportional(material::FONT_SUBTITLE), theme.text.gamma_multiply(t));
             let scale = material::lerp(0.94, 1.0, t);
             let pill = egui::Rect::from_center_size(
@@ -2685,7 +2703,7 @@ impl SkiApp {
                 let right = if has_action { 8 } else { 20 };
                 egui::Frame::new()
                     .fill(theme.surface2)
-                    .corner_radius(egui::CornerRadius::same(material::RADIUS_LG))
+                    .corner_radius(egui::CornerRadius::same(material::radius_lg()))
                     .shadow(ctx.global_style().visuals.window_shadow)
                     .inner_margin(egui::Margin { left: 20, right, top: 6, bottom: 6 })
                     .show(ui, |ui| {
@@ -2735,7 +2753,7 @@ impl SkiApp {
                 ui.set_opacity(t);
                 egui::Frame::new()
                     .fill(self.theme.mantle)
-                    .corner_radius(egui::CornerRadius::same(material::RADIUS_CONTAINER))
+                    .corner_radius(egui::CornerRadius::same(material::radius_container()))
                     .shadow(ctx.global_style().visuals.window_shadow)
                     .inner_margin(egui::Margin::same(10))
                     .show(ui, |ui| {
@@ -3454,7 +3472,7 @@ impl SkiApp {
                 ui.set_opacity(t);
                 egui::Frame::new()
                     .fill(self.theme.mantle)
-                    .corner_radius(egui::CornerRadius::same(material::RADIUS_CONTAINER))
+                    .corner_radius(egui::CornerRadius::same(material::radius_container()))
                     .shadow(ctx.global_style().visuals.window_shadow)
                     .inner_margin(egui::Margin::same(8))
                     .show(ui, |ui| {
@@ -3592,7 +3610,7 @@ impl SkiApp {
                 ui.set_opacity(t);
                 egui::Frame::new()
                     .fill(self.theme.mantle)
-                    .corner_radius(egui::CornerRadius::same(material::RADIUS_WINDOW))
+                    .corner_radius(egui::CornerRadius::same(material::radius_window()))
                     .shadow(ctx.global_style().visuals.window_shadow)
                     .inner_margin(egui::Margin::same(20))
                     .show(ui, |ui| {
@@ -4459,11 +4477,11 @@ impl SkiApp {
         // Header: icon tile, name, one-line summary
         ui.vertical_centered(|ui| {
             let (tile, _) = ui.allocate_exact_size(egui::vec2(88.0, 88.0), egui::Sense::hover());
-            ui.painter().rect_filled(tile, egui::CornerRadius::same(material::RADIUS_WINDOW), theme.surface1);
+            ui.painter().rect_filled(tile, egui::CornerRadius::same(material::radius_window()), theme.surface1);
             match thumb_for(&self.thumbs, &self.folder_icons, item, self.settings.show_thumbnails) {
                 Some(tex) => {
                     egui::Image::from_texture(egui::load::SizedTexture::new(tex.id(), egui::vec2(64.0, 64.0)))
-                        .corner_radius(egui::CornerRadius::same(material::RADIUS_MD))
+                        .corner_radius(egui::CornerRadius::same(material::radius_md()))
                         .paint_at(ui, egui::Rect::from_center_size(tile.center(), egui::vec2(64.0, 64.0)));
                 }
                 None => {
@@ -4511,7 +4529,7 @@ impl SkiApp {
                 let ownership = tr("Ownership");
                 for (title, rows) in groups.iter().filter(|(title, _)| (*title == ownership) == (*tab == 1)) {
                     material::section_label(ui, title, &theme);
-                    egui::Frame::new().fill(theme.surface1).corner_radius(egui::CornerRadius::same(material::RADIUS_CONTAINER)).show(ui, |ui| {
+                    egui::Frame::new().fill(theme.surface1).corner_radius(egui::CornerRadius::same(material::radius_container())).show(ui, |ui| {
                         ui.set_width(full);
                         ui.spacing_mut().item_spacing.y = 0.0;
                         for (idx, (label, value)) in rows.iter().enumerate() {

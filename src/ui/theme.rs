@@ -66,6 +66,9 @@ impl Default for SerpantinumTheme {
     }
 }
 
+/// The `border_radius` of the unchanged Material look; the corner setting scales it.
+pub const BASE_RADIUS: f32 = 16.0;
+
 /// Named palettes: base, mantle, crust, text, subtext0, subtext1, surface0-2, accent, peach, green, red.
 pub const PRESETS: [(&str, &str, [&str; 13], bool); 4] = [
     ("midnight", "Midnight", ["#0b0e14", "#151a23", "#10141b", "#dfe6f3", "#b4bfd3", "#7d889c", "#181e29", "#212938", "#2b3446", "#8ab4f8", "#f2b8a2", "#9bd3a8", "#f28b82"], false),
@@ -96,6 +99,7 @@ impl SerpantinumTheme {
             theme.mauve = accent;
             theme.blue = accent;
         }
+        theme.border_radius = BASE_RADIUS * settings.corner_scale;
         theme
     }
 
@@ -141,6 +145,12 @@ impl SerpantinumTheme {
         }
 
         theme
+    }
+
+    /// The accent softened toward the text color, for the selection, focus and hover tints: the
+    /// same calm shade everywhere instead of the full accent at several strengths.
+    pub fn tint(&self, alpha: u8) -> Color32 {
+        self.with_alpha(super::material::lerp_color(self.mauve, self.text, 0.22), alpha)
     }
 
     /// Semi-transparent color
@@ -194,9 +204,10 @@ pub fn parse_hex(hex: &str) -> Option<Color32> {
 
 /// Flat Material look: no strokes anywhere, state is shown by fills only.
 pub fn apply(ctx: &egui::Context, theme: &SerpantinumTheme) {
+    super::material::set_radius_scale(theme.border_radius / BASE_RADIUS);
     let mut visuals = if theme.light { egui::Visuals::light() } else { egui::Visuals::dark() };
-    visuals.window_corner_radius = egui::CornerRadius::same(super::material::RADIUS_WINDOW);
-    visuals.menu_corner_radius = egui::CornerRadius::same(super::material::RADIUS_CONTAINER);
+    visuals.window_corner_radius = egui::CornerRadius::same(super::material::radius_window());
+    visuals.menu_corner_radius = egui::CornerRadius::same(super::material::radius_container());
     visuals.window_stroke = egui::Stroke::NONE;
     visuals.popup_shadow = egui::Shadow::NONE;
     visuals.window_shadow = egui::Shadow {
@@ -217,7 +228,7 @@ pub fn apply(ctx: &egui::Context, theme: &SerpantinumTheme) {
     w.open.bg_fill = theme.surface2;
     // Flat look: no outline, but the stroke color is also what selected text is drawn in
     visuals.selection.stroke = egui::Stroke::new(0.0, theme.text);
-    visuals.selection.bg_fill = theme.with_alpha(theme.mauve, super::material::ALPHA_SEL_BG);
+    visuals.selection.bg_fill = theme.tint(super::material::ALPHA_SEL_BG);
     visuals.panel_fill = theme.base;
     visuals.window_fill = theme.mantle;
     visuals.extreme_bg_color = theme.surface1;

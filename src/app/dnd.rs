@@ -98,7 +98,7 @@ impl SkiApp {
         let layer = egui::LayerId::new(egui::Order::Foreground, egui::Id::unique("item_drag"));
         let painter = ctx.layer_painter(layer);
         if let Some((_, rect)) = &target {
-            painter.rect_filled(*rect, egui::CornerRadius::same(material::RADIUS_MD), theme.with_alpha(theme.mauve, 46));
+            painter.rect_filled(*rect, egui::CornerRadius::same(material::radius_md()), theme.tint(34));
         }
 
         let what = Self::describe_count(&items);
