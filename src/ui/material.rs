@@ -1,5 +1,6 @@
 //! Flat Material 3 style widgets. Nothing here draws a stroke: shape and state are
-//! communicated purely through fill colors (tonal surfaces and state layers).
+//! communicated purely through fill colors (tonal surfaces and state layers). The one exception
+//! is the keyboard focus ring, which only shows while the keyboard drives the interface.
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use eframe::egui::{
@@ -229,6 +230,106 @@ pub struct Fx {
     pub press: f32,
     pub scale: f32,
     pub flash: f32,
+    /// 0 -> 1 while the widget has keyboard focus and the keyboard is what the user is using.
+    pub focus: f32,
+}
+
+/// Which input device the user touched last, so the focus ring shows for keyboard navigation
+/// and never lingers on a widget that was merely clicked.
+#[derive(Clone, Copy, Default)]
+struct InputMode {
+    keyboard: bool,
+    /// Tab was used since the pointer last moved: the ring shows even without an overlay.
+    tab: bool,
+    /// A dialog, menu or popover is open: any key means keyboard navigation.
+    overlay: bool,
+}
+
+fn input_mode_id() -> egui::Id {
+    egui::Id::unique("ski_input_mode")
+}
+
+/// Call once per frame, before drawing. `overlay` is true while a dialog, menu or popover is open.
+pub fn track_input_mode(ctx: &egui::Context, overlay: bool) {
+    let (key, tab, pointer) = ctx.input(|i| {
+        let (mut key, mut tab, mut pointer) = (false, false, false);
+        for event in &i.events {
+            match event {
+                egui::Event::Key { key: k, pressed: true, .. } => {
+                    key = true;
+                    tab |= *k == egui::Key::Tab;
+                }
+                egui::Event::PointerMoved(_) | egui::Event::PointerButton { .. } | egui::Event::MouseWheel { .. } => pointer = true,
+                _ => {}
+            }
+        }
+        (key, tab, pointer)
+    });
+    ctx.data_mut(|d| {
+        let mode = d.get_temp_mut_or_default::<InputMode>(input_mode_id());
+        mode.overlay = overlay;
+        if key {
+            mode.keyboard = true;
+            // Outside overlays only Tab asks for a focus ring; the arrow keys move the file selection
+            mode.tab = tab || (mode.tab && overlay);
+        } else if pointer {
+            mode.keyboard = false;
+            mode.tab = false;
+        }
+    });
+}
+
+fn dialog_fresh_id() -> egui::Id {
+    egui::Id::unique("ski_dialog_fresh")
+}
+
+/// True on the first frame a dialog is shown, when it should put keyboard focus somewhere sensible.
+pub fn dialog_fresh(ctx: &egui::Context) -> bool {
+    ctx.data(|d| d.get_temp::<bool>(dialog_fresh_id())).unwrap_or(false)
+}
+
+pub fn set_dialog_fresh(ctx: &egui::Context, fresh: bool) {
+    ctx.data_mut(|d| d.insert_temp(dialog_fresh_id(), fresh));
+}
+
+/// Whether focus rings should be drawn right now.
+pub fn focus_visible(ctx: &egui::Context) -> bool {
+    let mode = ctx.data(|d| d.get_temp::<InputMode>(input_mode_id())).unwrap_or_default();
+    mode.keyboard && (mode.overlay || mode.tab)
+}
+
+fn focus_color_id() -> egui::Id {
+    egui::Id::unique("ski_focus_color")
+}
+
+/// The accent the focus ring is drawn in; set whenever the theme is applied.
+pub fn set_focus_color(ctx: &egui::Context, color: Color32) {
+    ctx.data_mut(|d| d.insert_temp(focus_color_id(), color));
+}
+
+pub fn focus_color(ctx: &egui::Context) -> Color32 {
+    ctx.data(|d| d.get_temp::<Color32>(focus_color_id())).unwrap_or(Color32::from_rgb(180, 140, 255))
+}
+
+/// Ring around a focused widget. `t` is the focus fade from `Fx::focus`.
+pub fn paint_focus_ring(painter: &egui::Painter, rect: Rect, radius: CornerRadius, t: f32) {
+    if t > 0.01 {
+        let stroke = egui::Stroke::new(2.0, focus_color(painter.ctx()).gamma_multiply(t));
+        painter.rect_stroke(rect, radius, stroke, egui::StrokeKind::Inside);
+    }
+}
+
+/// While `resp` has focus, take the arrow keys it handles itself (horizontally, vertically or
+/// both) away from egui's own focus movement and return the one that was pressed.
+pub fn take_arrow(ctx: &egui::Context, resp: &egui::Response, horizontal: bool, vertical: bool) -> Option<egui::Key> {
+    if !resp.has_focus() {
+        return None;
+    }
+    ctx.memory_mut(|m| {
+        m.set_focus_lock_filter(resp.id, egui::EventFilter { horizontal_arrows: horizontal, vertical_arrows: vertical, ..Default::default() })
+    });
+    let keys = [(horizontal, egui::Key::ArrowLeft), (horizontal, egui::Key::ArrowRight), (vertical, egui::Key::ArrowUp), (vertical, egui::Key::ArrowDown)];
+    ctx.input_mut(|i| keys.into_iter().find(|(on, key)| *on && i.consume_key(egui::Modifiers::NONE, *key)).map(|(_, key)| key))
 }
 
 pub struct FxSpec {
@@ -246,7 +347,12 @@ impl FxSpec {
 
 pub fn fx(ui: &egui::Ui, id: egui::Id, resp: &egui::Response, enabled: bool, spec: &FxSpec) -> Fx {
     let ctx = ui.ctx();
-    let hover = animate(ctx, id.with("hov"), enabled && resp.hovered());
+    let focused = enabled && resp.has_focus() && focus_visible(ctx);
+    if enabled && resp.gained_focus() {
+        resp.scroll_to_me(None);
+    }
+    let focus = animate_for(ctx, id.with("foc"), focused, ANIM_FAST);
+    let hover = animate(ctx, id.with("hov"), enabled && resp.hovered()).max(focus);
     let press = animate_for(ctx, id.with("prs"), enabled && resp.is_pointer_button_down_on(), ANIM_FAST);
 
     let now = ctx.input(|i| i.time);
@@ -282,7 +388,7 @@ pub fn fx(ui: &egui::Ui, id: egui::Id, resp: &egui::Response, enabled: bool, spe
 
     let base_scale = lerp(lerp(1.0, spec.hover_scale, hover), spec.press_scale, press);
     let scale = base_scale * pop;
-    Fx { hover, press, scale, flash }
+    Fx { hover, press, scale, flash, focus }
 }
 
 fn flash_color(flash: f32) -> Color32 {
@@ -351,6 +457,7 @@ pub(crate) fn paint_fill(painter: &egui::Painter, rect: Rect, radius: CornerRadi
     if fx.flash > 0.0 {
         painter.rect_filled(rect, radius, flash_color(fx.flash));
     }
+    paint_focus_ring(painter, rect, radius, fx.focus);
 }
 
 pub fn paint_icon(painter: &egui::Painter, center: Pos2, icon: &str, size: f32, color: Color32) {
@@ -565,6 +672,20 @@ pub fn segmented(
     selected: usize,
     theme: &SerpantinumTheme,
 ) -> Option<usize> {
+    segmented_in(ui, id_source, options, selected, theme, None)
+}
+
+/// `segmented` whose keyboard focus covers `focus_rect` (a settings row) instead of just the
+/// control, so Up and Down find it from any row. The whole control is one Tab stop: Left and
+/// Right (Home and End) pick the choice.
+pub fn segmented_in(
+    ui: &mut egui::Ui,
+    id_source: impl std::hash::Hash + std::fmt::Debug,
+    options: &[&str],
+    selected: usize,
+    theme: &SerpantinumTheme,
+    focus_rect: Option<Rect>,
+) -> Option<usize> {
     let font = egui::FontId::proportional(FONT_CHIP);
     let widths: Vec<f32> = options
         .iter()
@@ -599,8 +720,34 @@ pub fn segmented(
     ui.painter().rect_filled(indicator, pill(indicator), blend_over(theme.surface1, theme.with_alpha(theme.mauve, 72)));
 
     let mut clicked = None;
+    let focus_rect = focus_rect.unwrap_or(rect);
+    let focus_resp = ui.interact(focus_rect, id.with("focus"), egui::Sense::focusable_noninteractive());
+    let focus = animate_for(ui.ctx(), id.with("foc"), focus_resp.has_focus() && focus_visible(ui.ctx()), ANIM_FAST);
+    if focus_resp.gained_focus() {
+        focus_resp.scroll_to_me(None);
+    }
+    // Left and right pick the neighbouring choice, like any radio group
+    let next = take_arrow(ui.ctx(), &focus_resp, true, false)
+        .map(|key| (selected as i32 + if key == egui::Key::ArrowLeft { -1 } else { 1 }).clamp(0, options.len() as i32 - 1) as usize)
+        .or_else(|| {
+            if !focus_resp.has_focus() {
+                return None;
+            }
+            ui.ctx().input_mut(|i| {
+                if i.consume_key(egui::Modifiers::NONE, egui::Key::Home) {
+                    Some(0)
+                } else if i.consume_key(egui::Modifiers::NONE, egui::Key::End) {
+                    Some(options.len() - 1)
+                } else {
+                    None
+                }
+            })
+        });
+    if let Some(next) = next.filter(|n| *n != selected) {
+        clicked = Some(next);
+    }
     for (i, (cell, label)) in cells.iter().zip(options).enumerate() {
-        let resp = ui.interact(*cell, id.with(i), egui::Sense::click());
+        let resp = ui.interact(*cell, id.with(i), egui::Sense::CLICK);
         let hover = animate(ui.ctx(), id.with(("hov", i)), resp.hovered() && i != selected);
         let press = animate_for(ui.ctx(), id.with(("prs", i)), resp.is_pointer_button_down_on() && i != selected, ANIM_FAST);
         let layer_alpha = (hover * ALPHA_HOVER as f32 + press * (ALPHA_PRESS - ALPHA_HOVER) as f32).round() as u8;
@@ -614,6 +761,8 @@ pub fn segmented(
             clicked = Some(i);
         }
     }
+    let ring_radius = if focus_rect == rect { pill(rect) } else { CornerRadius::same(RADIUS_LG) };
+    paint_focus_ring(ui.painter(), snap(ui.painter(), focus_rect), ring_radius, focus);
     clicked
 }
 
@@ -642,7 +791,36 @@ pub fn nav_item_with(
     selected: bool,
     trailing: f32,
 ) -> egui::Response {
-    let (rect, response) = ui.allocate_exact_size(Vec2::new(ui.available_width(), ENTRY_HEIGHT), egui::Sense::click_and_drag());
+    nav_item_sense(ui, id_source, icon, label, theme, selected, trailing, egui::Sense::click_and_drag())
+}
+
+/// `nav_item_with` for a list that has one Tab stop: only the entry with `tab_stop` is focusable,
+/// the others are reached with the arrow keys (see `take_arrow`).
+pub fn nav_item_roving(
+    ui: &mut egui::Ui,
+    id_source: impl std::hash::Hash + std::fmt::Debug,
+    icon: &str,
+    label: &str,
+    theme: &SerpantinumTheme,
+    selected: bool,
+    tab_stop: bool,
+) -> egui::Response {
+    let sense = if tab_stop { egui::Sense::click() } else { egui::Sense::CLICK };
+    nav_item_sense(ui, id_source, icon, label, theme, selected, 0.0, sense)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn nav_item_sense(
+    ui: &mut egui::Ui,
+    id_source: impl std::hash::Hash + std::fmt::Debug,
+    icon: &str,
+    label: &str,
+    theme: &SerpantinumTheme,
+    selected: bool,
+    trailing: f32,
+    sense: egui::Sense,
+) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(ui.available_width(), ENTRY_HEIGHT), sense);
     let id = ui.make_persistent_id(id_source);
     let fx = fx(ui, id, &response, true, &FxSpec::ROW);
     let sel_t = animate(ui.ctx(), id.with("sel"), selected);
@@ -1334,7 +1512,7 @@ pub fn choice_row(
     } else {
         Rect::from_min_size(Pos2::new(rect.left() + INSET_LABEL + 2.0, rect.top() + SETTING_HEIGHT - 4.0), Vec2::new(seg_w, seg_h))
     };
-    ui.scope_builder(egui::UiBuilder::new().max_rect(seg_rect), |ui| segmented(ui, id, options, selected, theme)).inner
+    ui.scope_builder(egui::UiBuilder::new().max_rect(seg_rect), |ui| segmented_in(ui, id, options, selected, theme, Some(rect))).inner
 }
 
 /// Smoothly expands and collapses a vertical block of widgets when `open` toggles.
@@ -1490,8 +1668,15 @@ pub fn dialog_footer(ui: &mut egui::Ui, theme: &SerpantinumTheme, spec: FooterSp
         }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             let kind = if spec.danger { ButtonKind::Danger } else { ButtonKind::Filled };
-            out.primary = button(ui, (spec.id, "primary"), spec.icon, spec.primary, theme, kind, spec.enabled).clicked() && spec.enabled;
-            out.cancel = button(ui, (spec.id, "cancel"), None, tr("Cancel"), theme, ButtonKind::Text, true).clicked();
+            let primary = button(ui, (spec.id, "primary"), spec.icon, spec.primary, theme, kind, spec.enabled);
+            let cancel = button(ui, (spec.id, "cancel"), None, tr("Cancel"), theme, ButtonKind::Text, true);
+            out.primary = primary.clicked() && spec.enabled;
+            out.cancel = cancel.clicked();
+            // A new dialog without a text field puts focus on its default button, so Enter confirms.
+            // Destructive ones start on Cancel instead.
+            if dialog_fresh(ui.ctx()) && ui.memory(|m| m.focused()).is_none() {
+                if spec.danger || !spec.enabled { cancel.request_focus() } else { primary.request_focus() }
+            }
         });
     });
     out

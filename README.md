@@ -130,6 +130,20 @@ Right-click anything for a menu that shows the shortcut of each action.
 
 All of these can be changed in Settings, under Keybindings.
 
+### Menus and dialogs
+
+Settings, the context menu, the operations list and every dialog work without a mouse. A ring shows where the focus is.
+
+| Keys | Action |
+| --- | --- |
+| `Tab` / `Shift+Tab` | Next / previous control (stays inside the open dialog or menu) |
+| Arrows | Move to the control in that direction. In a menu, `Home` / `End` jump to the first / last entry. |
+| `Left` / `Right` on a choice such as Sort by | Pick the previous / next option |
+| `Enter` / `Space` | Activate the focused control |
+| `Up` / `Down` in Settings' category list | Switch category; `Right` or `Tab` goes into its settings, `Left` comes back |
+| `Ctrl+PageUp` / `Ctrl+PageDown` | Previous / next Settings category from anywhere |
+| `Esc` | Close the menu or dialog |
+
 ## Settings
 
 `Ctrl+,` opens Settings: language, theme and accent color, interface size, font, default view and sorting, list columns, grid size, startup folder, single-click open, vim keys, terminal command, templates folder, and default apps.

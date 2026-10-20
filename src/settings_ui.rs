@@ -11,8 +11,14 @@ use crate::keymap::{self, Action};
 use crate::settings::{Density, Settings, StartLocation};
 use crate::ui::fonts::SystemFont;
 use crate::ui::icons;
-use crate::ui::material::{self, button, chip, choice_row, filled_icon_button, group_card, nav_item, switch_row_with, ButtonKind, Column};
+use crate::ui::material::{self, button, chip, choice_row, filled_icon_button, group_card, nav_item_roving, switch_row_with, ButtonKind, Column};
 use crate::ui::theme::{self, SerpantinumTheme, ACCENTS, PRESETS};
+
+const CATEGORY_COUNT: i32 = 6;
+
+fn category_focus_id() -> egui::Id {
+    egui::Id::unique("set_cat_focus")
+}
 
 impl SkiApp {
     pub(crate) fn open_settings_dialog(&mut self) {
@@ -61,6 +67,24 @@ impl SkiApp {
 
         let max_height = (ctx.content_rect().height() - 160.0).clamp(320.0, 540.0);
 
+        // Ctrl+PageUp / Ctrl+PageDown (or Ctrl+Tab) switch category from anywhere in the dialog
+        if !self.capturing_key {
+            let switch = ctx.input_mut(|i| {
+                let ctrl = egui::Modifiers::CTRL;
+                if i.consume_key(ctrl, egui::Key::PageDown) || i.consume_key(ctrl, egui::Key::Tab) {
+                    1
+                } else if i.consume_key(ctrl, egui::Key::PageUp) || i.consume_key(ctrl.plus(egui::Modifiers::SHIFT), egui::Key::Tab) {
+                    -1
+                } else {
+                    0
+                }
+            });
+            if switch != 0 {
+                *tab = (*tab as i32 + switch).rem_euclid(CATEGORY_COUNT) as usize;
+                ctx.data_mut(|d| d.insert_temp(category_focus_id(), *tab));
+            }
+        }
+
         ui.horizontal_top(|ui| {
             ui.spacing_mut().item_spacing.x = 16.0;
             // The dialog keeps one height for every category
@@ -70,7 +94,7 @@ impl SkiApp {
                 ui.set_width(168.0);
                 ui.spacing_mut().item_spacing = egui::vec2(0.0, 2.0);
 
-                let categories = [
+                let categories: [(usize, &str, &str); CATEGORY_COUNT as usize] = [
                     (0, icons::COG, tr("General")),
                     (1, icons::TUNE, tr("Appearance")),
                     (2, icons::VIEW_LIST, tr("Files & View")),
@@ -79,8 +103,15 @@ impl SkiApp {
                     (5, icons::APPS, tr("Applications")),
                 ];
 
+                // One Tab stop for the whole list: Up and Down walk through the categories,
+                // Right (or Tab) goes into the settings of the chosen one
+                let focus_id = category_focus_id();
+                let want = ctx.data_mut(|d| d.remove_temp::<usize>(focus_id));
+                let fresh = material::dialog_fresh(&ctx);
+                let mut key = None;
                 for (idx, icon, label) in categories {
-                    if nav_item(ui, ("set_cat_nav", idx), icon, label, &theme, *tab == idx).clicked() {
+                    let resp = nav_item_roving(ui, ("set_cat_nav", idx), icon, label, &theme, *tab == idx, *tab == idx);
+                    if resp.clicked() {
                         *tab = idx;
                         if self.capturing_key {
                             self.capturing_key = false;
@@ -88,6 +119,32 @@ impl SkiApp {
                             *conflict_warning = None;
                         }
                     }
+                    if want == Some(idx) || (fresh && *tab == idx) {
+                        resp.request_focus();
+                    }
+                    if *tab == idx {
+                        key = material::take_arrow(&ctx, &resp, true, true);
+                    }
+                }
+                let step = match key {
+                    Some(egui::Key::ArrowDown) => 1,
+                    Some(egui::Key::ArrowUp) => -1,
+                    Some(egui::Key::ArrowRight) => {
+                        // Let the first widget drawn after the list take the focus, as Tab would
+                        ctx.memory_mut(|m| {
+                            if let Some(id) = m.focused() {
+                                m.surrender_focus(id);
+                            }
+                            m.move_focus(egui::FocusDirection::Next);
+                        });
+                        0
+                    }
+                    _ => 0,
+                };
+                let next = (*tab as i32 + step).clamp(0, categories.len() as i32 - 1) as usize;
+                if next != *tab {
+                    *tab = next;
+                    ctx.data_mut(|d| d.insert_temp(focus_id, next));
                 }
             });
 
@@ -111,6 +168,18 @@ impl SkiApp {
                             _ => self.applications_tab(ui, picking, defaults),
                         }
                     });
+                // Left from a row that starts at the pane's edge goes back to the category list
+                let pane = ui.min_rect();
+                let focused = ctx.memory(|m| m.focused());
+                if let Some(rect) = focused.and_then(|id| ctx.read_response(id)).map(|r| r.rect)
+                    && rect.left() <= pane.left() + 24.0
+                    && pane.contains(rect.center())
+                    && !self.capturing_key
+                    && !ctx.text_edit_focused()
+                    && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowLeft))
+                {
+                    ctx.data_mut(|d| d.insert_temp(category_focus_id(), *tab));
+                }
             });
         });
 
@@ -299,28 +368,83 @@ impl SkiApp {
         let show_default = needle.is_empty() || "adwaita sans".contains(&needle);
         let total = fonts.len() + usize::from(show_default);
         let mut picked: Option<Option<SystemFont>> = None;
+        // The list is one Tab stop; the arrow keys walk through it and scroll it along
+        let row_h = material::ENTRY_HEIGHT + 2.0;
+        let goto_id = egui::Id::unique("font_goto");
+        let held_id = egui::Id::unique("font_held");
+        let ctx = ui.ctx().clone();
+        let selected_row = fonts
+            .iter()
+            .position(|f| self.settings.font.as_deref() == Some(f.path.as_path()))
+            .map_or(0, |i| i + usize::from(show_default));
+        let mut list_focused = false;
+        let list_top = ui.cursor().top();
         group_card(ui, &theme, |ui| {
             egui::ScrollArea::vertical()
                 .max_height(360.0)
                 .auto_shrink([false, true])
                 .id_salt("font_list")
-                .show_rows(ui, material::ENTRY_HEIGHT + 2.0, total, |ui, range| {
+                .show_rows(ui, row_h, total, |ui, range| {
                     ui.spacing_mut().item_spacing.y = 2.0;
-                    for row in range {
-                        if show_default && row == 0 {
-                            if nav_item(ui, "font_default", icons::DOCUMENT, tr("Adwaita Sans (default)"), &theme, self.settings.font.is_none()).clicked() {
+                    let stop = if range.contains(&selected_row) { selected_row } else { range.start };
+                    let goto = ctx.data(|d| d.get_temp::<usize>(goto_id));
+                    // The row with focus and the one about to get it stay focusable, whatever the Tab stop is
+                    let held = ctx.data(|d| d.get_temp::<usize>(held_id));
+                    let mut next = None;
+                    let mut any_focus = false;
+                    for row in range.clone() {
+                        let resp = if show_default && row == 0 {
+                            let on = self.settings.font.is_none();
+                            let resp = nav_item_roving(ui, "font_default", icons::DOCUMENT, tr("Adwaita Sans (default)"), &theme, on, row == stop || held == Some(row) || goto == Some(row));
+                            if resp.clicked() {
                                 picked = Some(None);
                             }
-                            continue;
+                            resp
+                        } else {
+                            let font = fonts[row - usize::from(show_default)];
+                            let on = self.settings.font.as_deref() == Some(font.path.as_path());
+                            let resp = nav_item_roving(ui, ("font_row", &font.path), icons::DOCUMENT, &font.family, &theme, on, row == stop || held == Some(row) || goto == Some(row));
+                            if resp.clicked() {
+                                picked = Some(Some(font.clone()));
+                            }
+                            resp
+                        };
+                        list_focused |= resp.gained_focus() || goto == Some(row);
+                        if resp.has_focus() {
+                            any_focus = true;
+                            ctx.data_mut(|d| d.insert_temp(held_id, row));
                         }
-                        let font = fonts[row - usize::from(show_default)];
-                        let on = self.settings.font.as_deref() == Some(font.path.as_path());
-                        if nav_item(ui, ("font_row", &font.path), icons::DOCUMENT, &font.family, &theme, on).clicked() {
-                            picked = Some(Some(font.clone()));
+                        if goto == Some(row) {
+                            resp.request_focus();
+                            any_focus = true;
+                            ctx.data_mut(|d| {
+                                d.remove_temp::<usize>(goto_id);
+                                d.insert_temp(held_id, row);
+                            });
+                        }
+                        match material::take_arrow(&ctx, &resp, false, true) {
+                            Some(egui::Key::ArrowDown) => next = Some((row + 1).min(total - 1)),
+                            Some(_) => next = Some(row.saturating_sub(1)),
+                            None => {}
+                        }
+                    }
+                    if !any_focus && goto.is_none() {
+                        ctx.data_mut(|d| d.remove_temp::<usize>(held_id));
+                    }
+                    if let Some(target) = next.or(goto.filter(|g| !range.contains(g))) {
+                        ctx.data_mut(|d| d.insert_temp(goto_id, target));
+                        if !range.contains(&target) || target == range.start || target + 1 == range.end {
+                            let y = ui.max_rect().top() + (target as f32 - range.start as f32) * row_h;
+                            ui.scroll_to_rect(Rect::from_min_size(Pos2::new(ui.max_rect().left(), y), Vec2::new(1.0, row_h)), None);
                         }
                     }
                 });
         });
+        if list_focused {
+            // Bring the whole list into view, not just the sliver the dialog happens to show
+            let card = Rect::from_min_max(Pos2::new(ui.max_rect().left(), list_top), Pos2::new(ui.max_rect().right(), ui.cursor().top()));
+            ui.scroll_to_rect(card, Some(egui::Align::Center));
+        }
         if let Some(choice) = picked {
             self.settings.font = choice.as_ref().map(|f| f.path.clone());
             self.settings.font_name = choice.map(|f| f.family);
@@ -908,6 +1032,10 @@ fn keycap_pill(
 
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(total_w, material::KEYCAP_HEIGHT), egui::Sense::click());
     let id = ui.make_persistent_id(id_source);
+    if capturing && resp.has_focus() {
+        // Tab, arrows and Escape are keys to record (or cancel with), not focus movement
+        ui.memory_mut(|m| m.set_focus_lock_filter(resp.id, egui::EventFilter { tab: true, horizontal_arrows: true, vertical_arrows: true, escape: true }));
+    }
     let fx = material::fx(ui, id, &resp, true, &material::FxSpec::CLICK);
     let on = material::animate(ui.ctx(), id.with("cap"), capturing);
     let r = material::scaled(rect, fx.scale);
@@ -951,6 +1079,10 @@ fn swatch(
     ui.painter().circle_filled(r.center(), r.width() / 2.0, color);
     if fx.flash > 0.0 {
         ui.painter().circle_filled(r.center(), r.width() / 2.0, egui::Color32::from_white_alpha((fx.flash * 120.0) as u8));
+    }
+    if fx.focus > 0.01 {
+        let ring = egui::Stroke::new(2.0, material::focus_color(ui.ctx()).gamma_multiply(fx.focus));
+        ui.painter().circle_stroke(r.center(), r.width() / 2.0 + 1.0, ring);
     }
     if sel_t > 0.01 {
         let fg = material::on_color(theme, color).gamma_multiply(sel_t);

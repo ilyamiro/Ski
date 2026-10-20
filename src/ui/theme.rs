@@ -223,6 +223,7 @@ pub fn apply(ctx: &egui::Context, theme: &SerpantinumTheme) {
     visuals.extreme_bg_color = theme.surface1;
     visuals.override_text_color = Some(theme.text);
     ctx.set_visuals(visuals);
+    super::material::set_focus_color(ctx, theme.mauve);
 
     ctx.all_styles_mut(|style| {
         style.spacing.item_spacing = egui::vec2(6.0, 6.0);

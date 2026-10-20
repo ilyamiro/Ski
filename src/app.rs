@@ -335,6 +335,8 @@ pub struct SkiApp {
     pub(crate) dialog: Option<Dialog>,
     picker: Option<Picker>,
     pub(crate) closing_dialog: Option<Dialog>,
+    /// Kind of the dialog on screen, to notice when a new one appears and should take keyboard focus.
+    dialog_kind: Option<std::mem::Discriminant<Dialog>>,
     /// Set when a menu click ran this frame, so it is not also read as a click outside a dialog it just opened.
     menu_click_consumed: bool,
 
@@ -444,6 +446,7 @@ impl SkiApp {
             dialog: None,
             picker: None,
             closing_dialog: None,
+            dialog_kind: None,
             menu_click_consumed: false,
             menu_ghost: None,
             window_title: String::new(),
@@ -1141,7 +1144,22 @@ impl SkiApp {
                 }
                 return;
             }
-        if self.dialog.is_some() {
+        if self.dialog.is_some() || self.menu.is_some() {
+            return;
+        }
+        // The operations popover keeps the keyboard to itself, apart from the key that toggles it
+        if self.jobs_popover {
+            if ctx.input(|i| i.key_pressed(egui::Key::Escape)) || self.is_act_pressed(ctx, crate::keymap::Action::ShowJobs) {
+                self.jobs_popover = false;
+            }
+            return;
+        }
+
+        // A widget the user reached with Tab owns Enter and Space, so they don't also open the selection
+        if material::focus_visible(ctx)
+            && ctx.memory(|m| m.focused()).is_some()
+            && ctx.input(|i| i.key_pressed(egui::Key::Enter) || i.key_pressed(egui::Key::Space))
+        {
             return;
         }
 
@@ -1164,9 +1182,6 @@ impl SkiApp {
 
         if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
             if self.menu.take().is_some() {
-                return;
-            }
-            if std::mem::take(&mut self.jobs_popover) {
                 return;
             }
             if self.show_settings {
@@ -1516,6 +1531,7 @@ impl eframe::App for SkiApp {
             self.dialog = None;
             self.navigate_to(dir);
         }
+        material::track_input_mode(&ctx, self.dialog.is_some() || self.menu.is_some() || self.jobs_popover);
         self.handle_keyboard_inputs(&ctx);
         self.sync_selection(false);
         self.poll_jobs();
@@ -3409,10 +3425,10 @@ impl SkiApp {
             return;
         };
 
-        let is_main = matches!(self.menu.as_ref().map(|m| &m.target), Some(MenuTarget::Main));
         let hints: Vec<Vec<Option<String>>> =
             groups.iter().map(|g| g.iter().map(|(_, _, action)| self.menu_hint(action)).collect()).collect();
         let mut chosen = None;
+        let mut item_ids = Vec::new();
         let area = egui::Area::new(egui::Id::unique("context_menu"))
             .order(egui::Order::Foreground)
             .fixed_pos(origin + egui::vec2(0.0, (1.0 - t) * -8.0))
@@ -3436,7 +3452,9 @@ impl SkiApp {
                                     MenuAction::Open(item) if !item.is_dir => open_label.as_deref().unwrap_or(label),
                                     _ => label,
                                 };
-                                if menu_item(ui, ("menu", g, idx), icon, shown, hints[g][idx].as_deref(), &self.theme).clicked() && interactive {
+                                let resp = menu_item(ui, ("menu", g, idx), icon, shown, hints[g][idx].as_deref(), &self.theme);
+                                item_ids.push(resp.id);
+                                if resp.clicked() && interactive {
                                     chosen = Some(action.clone());
                                 }
                             }
@@ -3445,12 +3463,35 @@ impl SkiApp {
             });
 
         let rect = area.response.rect;
-        let main_button = self.main_button_rect;
-        let outside_press = interactive
-            && ctx.input(|i| {
-                i.pointer.any_pressed()
-                    && i.pointer.interact_pos().is_some_and(|p| !rect.contains(p) && !(is_main && main_button.contains(p)))
-            });
+        if interactive {
+            // Keyboard: the first arrow press lands on the first (or last) entry, Home and End jump
+            ctx.memory_mut(|m| m.set_modal_layer(area.response.layer_id));
+            let focused = ctx.memory(|m| m.focused());
+            if !focused.is_some_and(|f| item_ids.contains(&f)) {
+                let key = ctx.input(|i| {
+                    [egui::Key::ArrowDown, egui::Key::Home, egui::Key::ArrowUp, egui::Key::End].into_iter().find(|k| i.key_pressed(*k))
+                });
+                let target = match key {
+                    Some(egui::Key::ArrowDown | egui::Key::Home) => item_ids.first(),
+                    Some(_) => item_ids.last(),
+                    None => None,
+                };
+                if let Some(id) = target {
+                    // The arrow that picked the entry must not also move on from it in this frame
+                    ctx.memory_mut(|m| {
+                        m.request_focus(*id);
+                        m.move_focus(egui::FocusDirection::None);
+                    });
+                }
+            } else if let Some(key) = ctx.input(|i| [egui::Key::Home, egui::Key::End].into_iter().find(|k| i.key_pressed(*k))) {
+                let target = if key == egui::Key::Home { item_ids.first() } else { item_ids.last() };
+                if let Some(id) = target {
+                    ctx.memory_mut(|m| m.request_focus(*id));
+                }
+            }
+        }
+        // The modal layer swallows presses on the header button, so a press there just closes the menu
+        let outside_press = interactive && ctx.input(|i| i.pointer.any_pressed() && i.pointer.interact_pos().is_some_and(|p| !rect.contains(p)));
         if chosen.is_some() || outside_press {
             self.menu = None;
         }
@@ -3467,6 +3508,7 @@ impl SkiApp {
 
         if !is_open && t <= 0.0 {
             self.closing_dialog = None;
+            self.dialog_kind = None;
             return;
         }
 
@@ -3477,6 +3519,28 @@ impl SkiApp {
         } else {
             return;
         };
+
+        let kind = std::mem::discriminant(&dialog);
+        let fresh = is_open && self.dialog_kind != Some(kind);
+        self.dialog_kind = is_open.then_some(kind);
+        material::set_dialog_fresh(ctx, fresh);
+
+        // The fields in dialogs are single-line, so Up and Down leave them for the next row
+        // instead of just jumping the caret to either end of the text
+        if is_open && !self.capturing_key && ctx.text_edit_focused() {
+            let direction = ctx.input_mut(|i| {
+                if i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown) {
+                    Some(egui::FocusDirection::Down)
+                } else if i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp) {
+                    Some(egui::FocusDirection::Up)
+                } else {
+                    None
+                }
+            });
+            if let Some(direction) = direction {
+                ctx.memory_mut(|m| m.move_focus(direction));
+            }
+        }
 
         let screen = ctx.content_rect();
         let mut close = false;
@@ -3535,6 +3599,11 @@ impl SkiApp {
                         };
                     });
             });
+
+        // Tab and the arrow keys stay inside the dialog
+        if is_open {
+            ctx.memory_mut(|m| m.set_modal_layer(dialog_area.response.layer_id));
+        }
 
         // Click outside the dialog card dismisses it
         let dialog_rect = dialog_area.response.rect;

@@ -259,9 +259,12 @@ impl SkiApp {
                     });
             });
         let rect = area.response.rect;
-        let button = self.jobs_button_rect;
-        if self.jobs_popover && ctx.input(|i| i.pointer.any_pressed() && i.pointer.interact_pos().is_some_and(|p| !rect.contains(p) && !button.contains(p))) {
-            self.jobs_popover = false;
+        if self.jobs_popover {
+            // Tab and the arrow keys stay in the popover; a press on the header button only closes it
+            ctx.memory_mut(|m| m.set_modal_layer(area.response.layer_id));
+            if ctx.input(|i| i.pointer.any_pressed() && i.pointer.interact_pos().is_some_and(|p| !rect.contains(p))) {
+                self.jobs_popover = false;
+            }
         }
         if let Some(id) = toggle {
             self.engine.toggle_pause(id);
