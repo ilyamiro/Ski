@@ -153,6 +153,10 @@ pub struct Chooser {
     pub filter: usize,
     /// The name an overwrite warning was shown for; pressing Save again confirms it.
     pub warned: Option<PathBuf>,
+    /// The file whose name was last copied into the name field, so that is done once per click.
+    pub filled: Option<PathBuf>,
+    /// Set until the name field has taken focus and selected the part of the name before the dot.
+    pub focus_name: bool,
     /// Keeps the window tied to its parent while the dialog is open.
     pub parent: Option<crate::wayland_parent::Parent>,
 }
@@ -161,11 +165,23 @@ impl Chooser {
     pub fn new(spec: Spec) -> Self {
         let name_input = spec.name.clone().unwrap_or_default();
         let filter = spec.current_filter;
-        Self { spec, name_input, filter, warned: None, parent: None }
+        let focus_name = spec.mode == Mode::Save;
+        Self { spec, name_input, filter, warned: None, filled: None, focus_name, parent: None }
     }
 
     pub fn accepts(&self, path: &Path) -> bool {
         self.spec.filters.get(self.filter).is_none_or(|f| f.accepts(path))
+    }
+
+    /// The extension the active filter implies (`*.png` gives `png`), for names typed without one.
+    pub fn default_extension(&self) -> Option<&str> {
+        let filter = self.spec.filters.get(self.filter)?;
+        let mut globs = filter.patterns.iter().filter_map(|p| match p {
+            Pattern::Glob(g) => g.strip_prefix("*."),
+            Pattern::Mime(_) => None,
+        });
+        let ext = globs.next()?;
+        (filter.patterns.len() == 1 && !ext.is_empty() && !ext.contains(['*', '?', '[', '.'])).then_some(ext)
     }
 
     pub fn takes_name(&self) -> bool {
@@ -243,6 +259,14 @@ mod tests {
         assert!(f.accepts(Path::new("/x/a.PNG")));
         assert!(f.accepts(Path::new("/x/a.xyz")));
         assert!(!f.accepts(Path::new("/x/a.txt")));
+    }
+
+    #[test]
+    fn filter_implies_an_extension_only_when_it_is_unambiguous() {
+        let mut ch = Chooser::new(Spec::parse(&["--chooser".into(), "--mode".into(), "save".into(), "--filter".into(), "PNG\tg:*.png".into(), "--filter".into(), "Any\tg:*.png\tg:*.jpg".into()]).unwrap());
+        assert_eq!(ch.default_extension(), Some("png"));
+        ch.filter = 1;
+        assert_eq!(ch.default_extension(), None);
     }
 
     #[test]

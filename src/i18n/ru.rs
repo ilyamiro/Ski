@@ -486,6 +486,7 @@ pub const CATALOG: &[(&str, &str)] = &[
     ("Save", "Сохранить"),
     ("File name", "Имя файла"),
     ("{} exists. Press Save again to replace it.", "{} уже существует. Нажмите «Сохранить» ещё раз, чтобы заменить."),
+    ("That folder doesn't exist", "Такой папки нет"),
     ("{} selected", "Выбрано: {}"),
     ("Corners", "Углы"),
     ("Soft", "Мягкие"),

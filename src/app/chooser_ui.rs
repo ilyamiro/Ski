@@ -15,15 +15,56 @@ impl SkiApp {
 
     /// A double-click or Enter on a file: it is the answer when opening, the name when saving.
     pub(super) fn chooser_activate(&mut self, item: &FileItem) {
-        let Some(ch) = self.chooser.as_mut() else { return };
+        let Some(ch) = self.chooser.as_ref() else { return };
         match ch.spec.mode {
-            Mode::Open => chooser::finish(std::slice::from_ref(&item.path)),
-            Mode::Save => {
-                ch.name_input = item.name.clone();
-                ch.warned = None;
-            }
+            Mode::Open => match self.chooser_answer() {
+                // Enter on several selected files answers with all of them
+                Some(files) if ch.spec.multiple && files.len() > 1 && self.selection.len() > 1 => chooser::finish(&files),
+                _ => chooser::finish(std::slice::from_ref(&item.path)),
+            },
+            Mode::Save => self.chooser_fill_name(item),
             Mode::Folder | Mode::SaveFiles => {}
         }
+    }
+
+    fn chooser_fill_name(&mut self, item: &FileItem) {
+        if let Some(ch) = self.chooser.as_mut() {
+            ch.name_input = item.name.clone();
+            ch.warned = None;
+            ch.filled = Some(item.path.clone());
+        }
+    }
+
+    /// Selecting an existing file while saving copies its name into the field, like GTK does.
+    fn chooser_follow_selection(&mut self) {
+        let single = (self.selection.len() == 1).then(|| self.selection.iter().next().and_then(|i| self.items.get(*i))).flatten();
+        let Some(item) = single.filter(|i| !i.is_dir).cloned() else { return };
+        if self.chooser.as_ref().is_some_and(|c| c.takes_name() && c.filled.as_ref() != Some(&item.path)) {
+            self.chooser_fill_name(&item);
+        }
+    }
+
+    /// Where a typed name points: `~/x`, `/abs/x` and `sub/x` are all understood.
+    fn chooser_target(&self, name: &str) -> Option<PathBuf> {
+        let name = name.trim();
+        if name.is_empty() || name.ends_with('/') {
+            return None;
+        }
+        let typed = match name.strip_prefix("~/") {
+            Some(rest) => dirs::home_dir()?.join(rest),
+            None => PathBuf::from(name),
+        };
+        let mut target = if typed.is_absolute() { typed } else { self.current_path.join(typed) };
+        target.file_name()?;
+        if target.extension().is_none()
+            && let Some(ext) = self.chooser.as_ref().and_then(|c| c.default_extension())
+        {
+            let mut name = target.file_name()?.to_owned();
+            name.push(".");
+            name.push(ext);
+            target.set_file_name(name);
+        }
+        Some(target)
     }
 
     /// The paths the Open / Save button would answer with, or `None` while it cannot answer yet.
@@ -47,8 +88,9 @@ impl SkiApp {
                 }
             }
             Mode::Save => {
-                let name = Path::new(ch.name_input.trim()).file_name()?.to_owned();
-                browsing.then(|| vec![self.current_path.join(name)])
+                let target = self.chooser_target(&ch.name_input)?;
+                // A path typed out in full doesn't depend on the folder that is open
+                (browsing || target.is_absolute() && ch.name_input.trim().starts_with(['/', '~'])).then(|| vec![target])
             }
             Mode::SaveFiles => browsing.then(|| {
                 if ch.spec.files.is_empty() {
@@ -62,6 +104,10 @@ impl SkiApp {
 
     fn chooser_accept(&mut self) {
         let Some(answer) = self.chooser_answer() else { return };
+        if self.chooser.as_ref().is_some_and(|c| c.spec.mode == Mode::Save) && !answer[0].parent().is_some_and(|p| p.is_dir()) {
+            self.set_toast(tr("That folder doesn't exist").to_owned());
+            return;
+        }
         let overwrite = self.chooser.as_ref().is_some_and(|c| c.spec.mode == Mode::Save)
             && answer[0].exists()
             && self.chooser.as_ref().is_some_and(|c| c.warned.as_ref() != Some(&answer[0]));
@@ -84,6 +130,7 @@ impl SkiApp {
     }
 
     pub(super) fn render_chooser_bar(&mut self, ui: &mut egui::Ui) {
+        self.chooser_follow_selection();
         let ready = self.chooser_answer().is_some();
         let Some(mut ch) = self.chooser.take() else { return };
         let theme = self.theme;
@@ -103,14 +150,26 @@ impl SkiApp {
                         ui.label(egui::RichText::new(tr("File name")).size(material::FONT_CAPTION).color(theme.subtext1));
                         let field = material::input_frame(&theme)
                             .show(ui, |ui| {
-                                ui.add(
-                                    egui::TextEdit::singleline(&mut ch.name_input)
-                                        .frame(egui::Frame::NONE)
-                                        .desired_width(240.0)
-                                        .font(egui::FontId::proportional(material::FONT_BODY)),
-                                )
+                                egui::TextEdit::singleline(&mut ch.name_input)
+                                    .frame(egui::Frame::NONE)
+                                    .desired_width(240.0)
+                                    .font(egui::FontId::proportional(material::FONT_BODY))
+                                    .show(ui)
                             })
                             .inner;
+                        if ch.focus_name {
+                            // Ready to type: focus the field with the name up to its extension selected
+                            field.response.request_focus();
+                            let end = match ch.name_input.rfind('.') {
+                                Some(i) if i > 0 => ch.name_input[..i].chars().count(),
+                                _ => ch.name_input.chars().count(),
+                            };
+                            let mut state = field.state.clone();
+                            state.cursor.set_char_range(Some(egui::text::CCursorRange::two(egui::text::CCursor::new(0), egui::text::CCursor::new(end))));
+                            state.store(ui.ctx(), field.response.id);
+                            ch.focus_name = false;
+                        }
+                        let field = field.response;
                         if field.changed() {
                             ch.warned = None;
                         }
@@ -187,6 +246,12 @@ mod tests {
         assert_eq!(app.chooser_answer(), Some(vec![app.current_path.join("new.txt")]));
         let app = app_in(&work, &["--chooser", "--mode", "save"]);
         assert_eq!(app.chooser_answer(), None);
+
+        // A typed path and a filter's extension decide where the file goes
+        let app = app_in(&work, &["--chooser", "--mode", "save", "--name", "sub/x", "--filter", "PNG\tg:*.png"]);
+        assert_eq!(app.chooser_answer(), Some(vec![app.current_path.join("sub/x.png")]));
+        let app = app_in(&work, &["--chooser", "--mode", "save", "--name", "/tmp/y.txt"]);
+        assert_eq!(app.chooser_answer(), Some(vec![PathBuf::from("/tmp/y.txt")]));
 
         let _ = std::fs::remove_dir_all(&work);
     }
