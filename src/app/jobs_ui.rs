@@ -220,7 +220,7 @@ impl SkiApp {
 
     /// The list of operations, hanging from the header button.
     pub(super) fn render_jobs_popover(&mut self, ctx: &egui::Context) {
-        if self.engine.jobs.is_empty() {
+        if self.engine.jobs.is_empty() || self.dialog.is_some() {
             self.jobs_popover = false;
         }
         let t = material::animate(ctx, egui::Id::unique("jobs_popover_anim"), self.jobs_popover);
@@ -365,13 +365,14 @@ impl SkiApp {
             for (label, info, incoming) in [(tr("Existing"), &req.target_info, false), (tr("New"), &req.source_info, true)] {
                 let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 56.0), egui::Sense::hover());
                 let glyph = if info.is_dir { icons::FOLDER } else { icons::FILE };
-                material::paint_icon(ui.painter(), egui::pos2(rect.left() + 26.0, rect.center().y), glyph, 24.0, if info.is_dir { theme.blue } else { theme.subtext0 });
-                material::paint_label(ui, rect.left() + 56.0, rect.center().y - 9.0, label, material::FONT_BODY, theme.text, rect.width() - 150.0);
-                material::paint_label(ui, rect.left() + 56.0, rect.center().y + 9.0, &describe(info), material::FONT_CAPTION, theme.subtext1, rect.width() - 70.0);
+                material::paint_icon(ui.painter(), egui::pos2(rect.left() + material::INSET_ICON + 2.0, rect.center().y), glyph, 24.0, if info.is_dir { theme.blue } else { theme.subtext0 });
+                let text_x = rect.left() + material::INSET_LABEL + 2.0;
+                material::paint_label(ui, text_x, rect.center().y - 9.0, label, material::FONT_BODY, theme.text, rect.width() - 150.0);
+                material::paint_label(ui, text_x, rect.center().y + 9.0, &describe(info), material::FONT_CAPTION, theme.subtext1, rect.width() - 62.0);
                 let tag = tags(incoming).join(" · ");
                 if !tag.is_empty() {
                     let galley = ui.painter().layout_no_wrap(tag, egui::FontId::proportional(material::FONT_CAPTION), theme.mauve);
-                    ui.painter().galley(egui::pos2(rect.right() - 16.0 - galley.size().x, rect.center().y - 9.0 - galley.size().y / 2.0), galley, theme.mauve);
+                    ui.painter().galley(egui::pos2(rect.right() - 13.0 - galley.size().x, rect.center().y - 9.0 - galley.size().y / 2.0), galley, theme.mauve);
                 }
             }
         });

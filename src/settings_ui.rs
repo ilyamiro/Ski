@@ -393,21 +393,25 @@ impl SkiApp {
                 self.settings.density = densities[i];
                 self.persist_settings();
             }
-            ui.add_space(4.0);
-            material::hint_label(ui, tr("Columns"), &theme);
-            ui.horizontal_wrapped(|ui| {
-                ui.add_space(4.0);
-                for col in Column::ALL {
-                    let on = self.columns.contains(&col);
-                    if chip(ui, ("fv_col", col.label()), None, col.label(), &theme, on).clicked() {
-                        self.columns = Column::ALL
-                            .into_iter()
-                            .filter(|c| (*c == col) != self.columns.contains(c))
-                            .collect();
-                        self.settings.columns = self.columns.clone();
-                        self.persist_settings();
+            // Title like the rows above, the chips under it start at the label edge
+            let (head, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), material::ENTRY_HEIGHT), egui::Sense::hover());
+            material::paint_icon(ui.painter(), head.left_center() + egui::vec2(material::INSET_ICON + 2.0, 0.0), icons::VIEW_COLUMN, material::ICON_MD, theme.subtext0);
+            material::paint_label(ui, head.left() + material::INSET_LABEL + 2.0, head.center().y, tr("Columns"), material::FONT_BODY, theme.text, head.width() - material::INSET_LABEL - 12.0);
+            egui::Frame::new().inner_margin(egui::Margin { left: (material::INSET_LABEL + 2.0) as i8, right: 8, top: 0, bottom: 0 }).show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.horizontal_wrapped(|ui| {
+                    for col in Column::ALL {
+                        let on = self.columns.contains(&col);
+                        if chip(ui, ("fv_col", col.label()), None, col.label(), &theme, on).clicked() {
+                            self.columns = Column::ALL
+                                .into_iter()
+                                .filter(|c| (*c == col) != self.columns.contains(c))
+                                .collect();
+                            self.settings.columns = self.columns.clone();
+                            self.persist_settings();
+                        }
                     }
-                }
+                });
             });
             ui.add_space(4.0);
         });
@@ -415,7 +419,7 @@ impl SkiApp {
         material::section_label(ui, tr("Grid view"), &theme);
         group_card(ui, &theme, |ui| {
             let size = self.settings.grid_size;
-            let (less, more) = material::stepper_row(ui, "fv_grid_size", tr("Icon size"), &theme, &size.label(), size.can_step(-1), size.can_step(1));
+            let (less, more) = material::setting_stepper_row(ui, "fv_grid_size", icons::RESIZE, tr("Icon size"), &theme, &size.label(), size.can_step(-1), size.can_step(1));
             if less || more {
                 self.settings.grid_size = size.step(if more { 1 } else { -1 });
                 self.persist_settings();
@@ -495,7 +499,7 @@ impl SkiApp {
                     self.persist_settings();
                 }
             });
-            material::hint_label(ui, tr("Command that opens a terminal; {} stands for the folder. Leave empty to find one automatically."), &theme);
+            material::hint_label_inset(ui, tr("Command that opens a terminal; {} stands for the folder. Leave empty to find one automatically."), &theme, 14);
         });
 
         material::section_label(ui, tr("Templates"), &theme);
@@ -518,10 +522,8 @@ impl SkiApp {
                     self.persist_settings();
                 }
             });
-            material::hint_label(ui, tr("Files in this folder are offered when you create a new file."), &theme);
-            ui.add_space(4.0);
+            material::hint_label_inset(ui, tr("Files in this folder are offered when you create a new file."), &theme, 14);
             ui.horizontal(|ui| {
-                ui.add_space(8.0);
                 if button(ui, "open_templates", Some(icons::FOLDER_OPEN), tr("Open templates folder"), &theme, ButtonKind::Tonal, shown.is_some()).clicked()
                     && let Some(dir) = shown
                 {

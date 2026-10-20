@@ -67,6 +67,9 @@ pub(super) fn permission_card(ui: &mut egui::Ui, theme: &SerpantinumTheme, full:
         let (note, _) = ui.allocate_exact_size(egui::vec2(full, 24.0), egui::Sense::hover());
         let text = if can_edit { octal } else { format!("{octal}  ·  {}", tr("Only the owner can change these")) };
         ui.painter().text(egui::pos2(note.left() + 16.0, note.center().y), egui::Align2::LEFT_CENTER, text, egui::FontId::proportional(material::FONT_CAPTION), theme.subtext1);
+        if !(is_dir && can_edit) {
+            ui.add_space(8.0);
+        }
         if is_dir && can_edit {
             ui.add_space(2.0);
             ui.horizontal(|ui| {

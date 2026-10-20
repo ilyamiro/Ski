@@ -626,6 +626,22 @@ pub fn nav_item(
     theme: &SerpantinumTheme,
     selected: bool,
 ) -> egui::Response {
+    nav_item_with(ui, id_source, icon, label, theme, selected, 0.0)
+}
+
+/// Room a round row button (eject) takes at the right end of a sidebar entry.
+pub const NAV_TRAILING: f32 = 36.0;
+
+/// `nav_item` that keeps `trailing` pixels at the right edge free of the label.
+pub fn nav_item_with(
+    ui: &mut egui::Ui,
+    id_source: impl std::hash::Hash + std::fmt::Debug,
+    icon: &str,
+    label: &str,
+    theme: &SerpantinumTheme,
+    selected: bool,
+    trailing: f32,
+) -> egui::Response {
     let (rect, response) = ui.allocate_exact_size(Vec2::new(ui.available_width(), ENTRY_HEIGHT), egui::Sense::click_and_drag());
     let id = ui.make_persistent_id(id_source);
     let fx = fx(ui, id, &response, true, &FxSpec::ROW);
@@ -636,7 +652,7 @@ pub fn nav_item(
 
     let color = lerp_color(lerp_color(theme.subtext0, theme.text, fx.hover), theme.mauve, sel_t);
     paint_icon(ui.painter(), Pos2::new(rect.left() + INSET_ICON, rect.center().y), icon, ICON_MD, color);
-    paint_label(ui, rect.left() + INSET_LABEL, rect.center().y, label, FONT_BODY, color, rect.width() - INSET_LABEL - 14.0);
+    paint_label(ui, rect.left() + INSET_LABEL, rect.center().y, label, FONT_BODY, color, rect.width() - INSET_LABEL - 14.0 - trailing);
     response
 }
 
@@ -1188,9 +1204,45 @@ pub fn stepper_row(
     can_dec: bool,
     can_inc: bool,
 ) -> (bool, bool) {
-    let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), MENU_ROW_HEIGHT), egui::Sense::hover());
+    stepper_row_with(ui, id_source, None, label, theme, value, can_dec, can_inc)
+}
+
+/// `stepper_row` for settings cards: leading icon, the height and the label edge of the other setting rows.
+#[allow(clippy::too_many_arguments)]
+pub fn setting_stepper_row(
+    ui: &mut egui::Ui,
+    id_source: impl std::hash::Hash + std::fmt::Debug,
+    icon: &str,
+    label: &str,
+    theme: &SerpantinumTheme,
+    value: &str,
+    can_dec: bool,
+    can_inc: bool,
+) -> (bool, bool) {
+    stepper_row_with(ui, id_source, Some(icon), label, theme, value, can_dec, can_inc)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn stepper_row_with(
+    ui: &mut egui::Ui,
+    id_source: impl std::hash::Hash + std::fmt::Debug,
+    icon: Option<&str>,
+    label: &str,
+    theme: &SerpantinumTheme,
+    value: &str,
+    can_dec: bool,
+    can_inc: bool,
+) -> (bool, bool) {
+    let height = if icon.is_some() { SETTING_HEIGHT } else { MENU_ROW_HEIGHT };
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), height), egui::Sense::hover());
     let id = ui.make_persistent_id(id_source);
-    paint_label(ui, rect.left() + 12.0, rect.center().y, label, FONT_BODY, theme.text, rect.width() - 150.0);
+    match icon {
+        Some(icon) => {
+            paint_icon(ui.painter(), Pos2::new(rect.left() + INSET_ICON + 2.0, rect.center().y), icon, ICON_MD, theme.subtext0);
+            paint_label(ui, rect.left() + INSET_LABEL + 2.0, rect.center().y, label, FONT_BODY, theme.text, rect.width() - 150.0);
+        }
+        None => paint_label(ui, rect.left() + 12.0, rect.center().y, label, FONT_BODY, theme.text, rect.width() - 150.0),
+    }
     // The current value sits between the two buttons
     let value_galley = ui.painter().layout_no_wrap(value.to_owned(), egui::FontId::proportional(FONT_CAPTION), theme.subtext1);
     ui.painter().galley(
@@ -1357,9 +1409,15 @@ pub fn group_card<R>(ui: &mut egui::Ui, theme: &SerpantinumTheme, add: impl FnOn
 
 /// Quiet explanatory line under a section.
 pub fn hint_label(ui: &mut egui::Ui, text: &str, theme: &SerpantinumTheme) {
-    ui.horizontal_wrapped(|ui| {
-        ui.add_space(4.0);
-        ui.label(egui::RichText::new(text).size(FONT_CAPTION).color(theme.subtext1));
+    hint_label_inset(ui, text, theme, 4);
+}
+
+/// `hint_label` with a chosen left edge, for hints that sit under a text field or a row.
+/// Every wrapped line starts at the same x.
+pub fn hint_label_inset(ui: &mut egui::Ui, text: &str, theme: &SerpantinumTheme, inset: i8) {
+    egui::Frame::new().inner_margin(egui::Margin { left: inset, right: inset, top: 4, bottom: 4 }).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.add(egui::Label::new(egui::RichText::new(text).size(FONT_CAPTION).color(theme.subtext1)).wrap());
     });
 }
 

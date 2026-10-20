@@ -45,6 +45,8 @@ pub const MORE: &str = "\u{f01d8}";
 
 pub const VIEW_LIST: &str = "\u{f0572}";
 pub const GRID_VIEW: &str = "\u{f0570}";
+pub const VIEW_COLUMN: &str = "\u{f056d}";
+pub const RESIZE: &str = "\u{f0a68}";
 pub const VISIBILITY: &str = "\u{f06d0}";
 pub const VISIBILITY_OFF: &str = "\u{f06d1}";
 pub const SORT_ASC: &str = "\u{f04bc}";
@@ -91,6 +93,7 @@ pub const LINK: &str = "\u{f0337}";
 pub const LOCK: &str = "\u{f033e}";
 pub const LOCK_OPEN: &str = "\u{f033f}";
 pub const EJECT: &str = "\u{f01ea}";
+pub const UNMOUNT: &str = "\u{f104c}";
 pub const REDO: &str = "\u{f044e}";
 pub const BOOKMARK: &str = "\u{f00c0}";
 pub const BOOKMARK_PLUS: &str = "\u{f00c5}";

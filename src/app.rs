@@ -1166,6 +1166,9 @@ impl SkiApp {
             if self.menu.take().is_some() {
                 return;
             }
+            if std::mem::take(&mut self.jobs_popover) {
+                return;
+            }
             if self.show_settings {
                 self.show_settings = false;
                 return;
@@ -2106,7 +2109,9 @@ impl SkiApp {
                         PlaceKind::Recent => self.in_recent(),
                         PlaceKind::Folder => place.drive.as_ref().is_none_or(|d| d.mounted) && self.current_path == place.path,
                     };
-                    let resp = nav_item(ui, ("place", idx), place.icon, &tr_dyn(&place.name), &self.theme, browsing && here);
+                    // Removable drives keep room for the eject button, so the name does not run under it
+                    let reserve = if place.drive.as_ref().is_some_and(|d| d.mounted && d.removable) { material::NAV_TRAILING } else { 0.0 };
+                    let resp = material::nav_item_with(ui, ("place", idx), place.icon, &tr_dyn(&place.name), &self.theme, browsing && here, reserve);
                     if place.kind == PlaceKind::Folder && place.drive.as_ref().is_none_or(|d| d.mounted) {
                         zones.push(dnd::DropZone { rect: resp.rect, dest: place.path.clone() });
                     }
@@ -3291,7 +3296,7 @@ impl SkiApp {
                 if !drive.mounted {
                     vec![vec![(icons::USB, tr("Mount"), MenuAction::Mount(dev, name))]]
                 } else {
-                    let mut leave = vec![(icons::EJECT, tr("Unmount"), MenuAction::Unmount(dev.clone(), name.clone(), mount.clone()))];
+                    let mut leave = vec![(icons::UNMOUNT, tr("Unmount"), MenuAction::Unmount(dev.clone(), name.clone(), mount.clone()))];
                     if drive.removable {
                         leave.push((icons::EJECT, tr("Eject"), MenuAction::Eject(dev, name, mount.clone())));
                     }
@@ -3577,7 +3582,7 @@ impl SkiApp {
             material::section_label(ui, tr("Template"), &theme);
             let mut picked = None;
             material::group_card(ui, &theme, |ui| {
-                egui::ScrollArea::vertical().max_height(176.0).auto_shrink([false, true]).id_salt("create_templates").show(ui, |ui| {
+                egui::ScrollArea::vertical().max_height(material::ENTRY_HEIGHT * 5.0 + 8.0).auto_shrink([false, true]).id_salt("create_templates").show(ui, |ui| {
                     ui.spacing_mut().item_spacing.y = 2.0;
                     for (i, t) in templates.iter().enumerate() {
                         if nav_item(ui, ("create_tpl", i), t.icon, &t.name, &theme, *template == i).clicked() {
@@ -4362,53 +4367,59 @@ impl SkiApp {
         }
         ui.add_space(2.0);
 
+        let full = ui.available_width();
+        ui.spacing_mut().item_spacing.y = 4.0;
+
+        // Header: icon tile, name, one-line summary
+        ui.vertical_centered(|ui| {
+            let (tile, _) = ui.allocate_exact_size(egui::vec2(88.0, 88.0), egui::Sense::hover());
+            ui.painter().rect_filled(tile, egui::CornerRadius::same(material::RADIUS_WINDOW), theme.surface1);
+            match thumb_for(&self.thumbs, &self.folder_icons, item, self.settings.show_thumbnails) {
+                Some(tex) => {
+                    egui::Image::from_texture(egui::load::SizedTexture::new(tex.id(), egui::vec2(64.0, 64.0)))
+                        .corner_radius(egui::CornerRadius::same(material::RADIUS_MD))
+                        .paint_at(ui, egui::Rect::from_center_size(tile.center(), egui::vec2(64.0, 64.0)));
+                }
+                None => {
+                    let color = if item.is_dir { theme.blue } else { theme.subtext0 };
+                    let glyph = if item.is_symlink { icons::SYMLINK } else { item.file_type.icon() };
+                    material::paint_icon(ui.painter(), tile.center(), glyph, 44.0, color);
+                }
+            }
+            ui.add_space(6.0);
+            let mut job = egui::text::LayoutJob::simple_singleline(item.name.clone(), egui::FontId::proportional(17.0), theme.text);
+            job.wrap = egui::text::TextWrapping::truncate_at_width(full - 16.0);
+            ui.label(job);
+            ui.label(egui::RichText::new(subtitle).size(material::FONT_CAPTION).color(theme.subtext1));
+            if item.is_dir {
+                ui.add_space(6.0);
+                if material::button(ui, "props_icon", Some(icons::IMAGE), tr("Custom icon…"), &theme, ButtonKind::Tonal, true).clicked() {
+                    change_icon = true;
+                }
+                if self.folder_icons.contains_key(&item.path)
+                    && material::button(ui, "props_icon_reset", Some(icons::TRASH), tr("Reset icon"), &theme, ButtonKind::Text, true).clicked()
+                {
+                    reset_icon = true;
+                }
+            }
+        });
+        ui.add_space(6.0);
+        ui.vertical_centered(|ui| {
+            if let Some(i) = segmented(ui, "props_tab", &[tr("Details"), tr("Permissions")], *tab, &theme) {
+                *tab = i;
+            }
+        });
+        ui.add_space(4.0);
+
+        // The header stays put; only the cards scroll, with the same height on both tabs so the dialog does not jump
+        let body_height = (ctx.content_rect().height() - 150.0 - 224.0).clamp(160.0, 440.0);
         egui::ScrollArea::vertical()
-            .max_height((ctx.content_rect().height() - 150.0).max(160.0))
-            .auto_shrink([true, true])
+            .min_scrolled_height(body_height)
+            .max_height(body_height)
+            .auto_shrink([true, false])
             .show(ui, |ui| {
                 let full = ui.available_width();
                 ui.spacing_mut().item_spacing.y = 4.0;
-
-                // Header: icon tile, name, one-line summary
-                ui.vertical_centered(|ui| {
-                    let (tile, _) = ui.allocate_exact_size(egui::vec2(88.0, 88.0), egui::Sense::hover());
-                    ui.painter().rect_filled(tile, egui::CornerRadius::same(material::RADIUS_WINDOW), theme.surface1);
-                    match thumb_for(&self.thumbs, &self.folder_icons, item, self.settings.show_thumbnails) {
-                        Some(tex) => {
-                            egui::Image::from_texture(egui::load::SizedTexture::new(tex.id(), egui::vec2(64.0, 64.0)))
-                                .corner_radius(egui::CornerRadius::same(material::RADIUS_MD))
-                                .paint_at(ui, egui::Rect::from_center_size(tile.center(), egui::vec2(64.0, 64.0)));
-                        }
-                        None => {
-                            let color = if item.is_dir { theme.blue } else { theme.subtext0 };
-                            let glyph = if item.is_symlink { icons::SYMLINK } else { item.file_type.icon() };
-                            material::paint_icon(ui.painter(), tile.center(), glyph, 44.0, color);
-                        }
-                    }
-                    ui.add_space(6.0);
-                    let mut job = egui::text::LayoutJob::simple_singleline(item.name.clone(), egui::FontId::proportional(17.0), theme.text);
-                    job.wrap = egui::text::TextWrapping::truncate_at_width(full - 16.0);
-                    ui.label(job);
-                    ui.label(egui::RichText::new(subtitle).size(material::FONT_CAPTION).color(theme.subtext1));
-                    if item.is_dir {
-                        ui.add_space(6.0);
-                        if material::button(ui, "props_icon", Some(icons::IMAGE), tr("Custom icon…"), &theme, ButtonKind::Tonal, true).clicked() {
-                            change_icon = true;
-                        }
-                        if self.folder_icons.contains_key(&item.path)
-                            && material::button(ui, "props_icon_reset", Some(icons::TRASH), tr("Reset icon"), &theme, ButtonKind::Text, true).clicked()
-                        {
-                            reset_icon = true;
-                        }
-                    }
-                });
-                ui.add_space(6.0);
-                ui.vertical_centered(|ui| {
-                    if let Some(i) = segmented(ui, "props_tab", &[tr("Details"), tr("Permissions")], *tab, &theme) {
-                        *tab = i;
-                    }
-                });
-                ui.add_space(4.0);
 
                 // Ownership belongs to the permissions tab, everything else to the details
                 let ownership = tr("Ownership");
