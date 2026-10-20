@@ -66,8 +66,8 @@ fn main() -> eframe::Result {
         .with_inner_size([1080.0, 720.0])
         .with_min_inner_size([360.0, 420.0]);
     if chooser.is_some() {
-        // A dialog: smaller, and with an app id of its own so window rules can float and center it
-        viewport = viewport.with_inner_size([900.0, 600.0]).with_app_id("ski-chooser");
+        // A dialog: smaller and not resizable, which makes tiling compositors float and center it (Wayland has no other hint winit can set); the app id is for window rules
+        viewport = viewport.with_inner_size([900.0, 600.0]).with_app_id("ski-chooser").with_resizable(false);
     }
     let native_options = eframe::NativeOptions {
         viewport,
