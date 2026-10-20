@@ -6,8 +6,10 @@
 
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
-use zbus::zvariant::{DeserializeDict, ObjectPath, SerializeDict, Type};
+use zbus::zvariant::{DeserializeDict, ObjectPath, OwnedObjectPath, SerializeDict, Type};
 use zbus::{blocking as zblocking, interface};
 
 const PORTAL_NAME: &str = "org.freedesktop.impl.portal.desktop.ski";
@@ -19,6 +21,8 @@ const RESPONSE_CANCELLED: u32 = 1;
 const RESPONSE_FAILED: u32 = 2;
 
 type FilterSpec = (String, Vec<(u32, String)>);
+/// A checkbox (no options) or a drop-down: id, label, the options as (id, label), the initial value.
+type ChoiceSpec = (String, String, Vec<(String, String)>, String);
 
 #[derive(DeserializeDict, Type, Debug, Default)]
 #[zvariant(signature = "dict")]
@@ -32,12 +36,16 @@ struct Options {
     current_file: Option<Vec<u8>>,
     accept_label: Option<String>,
     files: Option<Vec<Vec<u8>>>,
+    choices: Option<Vec<ChoiceSpec>>,
 }
 
 #[derive(SerializeDict, Type, Debug, Default)]
 #[zvariant(signature = "dict")]
 struct Results {
     uris: Option<Vec<String>>,
+    /// The filter that was active when the dialog ended: programs read it to learn the type chosen.
+    current_filter: Option<FilterSpec>,
+    choices: Option<Vec<(String, String)>>,
 }
 
 /// Paths travel as NUL-terminated byte strings.
@@ -47,6 +55,17 @@ fn path_from_bytes(mut bytes: Vec<u8>) -> PathBuf {
         bytes.pop();
     }
     PathBuf::from(std::ffi::OsString::from_vec(bytes))
+}
+
+/// The filters offered, in the order the dialog numbers them: a filter named only as the current
+/// one still has to be offered.
+fn all_filters(options: &Options) -> Vec<FilterSpec> {
+    let mut filters = options.filters.clone().unwrap_or_default();
+    if let Some(current) = &options.current_filter
+        && !filters.contains(current) {
+            filters.push(current.clone());
+        }
+    filters
 }
 
 fn filter_args(options: &Options, args: &mut Vec<String>) {
@@ -59,25 +78,66 @@ fn filter_args(options: &Options, args: &mut Vec<String>) {
         }
         out
     };
-    let filters = options.filters.clone().unwrap_or_default();
+    let filters = all_filters(options);
     for filter in &filters {
         args.push("--filter".into());
         args.push(encode(filter));
     }
-    if let Some(current) = &options.current_filter {
-        let at = filters.iter().position(|f| f == current).unwrap_or_else(|| {
-            // A filter named only as the current one still has to be offered
-            args.push("--filter".into());
-            args.push(encode(current));
-            filters.len()
-        });
+    if let Some(at) = options.current_filter.as_ref().and_then(|c| filters.iter().position(|f| f == c)) {
         args.push("--current-filter".into());
         args.push(at.to_string());
     }
 }
 
+fn choice_args(options: &Options, args: &mut Vec<String>) {
+    let clean = |text: &str| text.replace('\t', " ");
+    for (id, label, choices, initial) in options.choices.iter().flatten() {
+        let mut out = [id, label, initial].map(|t| clean(t)).join("\t");
+        for (value, name) in choices {
+            out.push_str(&format!("\t{}\t{}", clean(value), clean(name)));
+        }
+        args.extend(["--choice".into(), out]);
+    }
+}
+
+/// What a closed dialog hands back.
+struct Outcome {
+    uris: Vec<String>,
+    filter: Option<usize>,
+    choices: Vec<(String, String)>,
+}
+
+/// The running dialog of one request, which the portal can end through `Request.Close`.
+#[derive(Default)]
+struct Running {
+    pid: AtomicU32,
+    closed: AtomicBool,
+}
+
+impl Running {
+    fn stop(&self) {
+        self.closed.store(true, Ordering::SeqCst);
+        let pid = self.pid.load(Ordering::SeqCst);
+        if pid != 0 {
+            // SAFETY: plain signal to the child process this request started
+            unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM) };
+        }
+    }
+}
+
+/// `org.freedesktop.impl.portal.Request`, exported at the request's handle so the program can
+/// withdraw the request (it closed its window, or gave up) and the dialog goes away with it.
+struct Request(Arc<Running>);
+
+#[interface(name = "org.freedesktop.impl.portal.Request")]
+impl Request {
+    fn close(&self) {
+        self.0.stop();
+    }
+}
+
 /// Runs the dialog and returns the chosen URIs, or `None` when it was cancelled.
-fn run_dialog(mode: &str, title: &str, parent: &str, options: Options) -> Result<Option<Vec<String>>, String> {
+fn run_dialog(mode: &str, title: &str, parent: &str, app_id: &str, options: &Options, running: &Running) -> Result<Option<Outcome>, String> {
     let mut args: Vec<String> = vec!["--chooser".into(), "--mode".into(), mode.into()];
     if options.multiple == Some(true) {
         args.push("--multiple".into());
@@ -87,6 +147,9 @@ fn run_dialog(mode: &str, title: &str, parent: &str, options: Options) -> Result
     }
     if !parent.is_empty() {
         args.extend(["--parent".into(), parent.to_owned()]);
+    }
+    if !app_id.is_empty() {
+        args.extend(["--app-id".into(), app_id.to_owned()]);
     }
     if let Some(label) = &options.accept_label {
         args.extend(["--accept".into(), label.clone()]);
@@ -111,24 +174,61 @@ fn run_dialog(mode: &str, title: &str, parent: &str, options: Options) -> Result
             args.extend(["--file".into(), name.to_string_lossy().into_owned()]);
         }
     }
-    filter_args(&options, &mut args);
+    filter_args(options, &mut args);
+    choice_args(options, &mut args);
 
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-    let output = Command::new(exe)
+    let child = Command::new(exe)
         .args(&args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
-        .output()
+        .spawn()
         .map_err(|e| e.to_string())?;
-    let uris: Vec<String> = String::from_utf8_lossy(&output.stdout).lines().filter(|l| !l.is_empty()).map(str::to_owned).collect();
-    Ok((output.status.success() && !uris.is_empty()).then_some(uris))
+    running.pid.store(child.id(), Ordering::SeqCst);
+    if running.closed.load(Ordering::SeqCst) {
+        // Closed before the dialog was even up
+        running.stop();
+    }
+    let output = child.wait_with_output().map_err(|e| e.to_string())?;
+    running.pid.store(0, Ordering::SeqCst);
+
+    let text = String::from_utf8_lossy(&output.stdout);
+    let mut outcome = Outcome { uris: Vec::new(), filter: None, choices: Vec::new() };
+    for line in text.lines().filter(|l| !l.is_empty()) {
+        let mut parts = line.split('\t');
+        match (parts.next(), parts.next(), parts.next()) {
+            (Some("filter"), Some(index), None) => outcome.filter = index.parse().ok(),
+            (Some("choice"), Some(id), Some(value)) => outcome.choices.push((id.to_owned(), value.to_owned())),
+            _ => outcome.uris.push(line.to_owned()),
+        }
+    }
+    Ok((output.status.success() && !outcome.uris.is_empty()).then_some(outcome))
 }
 
-async fn respond(mode: &'static str, title: String, parent: String, options: Options) -> (u32, Results) {
+async fn respond(server: &zbus::ObjectServer, handle: ObjectPath<'_>, mode: &'static str, app_id: String, title: String, parent: String, options: Options) -> (u32, Results) {
+    let running = Arc::new(Running::default());
+    let handle = OwnedObjectPath::from(handle);
+    // Without the request object the dialog still works, it just cannot be withdrawn
+    let exported = server.at(&handle, Request(running.clone())).await.unwrap_or(false);
+    let filters = all_filters(&options);
     // The dialog can stay open for minutes; keep the connection's executor free meanwhile
-    match ::blocking::unblock(move || run_dialog(mode, &title, &parent, options)).await {
-        Ok(Some(uris)) => (RESPONSE_OK, Results { uris: Some(uris) }),
+    let answer = {
+        let running = running.clone();
+        ::blocking::unblock(move || run_dialog(mode, &title, &parent, &app_id, &options, &running)).await
+    };
+    if exported {
+        let _ = server.remove::<Request, _>(&handle).await;
+    }
+    match answer {
+        Ok(Some(outcome)) => (
+            RESPONSE_OK,
+            Results {
+                uris: Some(outcome.uris),
+                current_filter: outcome.filter.and_then(|i| filters.get(i).cloned()),
+                choices: (!outcome.choices.is_empty()).then_some(outcome.choices),
+            },
+        ),
         Ok(None) => (RESPONSE_CANCELLED, Results::default()),
         Err(err) => {
             eprintln!("ski portal: could not start the dialog: {err}");
@@ -141,17 +241,41 @@ struct FileChooser;
 
 #[interface(name = "org.freedesktop.impl.portal.FileChooser")]
 impl FileChooser {
-    async fn open_file(&self, _handle: ObjectPath<'_>, _app_id: &str, parent_window: &str, title: &str, options: Options) -> (u32, Results) {
+    async fn open_file(
+        &self,
+        #[zbus(object_server)] server: &zbus::ObjectServer,
+        handle: ObjectPath<'_>,
+        app_id: &str,
+        parent_window: &str,
+        title: &str,
+        options: Options,
+    ) -> (u32, Results) {
         let mode = if options.directory == Some(true) { "folder" } else { "open" };
-        respond(mode, title.to_owned(), parent_window.to_owned(), options).await
+        respond(server, handle, mode, app_id.to_owned(), title.to_owned(), parent_window.to_owned(), options).await
     }
 
-    async fn save_file(&self, _handle: ObjectPath<'_>, _app_id: &str, parent_window: &str, title: &str, options: Options) -> (u32, Results) {
-        respond("save", title.to_owned(), parent_window.to_owned(), options).await
+    async fn save_file(
+        &self,
+        #[zbus(object_server)] server: &zbus::ObjectServer,
+        handle: ObjectPath<'_>,
+        app_id: &str,
+        parent_window: &str,
+        title: &str,
+        options: Options,
+    ) -> (u32, Results) {
+        respond(server, handle, "save", app_id.to_owned(), title.to_owned(), parent_window.to_owned(), options).await
     }
 
-    async fn save_files(&self, _handle: ObjectPath<'_>, _app_id: &str, parent_window: &str, title: &str, options: Options) -> (u32, Results) {
-        respond("save-files", title.to_owned(), parent_window.to_owned(), options).await
+    async fn save_files(
+        &self,
+        #[zbus(object_server)] server: &zbus::ObjectServer,
+        handle: ObjectPath<'_>,
+        app_id: &str,
+        parent_window: &str,
+        title: &str,
+        options: Options,
+    ) -> (u32, Results) {
+        respond(server, handle, "save-files", app_id.to_owned(), title.to_owned(), parent_window.to_owned(), options).await
     }
 
     #[zbus(property, name = "version")]

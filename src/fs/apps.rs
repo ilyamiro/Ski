@@ -123,7 +123,7 @@ fn mime_pairs(file: &str) -> Vec<(String, String)> {
 
 /// `mime` followed by everything it is a kind of (aliases and parent types, most specific first).
 /// A .docx is also an `application/zip`, which is why file managers offer archive tools for it.
-fn mime_chain(mime: &str) -> Vec<String> {
+pub fn mime_chain(mime: &str) -> Vec<String> {
     static ALIASES: OnceLock<HashMap<String, String>> = OnceLock::new();
     static PARENTS: OnceLock<HashMap<String, Vec<String>>> = OnceLock::new();
     let aliases = ALIASES.get_or_init(|| mime_pairs("aliases").into_iter().collect());
@@ -402,4 +402,78 @@ pub fn set_category_default(category: &Category, app_id: &str) {
             set_default(mime, &app_id);
         }
     });
+}
+
+/// Name patterns of the shared-mime-info database (`globs2`): `*.ext` ones by extension, the rest as globs.
+struct MimeGlobs {
+    by_extension: HashMap<String, Vec<(u32, String)>>,
+    other: Vec<(u32, String, String)>,
+}
+
+fn mime_globs() -> &'static MimeGlobs {
+    static GLOBS: OnceLock<MimeGlobs> = OnceLock::new();
+    GLOBS.get_or_init(|| {
+        let mut globs = MimeGlobs { by_extension: HashMap::new(), other: Vec::new() };
+        let mut seen = std::collections::HashSet::new();
+        for dir in application_dirs() {
+            let Some(share) = dir.parent() else { continue };
+            let Ok(content) = std::fs::read_to_string(share.join("mime").join("globs2")) else { continue };
+            for line in content.lines().filter(|l| !l.starts_with('#')) {
+                let mut parts = line.splitn(4, ':');
+                let (Some(weight), Some(mime), Some(glob)) = (parts.next(), parts.next(), parts.next()) else { continue };
+                let Ok(weight) = weight.parse::<u32>() else { continue };
+                if !seen.insert((mime.to_owned(), glob.to_owned())) {
+                    continue;
+                }
+                match glob.strip_prefix("*.") {
+                    Some(ext) if !ext.contains(['*', '?', '[']) => globs.by_extension.entry(ext.to_lowercase()).or_default().push((weight, mime.to_owned())),
+                    _ => globs.other.push((weight, mime.to_owned(), glob.to_lowercase())),
+                }
+            }
+        }
+        globs
+    })
+}
+
+/// MIME type of a file from its name alone, the way the shared-mime-info database assigns it
+/// (longest matching extension first, then the heaviest pattern); `None` when no pattern matches.
+pub fn mime_of_name(name: &str) -> Option<String> {
+    let globs = mime_globs();
+    let lower = name.to_lowercase();
+    let mut best: Option<(u32, usize, &str)> = None;
+    for (weight, mime, glob) in &globs.other {
+        if super::glob::matches(glob, &lower, true) && best.is_none_or(|(w, l, _)| (*weight, glob.len()) > (w, l)) {
+            best = Some((*weight, glob.len(), mime));
+        }
+    }
+    // `a.tar.gz` is tried as `tar.gz` before `gz`
+    for (i, _) in lower.match_indices('.') {
+        if let Some(found) = globs.by_extension.get(&lower[i + 1..]) {
+            let (weight, mime) = found.iter().max_by_key(|(w, _)| *w)?;
+            let len = lower.len() - i;
+            if best.is_none_or(|(w, l, _)| (*weight, len) > (w, l)) {
+                best = Some((*weight, len, mime));
+            }
+            break;
+        }
+    }
+    best.map(|(_, _, mime)| mime.to_owned())
+}
+
+/// Whether a file named `name` is of the type `pattern` (`image/png`, or `image/*` for a family),
+/// counting the types it derives from: a `.docx` is an `application/zip`.
+pub fn name_is_mime(name: &str, pattern: &str) -> bool {
+    // Without a database nothing can be told apart, and hiding every file is worse than showing all
+    if mime_globs().by_extension.is_empty() {
+        return true;
+    }
+    let mime = mime_of_name(name).unwrap_or_else(|| "application/octet-stream".to_owned());
+    let chain = mime_chain(&mime);
+    match pattern.strip_suffix("/*") {
+        Some(family) => chain.iter().any(|m| m.split_once('/').is_some_and(|(f, _)| f == family)),
+        None => {
+            let wanted = mime_chain(pattern).into_iter().next().unwrap_or_else(|| pattern.to_owned());
+            chain.contains(&wanted)
+        }
+    }
 }

@@ -87,7 +87,7 @@ xdg.portal = {
 };
 ```
 
-The dialog attaches itself to the window that asked for it (Wayland, xdg-foreign), so compositors float it and center it on that window, as they do for GTK dialogs. When the program gives no window, the dialog is a fixed-size window (900×600), which most compositors float and center too. Its app id is `ski-chooser`; if yours tiles it, add a rule, e.g. sway: `for_window [app_id="ski-chooser"] floating enable, move position center`.
+The dialog attaches itself to the window that asked for it (Wayland, xdg-foreign), so compositors float it and center it on that window, as they do for GTK dialogs. When the program gives no window, the dialog is a fixed-size window, which most compositors float and center too. It opens at the size you last left it at (760×520 the first time). The dialog only browses and chooses: no moving, renaming or deleting (making a folder is allowed when saving or picking a folder). Saving asks before replacing each existing file, typing a folder name in the file name field goes into that folder, and `*/*` MIME filters use the system's shared-mime-info database. It starts in the folder the program last chose something in, and ends cleanly when the program withdraws the request. Its app id is `ski-chooser`; if yours tiles it, add a rule, e.g. sway: `for_window [app_id="ski-chooser"] floating enable, move position center`.
 
 ### Application menu and default file manager
 
@@ -99,7 +99,7 @@ xdg-mime default ski.desktop inode/directory   # optional: open folders with Ski
 
 ### Other distributions: file dialog and file manager service
 
-Ski can answer `org.freedesktop.FileManager1` (browsers' "Show in folder") and be the portal FileChooser. Install the files in `assets/` (`ski.portal` into `share/xdg-desktop-portal/portals/`, the two `.service` files into `share/dbus-1/services/` with `@out@` replaced by your prefix), then add this to `~/.config/xdg-desktop-portal/portals.conf`:
+Ski can answer `org.freedesktop.FileManager1` (browsers' "Show in folder") and be the portal FileChooser. Install the files in `assets/` (`ski.portal` into `share/xdg-desktop-portal/portals/`, the two `.service` files into `share/dbus-1/services/` with `@out@` replaced by your prefix), then add this to `~/.config/xdg-desktop-portal/portals.conf`. (`ski.portal` also lists the desktops it may serve in `UseIn=`, but when several installed portals offer a file dialog the one named here wins, so this line is what makes Ski the choice.)
 
 ```ini
 [preferred]

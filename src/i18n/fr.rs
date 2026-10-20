@@ -485,7 +485,6 @@ pub const CATALOG: &[(&str, &str)] = &[
     ("By date", "Par date"),
     ("Save", "Enregistrer"),
     ("File name", "Nom du fichier"),
-    ("{} exists. Press Save again to replace it.", "{} existe déjà. Appuyez de nouveau sur Enregistrer pour le remplacer."),
     ("That folder doesn't exist", "Ce dossier n'existe pas"),
     ("{} selected", "{} sélectionnés"),
     ("Corners", "Coins"),

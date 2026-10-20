@@ -34,43 +34,20 @@ impl Filter {
             return true;
         }
         let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-        let ext = path.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
         self.patterns.iter().any(|p| match p {
             Pattern::Glob(g) => crate::fs::glob::matches(g, &name, false),
-            Pattern::Mime(m) => mime_has_extension(m, &ext),
+            Pattern::Mime(m) => crate::fs::apps::name_is_mime(&name, m),
         })
     }
 }
 
-/// Extensions behind the MIME types portal clients most often ask for. A type listed here
-/// matches by extension; a type not listed matches everything rather than hiding files.
-fn mime_has_extension(mime: &str, ext: &str) -> bool {
-    const IMAGE: &[&str] = &["png", "jpg", "jpeg", "gif", "webp", "bmp", "svg", "tif", "tiff", "avif", "heic", "ico"];
-    const AUDIO: &[&str] = &["mp3", "flac", "ogg", "oga", "opus", "wav", "m4a", "aac", "wma"];
-    const VIDEO: &[&str] = &["mp4", "mkv", "webm", "avi", "mov", "m4v", "ogv", "wmv", "flv"];
-    const TEXT: &[&str] = &["txt", "md", "log", "csv", "json", "xml", "html", "htm", "toml", "yaml", "yml", "ini", "rs", "py", "c", "h", "js", "css", "sh"];
-    const ARCHIVE: &[&str] = &["zip", "tar", "gz", "xz", "bz2", "zst", "7z", "rar"];
-    let list: &[&str] = match mime {
-        "image/*" => IMAGE,
-        "audio/*" => AUDIO,
-        "video/*" => VIDEO,
-        "text/*" => TEXT,
-        "image/png" => &["png"],
-        "image/jpeg" => &["jpg", "jpeg"],
-        "image/gif" => &["gif"],
-        "image/webp" => &["webp"],
-        "image/svg+xml" => &["svg"],
-        "application/pdf" => &["pdf"],
-        "application/zip" => &["zip"],
-        "application/json" => &["json"],
-        "text/plain" => &["txt"],
-        "text/html" => &["html", "htm"],
-        "audio/mpeg" => &["mp3"],
-        "video/mp4" => &["mp4"],
-        "application/x-tar" | "application/gzip" | "application/x-compressed-tar" => ARCHIVE,
-        _ => return true,
-    };
-    list.contains(&ext)
+/// An extra setting the requesting program asked for: a checkbox (no options) or a drop-down.
+#[derive(Clone, Debug)]
+pub struct Choice {
+    pub id: String,
+    pub label: String,
+    pub options: Vec<(String, String)>,
+    pub initial: String,
 }
 
 #[derive(Clone, Debug)]
@@ -87,6 +64,9 @@ pub struct Spec {
     pub current_filter: usize,
     /// The requester's window as the portal names it (`wayland:<handle>`).
     pub parent: Option<String>,
+    /// The requesting program, to start where it last chose something.
+    pub app_id: Option<String>,
+    pub choices: Vec<Choice>,
 }
 
 impl Spec {
@@ -103,6 +83,8 @@ impl Spec {
             filters: Vec::new(),
             current_filter: 0,
             parent: None,
+            app_id: None,
+            choices: Vec::new(),
         };
         let mut it = args.iter();
         while let Some(arg) = it.next() {
@@ -122,8 +104,19 @@ impl Spec {
                 "--accept" => spec.accept_label = it.next().cloned().filter(|s| !s.is_empty()),
                 "--folder" => spec.folder = it.next().map(PathBuf::from),
                 "--name" => spec.name = it.next().cloned().filter(|s| !s.is_empty()),
-                "--file" => spec.files.extend(it.next().cloned()),
+                // Only the last component counts: a name is never a way out of the chosen folder
+                "--file" => spec.files.extend(it.next().and_then(|f| Path::new(f).file_name()).map(|n| n.to_string_lossy().into_owned())),
                 "--parent" => spec.parent = it.next().cloned().filter(|s| !s.is_empty()),
+                "--app-id" => spec.app_id = it.next().cloned().filter(|s| !s.is_empty()),
+                // id, label, initial value, then option id and label pairs
+                "--choice" => {
+                    let raw = it.next()?;
+                    let mut parts = raw.split('\t').map(str::to_owned);
+                    let (id, label, initial) = (parts.next()?, parts.next()?, parts.next()?);
+                    let rest: Vec<String> = parts.collect();
+                    let options = rest.chunks(2).filter(|pair| pair.len() == 2).map(|pair| (pair[0].clone(), pair[1].clone())).collect();
+                    spec.choices.push(Choice { id, label, options, initial });
+                }
                 "--current-filter" => spec.current_filter = it.next()?.parse().unwrap_or(0),
                 // label, then patterns written `g:*.png` (glob) or `m:image/png` (MIME type)
                 "--filter" => {
@@ -151,41 +144,124 @@ pub struct Chooser {
     pub spec: Spec,
     pub name_input: String,
     pub filter: usize,
-    /// The name an overwrite warning was shown for; pressing Save again confirms it.
-    pub warned: Option<PathBuf>,
+    /// The current value of each of the spec's choices.
+    pub choice_values: Vec<String>,
     /// The file whose name was last copied into the name field, so that is done once per click.
     pub filled: Option<PathBuf>,
     /// Set until the name field has taken focus and selected the part of the name before the dot.
     pub focus_name: bool,
     /// Keeps the window tied to its parent while the dialog is open.
     pub parent: Option<crate::wayland_parent::Parent>,
+    /// The window size last seen and since when, so a resize is stored once it settles.
+    size_seen: Option<([f32; 2], std::time::Instant)>,
+    size_stored: Option<[f32; 2]>,
 }
 
 impl Chooser {
     pub fn new(spec: Spec) -> Self {
         let name_input = spec.name.clone().unwrap_or_default();
         let filter = spec.current_filter;
+        let choice_values = spec.choices.iter().map(|c| c.initial.clone()).collect();
         let focus_name = spec.mode == Mode::Save;
-        Self { spec, name_input, filter, warned: None, filled: None, focus_name, parent: None }
+        Self { spec, name_input, filter, choice_values, filled: None, focus_name, parent: None, size_seen: None, size_stored: None }
     }
 
     pub fn accepts(&self, path: &Path) -> bool {
         self.spec.filters.get(self.filter).is_none_or(|f| f.accepts(path))
     }
 
-    /// The extension the active filter implies (`*.png` gives `png`), for names typed without one.
-    pub fn default_extension(&self) -> Option<&str> {
-        let filter = self.spec.filters.get(self.filter)?;
-        let mut globs = filter.patterns.iter().filter_map(|p| match p {
-            Pattern::Glob(g) => g.strip_prefix("*."),
-            Pattern::Mime(_) => None,
-        });
-        let ext = globs.next()?;
-        (filter.patterns.len() == 1 && !ext.is_empty() && !ext.contains(['*', '?', '[', '.'])).then_some(ext)
+    /// Remembers the size the user gave the dialog, once a resize has settled. Kept in a file of its
+    /// own: the settings file is whole-file rewritten by whichever Ski window saves last.
+    pub fn remember_size(&mut self, ctx: &eframe::egui::Context) {
+        let Some(rect) = ctx.input(|i| i.viewport().inner_rect) else { return };
+        let zoom = ctx.zoom_factor();
+        let size = [(rect.width() * zoom).round(), (rect.height() * zoom).round()];
+        match self.size_seen {
+            Some((seen, _)) if seen == size => {}
+            _ => self.size_seen = Some((size, std::time::Instant::now())),
+        }
+        let Some((seen, since)) = self.size_seen else { return };
+        if self.size_stored.is_none() {
+            // The first frame is the size the dialog opened with
+            self.size_stored = Some(seen);
+        } else if self.size_stored != Some(seen) {
+            if since.elapsed() >= SIZE_SETTLE {
+                save_size(seen);
+                self.size_stored = Some(seen);
+            } else {
+                ctx.request_repaint_after(SIZE_SETTLE);
+            }
+        }
     }
 
     pub fn takes_name(&self) -> bool {
         self.spec.mode == Mode::Save
+    }
+}
+
+/// The size a dialog opens at when none was remembered, and the smallest it is restored to.
+pub const DEFAULT_SIZE: [f32; 2] = [760.0, 520.0];
+const SIZE_SETTLE: std::time::Duration = std::time::Duration::from_millis(400);
+
+fn size_file() -> Option<PathBuf> {
+    dirs::state_dir().or_else(dirs::config_dir).map(|d| d.join("ski").join("chooser-size"))
+}
+
+/// The size the dialog was last left at.
+pub fn saved_size() -> Option<[f32; 2]> {
+    let text = std::fs::read_to_string(size_file()?).ok()?;
+    let (w, h) = text.trim().split_once('x')?;
+    let (w, h) = (w.parse::<f32>().ok()?, h.parse::<f32>().ok()?);
+    (w >= 360.0 && h >= 420.0 && w <= 8192.0 && h <= 8192.0).then_some([w, h])
+}
+
+fn save_size([w, h]: [f32; 2]) {
+    let Some(file) = size_file() else { return };
+    if let Some(dir) = file.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let _ = std::fs::write(file, format!("{w}x{h}"));
+}
+
+fn folders_file() -> Option<PathBuf> {
+    dirs::state_dir().or_else(dirs::config_dir).map(|d| d.join("ski").join("chooser-folders"))
+}
+
+/// The folder a program last chose something in (`app_id` is empty for programs the portal cannot name).
+pub fn remembered_folder(app_id: Option<&str>) -> Option<PathBuf> {
+    let text = std::fs::read_to_string(folders_file()?).ok()?;
+    let key = app_id.unwrap_or("");
+    text.lines().find_map(|l| l.split_once('\t').filter(|(id, _)| *id == key).map(|(_, p)| PathBuf::from(p))).filter(|p| p.is_dir())
+}
+
+fn remember_folder(app_id: Option<&str>, folder: &Path) {
+    let Some(file) = folders_file() else { return };
+    let key = app_id.unwrap_or("");
+    let mut lines: Vec<String> = std::fs::read_to_string(&file)
+        .unwrap_or_default()
+        .lines()
+        .filter(|l| l.split_once('\t').is_some_and(|(id, _)| id != key))
+        .map(str::to_owned)
+        .collect();
+    lines.push(format!("{key}\t{}", folder.display()));
+    if let Some(dir) = file.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let _ = std::fs::write(file, lines.join("\n") + "\n");
+}
+
+impl Chooser {
+    /// Answers with `paths`, the filter and the choices as they stand, remembering where it was done.
+    pub fn answer(&self, paths: &[PathBuf], folder: &Path) -> ! {
+        remember_folder(self.spec.app_id.as_deref(), folder);
+        let mut extra = Vec::new();
+        if !self.spec.filters.is_empty() {
+            extra.push(format!("filter\t{}", self.filter));
+        }
+        for (choice, value) in self.spec.choices.iter().zip(&self.choice_values) {
+            extra.push(format!("choice\t{}\t{value}", choice.id));
+        }
+        finish(paths, &extra)
     }
 }
 
@@ -227,12 +303,16 @@ pub fn from_uri(text: &str) -> Option<PathBuf> {
     Some(PathBuf::from(std::ffi::OsString::from_vec(out)))
 }
 
-/// Prints the choice and ends the process; the portal backend reads it from stdout.
-pub fn finish(paths: &[PathBuf]) -> ! {
+/// Prints the choice and ends the process; the portal backend reads it from stdout. Lines that
+/// are not URIs carry the rest of the answer: `filter<TAB>index` and `choice<TAB>id<TAB>value`.
+pub fn finish(paths: &[PathBuf], extra: &[String]) -> ! {
     use std::io::Write;
     let mut out = std::io::stdout().lock();
     for p in paths {
         let _ = writeln!(out, "{}", uri(p));
+    }
+    for line in extra {
+        let _ = writeln!(out, "{line}");
     }
     let _ = out.flush();
     std::process::exit(0);
@@ -262,11 +342,25 @@ mod tests {
     }
 
     #[test]
-    fn filter_implies_an_extension_only_when_it_is_unambiguous() {
-        let mut ch = Chooser::new(Spec::parse(&["--chooser".into(), "--mode".into(), "save".into(), "--filter".into(), "PNG\tg:*.png".into(), "--filter".into(), "Any\tg:*.png\tg:*.jpg".into()]).unwrap());
-        assert_eq!(ch.default_extension(), Some("png"));
-        ch.filter = 1;
-        assert_eq!(ch.default_extension(), None);
+    fn mime_filters_follow_the_shared_database() {
+        let mime = |m: &str| Filter { label: String::new(), patterns: vec![Pattern::Mime(m.into())] };
+        // Skipped where no shared-mime-info is installed, which then shows everything by design
+        if crate::fs::apps::mime_of_name("a.png").is_none() {
+            return;
+        }
+        assert!(mime("application/zip").accepts(Path::new("/x/report.docx")));
+        assert!(mime("text/*").accepts(Path::new("/x/main.rs")));
+        assert!(!mime("image/*").accepts(Path::new("/x/a.tar.gz")));
+        assert!(!mime("application/x-foo").accepts(Path::new("/x/a.png")));
+    }
+
+    #[test]
+    fn file_names_cannot_leave_the_folder() {
+        let args: Vec<String> = ["--chooser", "--mode", "save-files", "--file", "../../etc/passwd", "--file", "/abs/x.txt", "--file", "..", "--file", "ok"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(Spec::parse(&args).unwrap().files, ["passwd", "x.txt", "ok"]);
     }
 
     #[test]

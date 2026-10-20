@@ -30,7 +30,7 @@ impl SkiApp {
 
     /// A press on the grip of an item starts a drag of the selection; true when it did.
     pub(super) fn begin_item_drag(&mut self, ui: &egui::Ui, press: egui::Pos2, item_rects: &[(usize, egui::Rect)]) -> bool {
-        if self.in_trash() {
+        if self.in_trash() || self.picking() {
             return false;
         }
         let Some(&(idx, _)) = item_rects.iter().find(|(idx, rect)| self.drag_grip(ui, *idx, *rect).contains(press)) else { return false };

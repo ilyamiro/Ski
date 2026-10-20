@@ -1,6 +1,6 @@
 //! Chooser mode (`ski --chooser`): the open / save dialog behind the system file picker.
 use super::*;
-use crate::chooser::{self, Mode};
+use crate::chooser::{self, Chooser, Mode};
 
 impl SkiApp {
     /// The folder of `path` is already shown; this puts the cursor on the file itself.
@@ -19,18 +19,24 @@ impl SkiApp {
         match ch.spec.mode {
             Mode::Open => match self.chooser_answer() {
                 // Enter on several selected files answers with all of them
-                Some(files) if ch.spec.multiple && files.len() > 1 && self.selection.len() > 1 => chooser::finish(&files),
-                _ => chooser::finish(std::slice::from_ref(&item.path)),
+                Some(files) if ch.spec.multiple && files.len() > 1 && self.selection.len() > 1 => self.chooser_answer_with(&files),
+                _ => self.chooser_answer_with(std::slice::from_ref(&item.path)),
             },
             Mode::Save => self.chooser_fill_name(item),
             Mode::Folder | Mode::SaveFiles => {}
         }
     }
 
+    /// Hands the paths to the program that asked and ends the dialog.
+    pub(super) fn chooser_answer_with(&self, paths: &[PathBuf]) -> ! {
+        let ch = self.chooser.as_ref().expect("only a chooser answers");
+        let real = !self.is_mixed_listing() && !self.in_trash();
+        ch.answer(paths, if real { &self.current_path } else { paths.first().and_then(|p| p.parent()).unwrap_or(Path::new("/")) })
+    }
+
     fn chooser_fill_name(&mut self, item: &FileItem) {
         if let Some(ch) = self.chooser.as_mut() {
             ch.name_input = item.name.clone();
-            ch.warned = None;
             ch.filled = Some(item.path.clone());
         }
     }
@@ -45,26 +51,33 @@ impl SkiApp {
     }
 
     /// Where a typed name points: `~/x`, `/abs/x` and `sub/x` are all understood.
-    fn chooser_target(&self, name: &str) -> Option<PathBuf> {
+    fn chooser_typed(&self, name: &str) -> Option<PathBuf> {
         let name = name.trim();
-        if name.is_empty() || name.ends_with('/') {
+        if name.is_empty() {
             return None;
         }
         let typed = match name.strip_prefix("~/") {
             Some(rest) => dirs::home_dir()?.join(rest),
             None => PathBuf::from(name),
         };
-        let mut target = if typed.is_absolute() { typed } else { self.current_path.join(typed) };
-        target.file_name()?;
-        if target.extension().is_none()
-            && let Some(ext) = self.chooser.as_ref().and_then(|c| c.default_extension())
-        {
-            let mut name = target.file_name()?.to_owned();
-            name.push(".");
-            name.push(ext);
-            target.set_file_name(name);
-        }
-        Some(target)
+        Some(if typed.is_absolute() { typed } else { self.current_path.join(typed) })
+    }
+
+    fn chooser_target(&self, name: &str) -> Option<PathBuf> {
+        let target = self.chooser_typed(name)?;
+        (!name.trim().ends_with('/')).then_some(target).filter(|t| t.file_name().is_some())
+    }
+
+    /// A folder named in the save field: pressing Save goes into it instead of answering.
+    fn chooser_typed_dir(&self) -> Option<PathBuf> {
+        let ch = self.chooser.as_ref().filter(|c| c.spec.mode == Mode::Save)?;
+        self.chooser_typed(&ch.name_input).filter(|p| p.is_dir())
+    }
+
+    pub(super) fn replace_question(target: &Path) -> (String, String) {
+        let name = target.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let folder = target.parent().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        (trf("Replace “{}”?", &[&name]), trf("“{}” already exists in “{}”.", &[&name, &folder]))
     }
 
     /// The paths the Open / Save button would answer with, or `None` while it cannot answer yet.
@@ -103,23 +116,26 @@ impl SkiApp {
     }
 
     fn chooser_accept(&mut self) {
+        if let Some(dir) = self.chooser_typed_dir() {
+            self.navigate_to(dir);
+            if let Some(ch) = self.chooser.as_mut() {
+                ch.name_input.clear();
+            }
+            return;
+        }
         let Some(answer) = self.chooser_answer() else { return };
+        let saving = self.chooser.as_ref().is_some_and(|c| matches!(c.spec.mode, Mode::Save | Mode::SaveFiles));
         if self.chooser.as_ref().is_some_and(|c| c.spec.mode == Mode::Save) && !answer[0].parent().is_some_and(|p| p.is_dir()) {
             self.set_toast(tr("That folder doesn't exist").to_owned());
             return;
         }
-        let overwrite = self.chooser.as_ref().is_some_and(|c| c.spec.mode == Mode::Save)
-            && answer[0].exists()
-            && self.chooser.as_ref().is_some_and(|c| c.warned.as_ref() != Some(&answer[0]));
-        if overwrite {
-            let name = answer[0].file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-            self.set_toast(trf("{} exists. Press Save again to replace it.", &[&name]));
-            if let Some(ch) = self.chooser.as_mut() {
-                ch.warned = Some(answer[0].clone());
-            }
-            return;
+        // Every file the answer would replace is confirmed on its own
+        let mut taken: Vec<PathBuf> = if saving { answer.iter().filter(|p| p.symlink_metadata().is_ok()).cloned().collect() } else { Vec::new() };
+        if taken.is_empty() {
+            self.chooser_answer_with(&answer);
         }
-        chooser::finish(&answer);
+        let (title, body) = Self::replace_question(&taken.remove(0));
+        self.dialog = Some(Dialog::Confirm { title, body, confirm: tr("Replace").to_owned(), action: ConfirmAction::ReplaceFile { queue: taken, answer } });
     }
 
     /// Esc leaves the dialog once it has nothing else to close.
@@ -131,8 +147,9 @@ impl SkiApp {
 
     pub(super) fn render_chooser_bar(&mut self, ui: &mut egui::Ui) {
         self.chooser_follow_selection();
-        let ready = self.chooser_answer().is_some();
+        let ready = self.chooser_answer().is_some() || self.chooser_typed_dir().is_some();
         let Some(mut ch) = self.chooser.take() else { return };
+        ch.remember_size(ui.ctx());
         let theme = self.theme;
         let (mut accept, mut cancel) = (false, false);
         let label = match (&ch.spec.accept_label, ch.spec.mode) {
@@ -170,9 +187,6 @@ impl SkiApp {
                             ch.focus_name = false;
                         }
                         let field = field.response;
-                        if field.changed() {
-                            ch.warned = None;
-                        }
                         if field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                             accept = true;
                         }
@@ -187,6 +201,23 @@ impl SkiApp {
                         });
                         if ch.filter != before {
                             self.reload_items();
+                        }
+                    }
+                    let Chooser { spec, choice_values, .. } = &mut ch;
+                    for (choice, value) in spec.choices.iter().zip(choice_values.iter_mut()) {
+                        if choice.options.is_empty() {
+                            let mut on = value == "true";
+                            if ui.checkbox(&mut on, choice.label.replace('_', "")).changed() {
+                                *value = on.to_string();
+                            }
+                        } else {
+                            ui.label(egui::RichText::new(choice.label.replace('_', "")).size(material::FONT_CAPTION).color(theme.subtext1));
+                            let shown = choice.options.iter().find(|(id, _)| id == value).map(|(_, label)| label.clone()).unwrap_or_default();
+                            egui::ComboBox::from_id_salt(("chooser_choice", &choice.id)).selected_text(shown).show_ui(ui, |ui| {
+                                for (id, label) in &choice.options {
+                                    ui.selectable_value(value, id.clone(), label);
+                                }
+                            });
                         }
                     }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -208,7 +239,7 @@ impl SkiApp {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::chooser::{Chooser, Spec};
+    use crate::chooser::Spec;
     use crate::settings::Settings;
     use crate::ui::theme::SerpantinumTheme;
 
@@ -247,9 +278,14 @@ mod tests {
         let app = app_in(&work, &["--chooser", "--mode", "save"]);
         assert_eq!(app.chooser_answer(), None);
 
-        // A typed path and a filter's extension decide where the file goes
+        // A typed path decides where the file goes, and a filter never renames it
         let app = app_in(&work, &["--chooser", "--mode", "save", "--name", "sub/x", "--filter", "PNG\tg:*.png"]);
-        assert_eq!(app.chooser_answer(), Some(vec![app.current_path.join("sub/x.png")]));
+        assert_eq!(app.chooser_answer(), Some(vec![app.current_path.join("sub/x")]));
+
+        // A typed folder is gone into, not answered with
+        let app = app_in(&work, &["--chooser", "--mode", "save", "--name", "sub/"]);
+        assert_eq!(app.chooser_answer(), None);
+        assert_eq!(app.chooser_typed_dir(), Some(app.current_path.join("sub")));
         let app = app_in(&work, &["--chooser", "--mode", "save", "--name", "/tmp/y.txt"]);
         assert_eq!(app.chooser_answer(), Some(vec![PathBuf::from("/tmp/y.txt")]));
 

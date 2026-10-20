@@ -9,6 +9,7 @@ mod settings_ui;
 mod thumbs;
 mod ui;
 mod wayland_parent;
+mod x11_parent;
 
 use std::env;
 use std::path::PathBuf;
@@ -43,7 +44,7 @@ fn main() -> eframe::Result {
             }
             _ => path,
         }
-    } else if let Some(folder) = chooser.as_ref().and_then(|c| c.folder.clone()).filter(|p| p.is_dir()) {
+    } else if let Some(folder) = chooser.as_ref().and_then(|c| c.folder.clone().or_else(|| chooser::remembered_folder(c.app_id.as_deref()))).filter(|p| p.is_dir()) {
         folder
     } else {
         match settings.start_location {
@@ -67,10 +68,10 @@ fn main() -> eframe::Result {
         .with_inner_size([1080.0, 720.0])
         .with_min_inner_size([360.0, 420.0]);
     if let Some(spec) = &chooser {
-        viewport = viewport.with_inner_size([900.0, 600.0]).with_app_id("ski-chooser");
+        viewport = viewport.with_inner_size(chooser::saved_size().unwrap_or(chooser::DEFAULT_SIZE)).with_app_id("ski-chooser");
         // Tied to its requester (see wayland_parent.rs) it is floated and centered as a dialog and can
         // stay resizable; without a parent, a fixed size is what makes tiling compositors float it
-        if !spec.parent.as_deref().is_some_and(|p| p.starts_with("wayland:")) {
+        if !spec.parent.as_deref().is_some_and(|p| p.starts_with("wayland:") || p.starts_with("x11:")) {
             viewport = viewport.with_resizable(false);
         }
     }
@@ -94,6 +95,9 @@ fn main() -> eframe::Result {
                 app.select_path(&path);
             }
             app.chooser = chooser.map(|spec| {
+                if let Some(handle) = spec.parent.as_deref() {
+                    x11_parent::attach(cc, handle);
+                }
                 let parent = spec.parent.as_deref().and_then(|handle| wayland_parent::attach(cc, handle));
                 let mut chooser = chooser::Chooser::new(spec);
                 chooser.parent = parent;

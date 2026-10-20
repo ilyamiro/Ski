@@ -1,3 +1,4 @@
 [portal]
 DBusName=org.freedesktop.impl.portal.desktop.ski
 Interfaces=org.freedesktop.impl.portal.FileChooser;
+UseIn=Hyprland;sway;niri;river;Wayfire;labwc;wlroots;GNOME;KDE;X-Cinnamon;MATE;XFCE;LXQt;Budgie;COSMIC;Pantheon;i3;bspwm;Openbox

@@ -127,6 +127,8 @@ pub(crate) enum TransferOp {
 pub(crate) enum ConfirmAction {
     DeleteForever(Vec<PathBuf>),
     EmptyTrash,
+    /// The dialog's choice replaces files that exist: each one asked about in turn, the answer sent once all agreed.
+    ReplaceFile { queue: Vec<PathBuf>, answer: Vec<PathBuf> },
 }
 
 /// Action offered by a toast, such as undoing a move to the trash.
@@ -1111,7 +1113,7 @@ impl SkiApp {
     /// Files dropped on the window are copied into the folder being shown.
     fn handle_drops(&mut self, ctx: &egui::Context) {
         let dropped: Vec<PathBuf> = ctx.input(|i| i.raw.dropped_files.iter().map(|f| f.path().to_path_buf()).collect());
-        if dropped.is_empty() {
+        if dropped.is_empty() || self.chooser.is_some() {
             return;
         }
         if self.can_modify_here() {
@@ -1319,7 +1321,7 @@ impl SkiApp {
             handled = true;
         }
 
-        if self.is_act_pressed(ctx, crate::keymap::Action::Rename) {
+        if !self.picking() && self.is_act_pressed(ctx, crate::keymap::Action::Rename) {
             match self.selected_paths().as_slice() {
                 [] => {}
                 [one] => self.open_rename(one.clone()),
@@ -1328,7 +1330,8 @@ impl SkiApp {
             handled = true;
         }
 
-        if self.is_act_pressed(ctx, crate::keymap::Action::DeleteForever) {
+        if self.picking() {
+        } else if self.is_act_pressed(ctx, crate::keymap::Action::DeleteForever) {
             self.request_delete_forever(self.selected_paths());
             handled = true;
         } else if self.is_act_pressed(ctx, crate::keymap::Action::Trash) {
@@ -1340,7 +1343,7 @@ impl SkiApp {
             handled = true;
         }
 
-        if self.is_act_pressed(ctx, crate::keymap::Action::NewFile) {
+        if !self.picking() && self.is_act_pressed(ctx, crate::keymap::Action::NewFile) {
             self.open_create_dialog(false);
             handled = true;
         }
@@ -1352,24 +1355,24 @@ impl SkiApp {
             handled = true;
         }
 
-        if self.is_act_pressed(ctx, crate::keymap::Action::Undo) {
+        if !self.picking() && self.is_act_pressed(ctx, crate::keymap::Action::Undo) {
             self.undo();
             handled = true;
         }
-        if self.is_act_pressed(ctx, crate::keymap::Action::Redo) {
+        if !self.picking() && self.is_act_pressed(ctx, crate::keymap::Action::Redo) {
             self.redo();
             handled = true;
         }
 
-        if self.is_act_pressed(ctx, crate::keymap::Action::Duplicate) {
+        if !self.picking() && self.is_act_pressed(ctx, crate::keymap::Action::Duplicate) {
             self.duplicate(self.selected_paths());
             handled = true;
         }
-        if self.is_act_pressed(ctx, crate::keymap::Action::MakeLink) {
+        if !self.picking() && self.is_act_pressed(ctx, crate::keymap::Action::MakeLink) {
             self.make_links(self.selected_paths());
             handled = true;
         }
-        if self.is_act_pressed(ctx, crate::keymap::Action::OpenTerminal) {
+        if !self.picking() && self.is_act_pressed(ctx, crate::keymap::Action::OpenTerminal) {
             let here = self.current_path.clone();
             self.open_terminal(&here);
             handled = true;
@@ -1438,12 +1441,12 @@ impl SkiApp {
             handled = true;
         }
 
-        if self.is_act_pressed(ctx, crate::keymap::Action::NewFolder) {
+        if self.may_create_folder() && self.is_act_pressed(ctx, crate::keymap::Action::NewFolder) {
             self.open_create_dialog(true);
             handled = true;
         }
 
-        if self.is_act_pressed(ctx, crate::keymap::Action::NewWindow) {
+        if !self.picking() && self.is_act_pressed(ctx, crate::keymap::Action::NewWindow) {
             self.new_window();
             handled = true;
         }
@@ -1462,7 +1465,8 @@ impl SkiApp {
                 event(|e| matches!(e, egui::Event::Paste(_) | egui::Event::PasteImage(_))),
             )
         });
-        if ev_copy || self.is_act_pressed(ctx, crate::keymap::Action::Copy) {
+        if self.picking() {
+        } else if ev_copy || self.is_act_pressed(ctx, crate::keymap::Action::Copy) {
             self.set_clipboard(ctx, self.selected_paths(), false);
             handled = true;
         } else if ev_cut || self.is_act_pressed(ctx, crate::keymap::Action::Cut) {
@@ -2238,7 +2242,7 @@ impl SkiApp {
             return;
         }
         if item.is_dir {
-            if self.settings.open_in_new_window {
+            if self.settings.open_in_new_window && self.chooser.is_none() {
                 let started = std::env::current_exe()
                     .and_then(|exe| std::process::Command::new(exe).arg(&item.path).spawn());
                 if let Err(err) = started {
@@ -3135,6 +3139,9 @@ impl SkiApp {
     }
 
     fn run_action(&mut self, ctx: &egui::Context, action: MenuAction) {
+        if !self.allows(&action) {
+            return;
+        }
         match action {
             MenuAction::Open(item) => self.open_item(item),
             MenuAction::OpenPath(path) => self.navigate_to(path),
@@ -3194,7 +3201,54 @@ impl SkiApp {
         }
     }
 
+    /// Whether this is the system file dialog, which only browses and chooses: no moving, renaming or deleting.
+    fn picking(&self) -> bool {
+        self.chooser.is_some()
+    }
+
+    /// Folders can be made in a dialog that saves or picks a folder, as in GTK, but not in one that opens files.
+    fn may_create_folder(&self) -> bool {
+        self.chooser.as_ref().is_none_or(|c| c.spec.mode != crate::chooser::Mode::Open)
+    }
+
+    fn allows(&self, action: &MenuAction) -> bool {
+        if !self.picking() {
+            return true;
+        }
+        match action {
+            MenuAction::NewFolder => self.may_create_folder(),
+            _ => matches!(
+                action,
+                MenuAction::Open(_)
+                    | MenuAction::OpenPath(_)
+                    | MenuAction::OpenInNewTab(_)
+                    | MenuAction::CopyPath(_)
+                    | MenuAction::Properties(_)
+                    | MenuAction::Pin(_)
+                    | MenuAction::Unpin(_)
+                    | MenuAction::SelectAll
+                    | MenuAction::InvertSelection
+                    | MenuAction::SelectPattern
+                    | MenuAction::Refresh
+                    | MenuAction::NewTab
+                    | MenuAction::OpenSettings
+                    | MenuAction::Shortcuts
+                    | MenuAction::Mount(..)
+                    | MenuAction::Unmount(..)
+                    | MenuAction::Eject(..)
+            ),
+        }
+    }
+
     fn menu_entries(&self, target: &MenuTarget) -> Vec<Vec<(&'static str, &'static str, MenuAction)>> {
+        let mut groups = self.menu_entries_all(target);
+        for group in &mut groups {
+            group.retain(|(_, _, action)| self.allows(action));
+        }
+        groups
+    }
+
+    fn menu_entries_all(&self, target: &MenuTarget) -> Vec<Vec<(&'static str, &'static str, MenuAction)>> {
         let pin_entry = |path: &PathBuf| {
             if self.pins.contains(path) {
                 (icons::PIN_OFF, tr("Unpin from sidebar"), MenuAction::Unpin(path.clone()))
@@ -3759,12 +3813,23 @@ impl SkiApp {
         let mut close = material::dialog_header(ui, title, None, &theme, "confirm_close");
         ui.label(egui::RichText::new(body.as_str()).size(material::FONT_BODY).color(theme.subtext0));
 
-        let footer = material::dialog_footer(ui, &theme, FooterSpec { danger: true, ..FooterSpec::new("confirm", icons::DELETE_FOREVER, confirm) });
+        let replacing = matches!(action, ConfirmAction::ReplaceFile { .. });
+        let icon = if replacing { icons::CHECK } else { icons::DELETE_FOREVER };
+        let footer = material::dialog_footer(ui, &theme, FooterSpec { danger: true, ..FooterSpec::new("confirm", icon, confirm) });
         close |= footer.cancel;
         if footer.primary {
             match std::mem::replace(action, ConfirmAction::EmptyTrash) {
                 ConfirmAction::DeleteForever(paths) => self.delete_forever(paths),
                 ConfirmAction::EmptyTrash => self.empty_trash(),
+                ConfirmAction::ReplaceFile { mut queue, answer } => {
+                    if queue.is_empty() {
+                        self.chooser_answer_with(&answer);
+                    }
+                    let (next_title, next_body) = Self::replace_question(&queue.remove(0));
+                    (*title, *body) = (next_title, next_body);
+                    *action = ConfirmAction::ReplaceFile { queue, answer };
+                    return false;
+                }
             }
             close = true;
         }

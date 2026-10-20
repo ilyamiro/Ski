@@ -54,7 +54,8 @@ pkgs.rustPlatform.buildRustPackage {
 
     wrapProgram $out/bin/ski \
       --prefix LD_LIBRARY_PATH : ${lib.makeLibraryPath runtimeLibs} \
-      --prefix PATH : ${lib.makeBinPath runtimeTools}
+      --prefix PATH : ${lib.makeBinPath runtimeTools} \
+      --suffix XDG_DATA_DIRS : ${pkgs.shared-mime-info}/share
   '';
 
   meta = {
