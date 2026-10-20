@@ -85,6 +85,8 @@ pub struct Spec {
     pub files: Vec<String>,
     pub filters: Vec<Filter>,
     pub current_filter: usize,
+    /// The requester's window as the portal names it (`wayland:<handle>`).
+    pub parent: Option<String>,
 }
 
 impl Spec {
@@ -100,6 +102,7 @@ impl Spec {
             files: Vec::new(),
             filters: Vec::new(),
             current_filter: 0,
+            parent: None,
         };
         let mut it = args.iter();
         while let Some(arg) = it.next() {
@@ -120,6 +123,7 @@ impl Spec {
                 "--folder" => spec.folder = it.next().map(PathBuf::from),
                 "--name" => spec.name = it.next().cloned().filter(|s| !s.is_empty()),
                 "--file" => spec.files.extend(it.next().cloned()),
+                "--parent" => spec.parent = it.next().cloned().filter(|s| !s.is_empty()),
                 "--current-filter" => spec.current_filter = it.next()?.parse().unwrap_or(0),
                 // label, then patterns written `g:*.png` (glob) or `m:image/png` (MIME type)
                 "--filter" => {
@@ -149,13 +153,15 @@ pub struct Chooser {
     pub filter: usize,
     /// The name an overwrite warning was shown for; pressing Save again confirms it.
     pub warned: Option<PathBuf>,
+    /// Keeps the window tied to its parent while the dialog is open.
+    pub parent: Option<crate::wayland_parent::Parent>,
 }
 
 impl Chooser {
     pub fn new(spec: Spec) -> Self {
         let name_input = spec.name.clone().unwrap_or_default();
         let filter = spec.current_filter;
-        Self { spec, name_input, filter, warned: None }
+        Self { spec, name_input, filter, warned: None, parent: None }
     }
 
     pub fn accepts(&self, path: &Path) -> bool {

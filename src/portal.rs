@@ -77,13 +77,16 @@ fn filter_args(options: &Options, args: &mut Vec<String>) {
 }
 
 /// Runs the dialog and returns the chosen URIs, or `None` when it was cancelled.
-fn run_dialog(mode: &str, title: &str, options: Options) -> Result<Option<Vec<String>>, String> {
+fn run_dialog(mode: &str, title: &str, parent: &str, options: Options) -> Result<Option<Vec<String>>, String> {
     let mut args: Vec<String> = vec!["--chooser".into(), "--mode".into(), mode.into()];
     if options.multiple == Some(true) {
         args.push("--multiple".into());
     }
     if !title.is_empty() {
         args.extend(["--title".into(), title.to_owned()]);
+    }
+    if !parent.is_empty() {
+        args.extend(["--parent".into(), parent.to_owned()]);
     }
     if let Some(label) = &options.accept_label {
         args.extend(["--accept".into(), label.clone()]);
@@ -122,9 +125,9 @@ fn run_dialog(mode: &str, title: &str, options: Options) -> Result<Option<Vec<St
     Ok((output.status.success() && !uris.is_empty()).then_some(uris))
 }
 
-async fn respond(mode: &'static str, title: String, options: Options) -> (u32, Results) {
+async fn respond(mode: &'static str, title: String, parent: String, options: Options) -> (u32, Results) {
     // The dialog can stay open for minutes; keep the connection's executor free meanwhile
-    match ::blocking::unblock(move || run_dialog(mode, &title, options)).await {
+    match ::blocking::unblock(move || run_dialog(mode, &title, &parent, options)).await {
         Ok(Some(uris)) => (RESPONSE_OK, Results { uris: Some(uris) }),
         Ok(None) => (RESPONSE_CANCELLED, Results::default()),
         Err(err) => {
@@ -138,17 +141,17 @@ struct FileChooser;
 
 #[interface(name = "org.freedesktop.impl.portal.FileChooser")]
 impl FileChooser {
-    async fn open_file(&self, _handle: ObjectPath<'_>, _app_id: &str, _parent_window: &str, title: &str, options: Options) -> (u32, Results) {
+    async fn open_file(&self, _handle: ObjectPath<'_>, _app_id: &str, parent_window: &str, title: &str, options: Options) -> (u32, Results) {
         let mode = if options.directory == Some(true) { "folder" } else { "open" };
-        respond(mode, title.to_owned(), options).await
+        respond(mode, title.to_owned(), parent_window.to_owned(), options).await
     }
 
-    async fn save_file(&self, _handle: ObjectPath<'_>, _app_id: &str, _parent_window: &str, title: &str, options: Options) -> (u32, Results) {
-        respond("save", title.to_owned(), options).await
+    async fn save_file(&self, _handle: ObjectPath<'_>, _app_id: &str, parent_window: &str, title: &str, options: Options) -> (u32, Results) {
+        respond("save", title.to_owned(), parent_window.to_owned(), options).await
     }
 
-    async fn save_files(&self, _handle: ObjectPath<'_>, _app_id: &str, _parent_window: &str, title: &str, options: Options) -> (u32, Results) {
-        respond("save-files", title.to_owned(), options).await
+    async fn save_files(&self, _handle: ObjectPath<'_>, _app_id: &str, parent_window: &str, title: &str, options: Options) -> (u32, Results) {
+        respond("save-files", title.to_owned(), parent_window.to_owned(), options).await
     }
 
     #[zbus(property, name = "version")]

@@ -8,6 +8,7 @@ mod settings;
 mod settings_ui;
 mod thumbs;
 mod ui;
+mod wayland_parent;
 
 use std::env;
 use std::path::PathBuf;
@@ -65,9 +66,13 @@ fn main() -> eframe::Result {
         .with_title(chooser.as_ref().and_then(|c| c.title.clone()).unwrap_or_else(|| "Ski".to_owned()))
         .with_inner_size([1080.0, 720.0])
         .with_min_inner_size([360.0, 420.0]);
-    if chooser.is_some() {
-        // A dialog: smaller and not resizable, which makes tiling compositors float and center it (Wayland has no other hint winit can set); the app id is for window rules
-        viewport = viewport.with_inner_size([900.0, 600.0]).with_app_id("ski-chooser").with_resizable(false);
+    if let Some(spec) = &chooser {
+        viewport = viewport.with_inner_size([900.0, 600.0]).with_app_id("ski-chooser");
+        // Tied to its requester (see wayland_parent.rs) it is floated and centered as a dialog and can
+        // stay resizable; without a parent, a fixed size is what makes tiling compositors float it
+        if !spec.parent.as_deref().is_some_and(|p| p.starts_with("wayland:")) {
+            viewport = viewport.with_resizable(false);
+        }
     }
     let native_options = eframe::NativeOptions {
         viewport,
@@ -88,7 +93,12 @@ fn main() -> eframe::Result {
             if let Some(path) = select {
                 app.select_path(&path);
             }
-            app.chooser = chooser.map(chooser::Chooser::new);
+            app.chooser = chooser.map(|spec| {
+                let parent = spec.parent.as_deref().and_then(|handle| wayland_parent::attach(cc, handle));
+                let mut chooser = chooser::Chooser::new(spec);
+                chooser.parent = parent;
+                chooser
+            });
             Ok(Box::new(app))
         }),
     )
