@@ -71,6 +71,22 @@ pub enum Density {
 }
 
 impl Density {
+    pub const ALL: [Density; 3] = [Density::Compact, Density::Comfortable, Density::Spacious];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Density::Compact => "Compact",
+            Density::Comfortable => "Comfortable",
+            Density::Spacious => "Spacious",
+        }
+    }
+
+    /// One step larger (`1`) or smaller (`-1`), stopping at the ends.
+    pub fn step(self, delta: i32) -> Self {
+        let at = Self::ALL.iter().position(|d| *d == self).unwrap_or(1) as i32;
+        Self::ALL[(at + delta).clamp(0, Self::ALL.len() as i32 - 1) as usize]
+    }
+
     pub fn row_height(self) -> f32 {
         match self {
             Density::Compact => 34.0,
@@ -89,6 +105,22 @@ pub enum GridSize {
 }
 
 impl GridSize {
+    pub const ALL: [GridSize; 3] = [GridSize::Small, GridSize::Medium, GridSize::Large];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            GridSize::Small => "Small",
+            GridSize::Medium => "Medium",
+            GridSize::Large => "Large",
+        }
+    }
+
+    /// One step larger (`1`) or smaller (`-1`), stopping at the ends.
+    pub fn step(self, delta: i32) -> Self {
+        let at = Self::ALL.iter().position(|g| *g == self).unwrap_or(1) as i32;
+        Self::ALL[(at + delta).clamp(0, Self::ALL.len() as i32 - 1) as usize]
+    }
+
     pub fn cell_size(self) -> (f32, f32) {
         match self {
             GridSize::Small => (92.0, 104.0),

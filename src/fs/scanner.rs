@@ -71,6 +71,17 @@ impl TypeFilter {
     }
 }
 
+impl TypeFilter {
+    /// Strict variant for mixed listings (search, recent): folders only count under `Folders`.
+    pub fn accepts(&self, item: &FileItem) -> bool {
+        match self {
+            TypeFilter::All => true,
+            TypeFilter::Folders => item.is_dir,
+            _ => !item.is_dir && self.matches(item),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ListOptions {
     pub show_hidden: bool,

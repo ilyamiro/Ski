@@ -13,9 +13,10 @@ use crate::fs::{
     search::Search,
     trash,
 };
+use crate::fs::batch_rename::{self, Entry as RenameEntry, Mode as RenameMode, Rules as RenameRules};
 use crate::fs::ops::{self, ArchiveFormat, Jobs};
 use crate::fs::scanner::{SortBy, SortOrder};
-use crate::settings::Settings;
+use crate::settings::{Density, GridSize, Settings};
 use crate::thumbs::Thumbnails;
 use crate::ui::{
     icons,
@@ -65,6 +66,7 @@ enum MenuAction {
     MoveTo(Vec<PathBuf>),
     Compress(Vec<PathBuf>),
     Rename(PathBuf),
+    RenameMany(Vec<PathBuf>),
     Trash(Vec<PathBuf>),
     DeleteForever(Vec<PathBuf>),
     Restore(Vec<PathBuf>),
@@ -134,12 +136,7 @@ pub(crate) enum Dialog {
         for_file: bool,
         for_type: bool,
     },
-    PickFolder {
-        op: TransferOp,
-        items: Vec<PathBuf>,
-        dir: PathBuf,
-        path_input: String,
-    },
+    BatchRename { entries: Vec<RenameEntry>, rules: RenameRules, first_frame: bool },
     Compress {
         sources: Vec<PathBuf>,
         name: String,
@@ -158,6 +155,36 @@ pub(crate) enum Dialog {
     },
     Shortcuts,
     Icon { folder: PathBuf, input: String, error: Option<String>, candidates: Vec<PathBuf>, browse: Option<PathBuf> },
+}
+
+/// The folder picker of Copy to / Move to / Extract to, shown in a window of its own.
+struct Picker {
+    op: TransferOp,
+    items: Vec<PathBuf>,
+    dir: PathBuf,
+    path_input: String,
+    /// A subfolder picked in the list; the destination when set, otherwise `dir`.
+    chosen: Option<PathBuf>,
+    /// Subfolders of `dir`, read when the folder changes.
+    folders: Vec<PathBuf>,
+}
+
+impl Picker {
+    fn enter(&mut self, dir: PathBuf) {
+        self.path_input = dir.to_string_lossy().into_owned();
+        self.folders = std::fs::read_dir(&dir)
+            .map(|rd| {
+                rd.flatten()
+                    .filter(|e| !e.file_name().to_string_lossy().starts_with('.'))
+                    .map(|e| e.path())
+                    .filter(|p| p.is_dir())
+                    .collect()
+            })
+            .unwrap_or_default();
+        self.folders.sort_by_key(|p| p.file_name().map(|n| n.to_string_lossy().to_lowercase()));
+        self.dir = dir;
+        self.chosen = None;
+    }
 }
 
 pub struct SkiApp {
@@ -221,6 +248,7 @@ pub struct SkiApp {
     pins: Vec<PathBuf>,
     menu: Option<ContextMenu>,
     pub(crate) dialog: Option<Dialog>,
+    picker: Option<Picker>,
     pub(crate) closing_dialog: Option<Dialog>,
     /// Set when a menu click ran this frame, so it is not also read as a click outside a dialog it just opened.
     menu_click_consumed: bool,
@@ -232,6 +260,8 @@ pub struct SkiApp {
 
     // Flag to scroll to selected item on next frame
     scroll_to_selected: bool,
+    // Accumulated Ctrl+scroll / pinch zoom, in log units
+    zoom_accum: f32,
 
     pub(crate) capturing_key: bool,
 }
@@ -240,6 +270,8 @@ impl SkiApp {
     pub fn new(initial_path: PathBuf, theme: SerpantinumTheme, settings: Settings, ctx: &egui::Context) -> Self {
         apps::preload();
         crate::ui::fonts::preload();
+        // Ctrl+= / Ctrl+- resize icons (see `zoom_icons`), not the whole interface
+        ctx.options_mut(|o| o.zoom_with_keyboard = false);
         let places = Place::default_places();
         let canonical_path = initial_path.canonicalize().unwrap_or(initial_path);
 
@@ -295,12 +327,14 @@ impl SkiApp {
             pins: Place::load_pins(),
             menu: None,
             dialog: None,
+            picker: None,
             closing_dialog: None,
             menu_click_consumed: false,
             menu_ghost: None,
             window_title: String::new(),
             status_toast: None,
             scroll_to_selected: false,
+            zoom_accum: 0.0,
             capturing_key: false,
         };
 
@@ -442,6 +476,7 @@ impl SkiApp {
             .into_iter()
             .filter(|p| self.show_hidden || !p.components().any(|c| c.as_os_str().to_string_lossy().starts_with('.')))
             .filter_map(|p| FileItem::from_path(&p).filter(|_| p.symlink_metadata().is_ok()))
+            .filter(|i| self.type_filter.accepts(i))
             .take(LIMIT)
             .collect()
     }
@@ -647,7 +682,9 @@ impl SkiApp {
 
     fn open_pick_folder(&mut self, op: TransferOp, items: Vec<PathBuf>) {
         let dir = self.current_path.clone();
-        self.dialog = Some(Dialog::PickFolder { op, path_input: dir.to_string_lossy().into_owned(), dir, items });
+        let mut picker = Picker { op, path_input: String::new(), dir: PathBuf::new(), items, chosen: None, folders: Vec::new() };
+        picker.enter(dir);
+        self.picker = Some(picker);
     }
 
     /// Called once per frame: report finished background jobs.
@@ -772,6 +809,29 @@ impl SkiApp {
         self.status_toast = Some(Toast { message: message.into(), since: std::time::Instant::now(), action: Some(action), leaving: false });
     }
 
+    /// Step the icon size of the grid, or the row height of the list.
+    fn zoom_icons(&mut self, delta: i32) {
+        let message = match self.view_mode {
+            ViewMode::Grid => {
+                let next = self.settings.grid_size.step(delta);
+                if next == self.settings.grid_size {
+                    return;
+                }
+                self.settings.grid_size = next;
+                format!("{} icons", next.label())
+            }
+            ViewMode::List => {
+                let next = self.settings.density.step(delta);
+                if next == self.settings.density {
+                    return;
+                }
+                self.settings.density = next;
+                format!("{} rows", next.label())
+            }
+        };
+        self.set_toast(message);
+    }
+
     fn close_search(&mut self) {
         self.show_search = false;
         if !self.search_query.is_empty() {
@@ -792,7 +852,7 @@ impl SkiApp {
             self.sync_selection(true);
             self.error_message = None;
             let root = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
-            self.search.start(ctx, root, self.search_query.trim().to_owned(), self.show_hidden);
+            self.search.start(ctx, root, self.search_query.trim().to_owned(), self.show_hidden, self.type_filter);
         }
     }
 
@@ -990,6 +1050,15 @@ impl SkiApp {
             handled = true;
         }
 
+        if self.is_act_pressed(ctx, crate::keymap::Action::ZoomIn) {
+            self.zoom_icons(1);
+            handled = true;
+        }
+        if self.is_act_pressed(ctx, crate::keymap::Action::ZoomOut) {
+            self.zoom_icons(-1);
+            handled = true;
+        }
+
         if self.is_act_pressed(ctx, crate::keymap::Action::ToggleHidden) {
             self.show_hidden = !self.show_hidden;
             self.reload_items();
@@ -1016,8 +1085,10 @@ impl SkiApp {
         }
 
         if self.is_act_pressed(ctx, crate::keymap::Action::Rename) {
-            if let [one] = self.selected_paths().as_slice() {
-                self.open_rename(one.clone());
+            match self.selected_paths().as_slice() {
+                [] => {}
+                [one] => self.open_rename(one.clone()),
+                many => self.open_batch_rename(many.to_vec()),
             }
             handled = true;
         }
@@ -1148,6 +1219,12 @@ const MENU_WIDTH: f32 = 264.0;
 
 /// Content width below which the sidebar is hidden.
 const SIDEBAR_BREAKPOINT: f32 = 680.0;
+/// Outer gutter shared by the sidebar, header, list and status bar so their edges line up.
+const PAGE_MARGIN: i8 = 10;
+/// Where a row's icon starts inside its rounded background; the status bar text lines up with it.
+const CONTENT_INSET: i8 = 16;
+/// Space between the navigation buttons and the address pill, and between it and the right buttons.
+const TITLE_GAP: f32 = 8.0;
 
 impl eframe::App for SkiApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
@@ -1187,7 +1264,7 @@ impl eframe::App for SkiApp {
                 .frame(
                     egui::Frame::new()
                         .fill(self.theme.mantle)
-                        .inner_margin(egui::Margin::symmetric(10, 10)),
+                        .inner_margin(egui::Margin::symmetric(PAGE_MARGIN, 8)),
                 )
                 .show(ui, |ui| self.render_sidebar(ui));
         }
@@ -1196,7 +1273,7 @@ impl eframe::App for SkiApp {
             .frame(
                 egui::Frame::new()
                     .fill(self.theme.base)
-                    .inner_margin(egui::Margin::symmetric(10, 8)),
+                    .inner_margin(egui::Margin::symmetric(PAGE_MARGIN, 8)),
             )
             .show(ui, |ui| self.render_top_bar(ui, sidebar_visible));
 
@@ -1204,7 +1281,7 @@ impl eframe::App for SkiApp {
             egui::Panel::bottom("status_bar")
                 .exact_size(30.0)
                 .resizable(false)
-                .frame(egui::Frame::new().fill(self.theme.base).inner_margin(egui::Margin::symmetric(16, 0)))
+                .frame(egui::Frame::new().fill(self.theme.base).inner_margin(egui::Margin::symmetric(PAGE_MARGIN + CONTENT_INSET, 0)))
                 .show(ui, |ui| self.render_status_bar(ui));
         }
 
@@ -1212,7 +1289,7 @@ impl eframe::App for SkiApp {
             .frame(
                 egui::Frame::new()
                     .fill(self.theme.base)
-                    .inner_margin(egui::Margin { left: 6, right: 6, top: 0, bottom: 6 }),
+                    .inner_margin(egui::Margin { left: PAGE_MARGIN, right: PAGE_MARGIN, top: 0, bottom: 6 }),
             )
             .show(ui, |ui| {
                 let background = ui.interact(ui.max_rect(), ui.make_persistent_id("list_background"), egui::Sense::click());
@@ -1227,6 +1304,20 @@ impl eframe::App for SkiApp {
                     self.last_cursor = None;
                 }
 
+                let pinch = ui.input(|i| i.zoom_delta());
+                if pinch != 1.0 && ui.rect_contains_pointer(ui.max_rect()) {
+                    self.zoom_accum += pinch.ln();
+                    if self.zoom_accum.abs() >= 0.12 {
+                        let delta = if self.zoom_accum > 0.0 { 1 } else { -1 };
+                        self.zoom_accum = 0.0;
+                        self.zoom_icons(delta);
+                    }
+                }
+
+                if !self.search_query.trim().is_empty() || self.type_filter != TypeFilter::All {
+                    self.render_filter_bar(ui);
+                }
+
                 if let Some(err) = &self.error_message {
                     material::empty_state(ui, &self.theme, icons::INFO, "This folder can't be opened", Some(err));
                 } else if self.items.is_empty() {
@@ -1234,7 +1325,7 @@ impl eframe::App for SkiApp {
                         if self.search.is_running() {
                             (icons::SEARCH, "Searching…", None)
                         } else {
-                            (icons::SEARCH_OFF, "No results", Some("Try a different name"))
+                            (icons::SEARCH_OFF, "No results", Some(if self.type_filter == TypeFilter::All { "Try a different name" } else { "Try a different name or file type" }))
                         }
                     } else if self.in_recent() {
                         (icons::RECENT, "Nothing recent yet", Some("Files you open show up here"))
@@ -1257,6 +1348,7 @@ impl eframe::App for SkiApp {
         self.render_settings(&ctx);
         self.render_menu(&ctx);
         self.render_dialog(&ctx);
+        self.render_picker(&ctx);
         self.render_toast(&ctx);
         self.render_drop_overlay(&ctx);
     }
@@ -1273,22 +1365,24 @@ impl SkiApp {
             |ui| {
                 ui.spacing_mut().item_spacing.x = gap;
 
-                let can_back = !self.back_history.is_empty();
-                if icon_button(ui, "btn_back", icons::ARROW_BACK, &self.theme, can_back, "Back").clicked() {
+                let (back, forward) = material::nav_pair(ui, &self.theme, !self.back_history.is_empty(), !self.forward_history.is_empty());
+                if back.clicked() {
                     self.go_back();
                 }
-                let can_forward = !self.forward_history.is_empty();
-                if icon_button(ui, "btn_fwd", icons::ARROW_FORWARD, &self.theme, can_forward, "Forward").clicked() {
+                if forward.clicked() {
                     self.go_forward();
                 }
+                // The address pill breathes: a wider gap before it than between the icon buttons
+                ui.spacing_mut().item_spacing.x = TITLE_GAP;
 
                 // Search lives in the sidebar; without a sidebar it becomes a header button.
                 let right_buttons = if sidebar_visible { 1.0 } else { 3.0 };
-                let reserved = right_buttons * (CONTROL_HEIGHT + gap);
-                let title_width = (ui.available_width() - reserved - gap).max(40.0);
+                let reserved = right_buttons * CONTROL_HEIGHT + (right_buttons - 1.0) * gap;
+                let title_width = (ui.available_width() - reserved).max(40.0);
 
                 let (title_rect, title_resp) =
                     ui.allocate_exact_size(egui::vec2(title_width, CONTROL_HEIGHT), egui::Sense::click());
+                ui.spacing_mut().item_spacing.x = gap;
 
                 if self.show_search && !sidebar_visible {
                     ui.painter().rect_filled(title_rect, material::pill(title_rect), self.theme.surface1);
@@ -1327,6 +1421,10 @@ impl SkiApp {
                 };
                 let view = icon_button(ui, "btn_view_options", view_icon, &self.theme, true, "View options");
                 self.settings_button_rect = view.rect;
+                if self.type_filter != TypeFilter::All {
+                    let dot = egui::pos2(view.rect.right() - 8.0, view.rect.top() + 8.0);
+                    ui.painter().circle_filled(dot, 4.0, self.theme.mauve);
+                }
                 if view.clicked() {
                     self.show_settings = !self.show_settings;
                 }
@@ -1337,21 +1435,22 @@ impl SkiApp {
     fn render_search_field(&mut self, ui: &mut egui::Ui, rect: egui::Rect) {
         material::paint_icon(
             ui.painter(),
-            egui::pos2(rect.left() + 18.0, rect.center().y),
+            egui::pos2(rect.left() + CONTROL_HEIGHT / 2.0, rect.center().y),
             icons::SEARCH,
-            16.0,
+            material::ICON_SM,
             self.theme.subtext1,
         );
         let edit_rect = egui::Rect::from_min_max(
             egui::pos2(rect.left() + 36.0, rect.top()),
             egui::pos2(rect.right() - 12.0, rect.bottom()),
         );
-        let resp = ui.put(
+        let resp = material::put_over(
+            ui,
             edit_rect,
             egui::TextEdit::singleline(&mut self.search_query)
                 .frame(egui::Frame::NONE)
                 .align(egui::Align2::LEFT_CENTER)
-                .font(egui::FontId::proportional(13.5))
+                .font(egui::FontId::proportional(material::FONT_BODY))
                 .hint_text("Search files"),
         );
         if self.focus_search {
@@ -1369,12 +1468,13 @@ impl SkiApp {
             egui::pos2(rect.left() + 16.0, rect.top()),
             egui::pos2(rect.right() - 12.0, rect.bottom()),
         );
-        let resp = ui.put(
+        let resp = material::put_over(
+            ui,
             edit_rect,
             egui::TextEdit::singleline(&mut self.path_input)
                 .frame(egui::Frame::NONE)
                 .align(egui::Align2::LEFT_CENTER)
-                .font(egui::FontId::proportional(13.5))
+                .font(egui::FontId::proportional(material::FONT_BODY))
                 .hint_text("Type a path and press Enter"),
         );
         if !resp.has_focus() && !resp.lost_focus() {
@@ -1484,6 +1584,31 @@ impl SkiApp {
         } else if edit || field.clicked() {
             self.is_editing_path = true;
             self.path_input = self.current_path.to_string_lossy().to_string();
+        }
+    }
+
+    /// File-type chips above the results: they narrow a search, a folder or the recent files.
+    fn render_filter_bar(&mut self, ui: &mut egui::Ui) {
+        let theme = self.theme;
+        let mut picked = None;
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing = egui::vec2(6.0, 6.0);
+            ui.add_space(f32::from(CONTENT_INSET) - 6.0);
+            for filter in TypeFilter::ALL {
+                if chip(ui, ("bar_type", filter.label()), None, filter.label(), &theme, self.type_filter == filter).clicked() {
+                    picked = Some(filter);
+                }
+            }
+        });
+        ui.add_space(2.0);
+        if let Some(filter) = picked {
+            self.type_filter = filter;
+            if self.search_query.trim().is_empty() {
+                self.reload_items();
+            } else {
+                let ctx = ui.ctx().clone();
+                self.on_query_changed(&ctx);
+            }
         }
     }
 
@@ -1616,23 +1741,24 @@ impl SkiApp {
         let focused = ui.memory(|m| m.has_focus(search_id));
         let fill = if focused { self.theme.surface2 } else { self.theme.surface1 };
         ui.painter().rect_filled(rect, material::pill(rect), fill);
-        material::paint_icon(ui.painter(), egui::pos2(rect.left() + 17.0, rect.center().y), icons::SEARCH, material::ICON_SM, self.theme.subtext1);
+        material::paint_icon(ui.painter(), egui::pos2(rect.left() + CONTROL_HEIGHT / 2.0, rect.center().y), icons::SEARCH, material::ICON_SM, self.theme.subtext1);
 
         if open_t < 0.6 {
             return;
         }
-        let clear_rect = egui::Rect::from_center_size(egui::pos2(rect.right() - 18.0, rect.center().y), egui::vec2(26.0, 26.0));
+        let clear_rect = egui::Rect::from_center_size(egui::pos2(rect.right() - CONTROL_HEIGHT / 2.0, rect.center().y), egui::vec2(26.0, 26.0));
         let edit_rect = egui::Rect::from_min_max(
             egui::pos2(rect.left() + 36.0, rect.top()),
             egui::pos2(clear_rect.left() - 4.0, rect.bottom()),
         );
-        let resp = ui.put(
+        let resp = material::put_over(
+            ui,
             edit_rect,
             egui::TextEdit::singleline(&mut self.search_query)
                 .id(search_id)
                 .frame(egui::Frame::NONE)
                 .align(egui::Align2::LEFT_CENTER)
-                .font(egui::FontId::proportional(13.5))
+                .font(egui::FontId::proportional(material::FONT_BODY))
                 .hint_text("Search files"),
         );
         if self.focus_search {
@@ -1838,7 +1964,10 @@ impl SkiApp {
         let text = if self.selection.is_empty() {
             let noun = if self.is_mixed_listing() && !self.in_recent() { ("result", "results") } else { ("item", "items") };
             let more = if self.search.is_running() { "…" } else { "" };
-            format!("{total} {}{more}", if total == 1 { noun.0 } else { noun.1 })
+            let filter = if self.type_filter == TypeFilter::All { String::new() } else { format!(" · {}", self.type_filter.label()) };
+            // A search stops collecting at its limit, so the count is a floor
+            let capped = if self.search_query.trim().is_empty() || total < crate::fs::search::MAX_RESULTS { "" } else { "+" };
+            format!("{total}{capped} {}{more}{filter}", if total == 1 { noun.0 } else { noun.1 })
         } else {
             let selected: Vec<&FileItem> = self.selection.iter().filter_map(|i| self.items.get(*i)).collect();
             let size: u64 = selected.iter().filter(|i| !i.is_dir).map(|i| i.size).sum();
@@ -1926,7 +2055,7 @@ impl SkiApp {
         }
 
         let screen = ctx.content_rect();
-        let width = (screen.width() - 24.0).clamp(240.0, 340.0);
+        let width = (screen.width() - 24.0).clamp(240.0, 300.0);
         let max_height = (screen.height() - 80.0).max(160.0);
         let mut reload = false;
 
@@ -1941,12 +2070,12 @@ impl SkiApp {
                     .fill(self.theme.mantle)
                     .corner_radius(egui::CornerRadius::same(material::RADIUS_CONTAINER))
                     .shadow(ctx.global_style().visuals.window_shadow)
-                    .inner_margin(egui::Margin::same(16))
+                    .inner_margin(egui::Margin::same(10))
                     .show(ui, |ui| {
-                        ui.set_width(width - 32.0);
+                        ui.set_width(width - 20.0);
                         // An Area only offers the height it had last frame, which would pin scrolling content short
-                        ui.set_max_height(max_height - 32.0);
-                        egui::ScrollArea::vertical().max_height(max_height - 32.0).show(ui, |ui| {
+                        ui.set_max_height(max_height - 20.0);
+                        egui::ScrollArea::vertical().max_height(max_height - 20.0).show(ui, |ui| {
                             reload = self.view_options_contents(ui);
                         });
                     });
@@ -1980,53 +2109,75 @@ impl SkiApp {
     fn file_options(&mut self, ui: &mut egui::Ui) -> bool {
         let theme = self.theme;
         let mut reload = false;
-        self.section_title(ui, "View");
+        let hidden_hint = crate::keymap::hint(&self.settings.keybinds, crate::keymap::Action::ToggleHidden, self.settings.vim_keys);
+        ui.spacing_mut().item_spacing.y = 2.0;
+
         if let Some(i) = segmented(ui, "vo_view", &["List", "Grid"], usize::from(self.view_mode == ViewMode::Grid), &theme) {
             self.view_mode = if i == 0 { ViewMode::List } else { ViewMode::Grid };
         }
 
-        self.section_title(ui, "Sort by");
-        let fields = [(SortBy::Name, "Name"), (SortBy::Size, "Size"), (SortBy::Modified, "Modified")];
-        let labels: Vec<&str> = fields.iter().map(|(_, l)| *l).collect();
-        let current = fields.iter().position(|(f, _)| *f == self.sort_by).unwrap_or(0);
-        if let Some(i) = segmented(ui, "vo_sort", &labels, current, &theme) {
-            self.sort_by = fields[i].0;
-            reload = true;
-        }
-        let asc = self.sort_order == SortOrder::Ascending;
-        if let Some(i) = segmented(ui, "vo_order", &["Ascending", "Descending"], usize::from(!asc), &theme) {
-            self.sort_order = if i == 0 { SortOrder::Ascending } else { SortOrder::Descending };
-            reload = true;
-        }
-
-        self.section_title(ui, "Show");
-        ui.horizontal_wrapped(|ui| {
-            let icon = if self.show_hidden { icons::VISIBILITY } else { icons::VISIBILITY_OFF };
-            if chip(ui, "set_hidden", Some(icon), "Hidden files", &theme, self.show_hidden).clicked() {
-                self.show_hidden = !self.show_hidden;
-                reload = true;
-            }
-            if chip(ui, "set_folders_first", Some(icons::FOLDER), "Folders first", &theme, self.folders_first).clicked() {
-                self.folders_first = !self.folders_first;
-                reload = true;
-            }
-        });
-
-        self.section_title(ui, "List columns");
-        ui.horizontal_wrapped(|ui| {
-            for column in Column::ALL {
-                let on = self.columns.contains(&column);
-                if chip(ui, ("set_col", column.label()), None, column.label(), &theme, on).clicked() {
-                    self.columns = Column::ALL
-                        .into_iter()
-                        .filter(|c| (*c == column) != self.columns.contains(c))
-                        .collect();
+        match self.view_mode {
+            ViewMode::Grid => {
+                let at = GridSize::ALL.iter().position(|g| *g == self.settings.grid_size).unwrap_or(1);
+                let (less, more) = material::stepper_row(ui, "vo_icon_size", "Icon size", &theme, at > 0, at + 1 < GridSize::ALL.len());
+                if less || more {
+                    self.settings.grid_size = self.settings.grid_size.step(if more { 1 } else { -1 });
                 }
             }
-        });
+            ViewMode::List => {
+                let at = Density::ALL.iter().position(|d| *d == self.settings.density).unwrap_or(1);
+                let (less, more) = material::stepper_row(ui, "vo_row_height", "Row height", &theme, at > 0, at + 1 < Density::ALL.len());
+                if less || more {
+                    self.settings.density = Density::ALL[if more { at + 1 } else { at - 1 }];
+                }
+            }
+        }
 
+        material::divider(ui, &theme);
+        self.section_title(ui, "Sort by");
+        for (field, label) in [(SortBy::Name, "Name"), (SortBy::Size, "Size"), (SortBy::Modified, "Last modified")] {
+            if material::radio_row(ui, ("vo_sort", label), label, &theme, self.sort_by == field).clicked() && self.sort_by != field {
+                self.sort_by = field;
+                reload = true;
+            }
+        }
+        let descending = self.sort_order == SortOrder::Descending;
+        if material::toggle_row(ui, "vo_reverse", "Reverse order", None, &theme, descending).clicked() {
+            self.sort_order = if descending { SortOrder::Ascending } else { SortOrder::Descending };
+            reload = true;
+        }
+
+        material::divider(ui, &theme);
+        if material::toggle_row(ui, "vo_hidden", "Hidden files", hidden_hint.as_deref(), &theme, self.show_hidden).clicked() {
+            self.show_hidden = !self.show_hidden;
+            reload = true;
+        }
+        if material::toggle_row(ui, "vo_folders_first", "Folders first", None, &theme, self.folders_first).clicked() {
+            self.folders_first = !self.folders_first;
+            reload = true;
+        }
+
+        if self.view_mode == ViewMode::List {
+            material::divider(ui, &theme);
+            self.section_title(ui, "List columns");
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing = egui::vec2(6.0, 6.0);
+                for column in Column::ALL {
+                    let on = self.columns.contains(&column);
+                    if chip(ui, ("set_col", column.label()), None, column.label(), &theme, on).clicked() {
+                        self.columns = Column::ALL
+                            .into_iter()
+                            .filter(|c| (*c == column) != self.columns.contains(c))
+                            .collect();
+                    }
+                }
+            });
+        }
+
+        material::divider(ui, &theme);
         self.section_title(ui, "File type");
         ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing = egui::vec2(6.0, 6.0);
             for filter in TypeFilter::ALL {
                 if chip(ui, ("set_type", filter.label()), None, filter.label(), &theme, self.type_filter == filter).clicked() {
                     self.type_filter = filter;
@@ -2039,8 +2190,6 @@ impl SkiApp {
     }
 
     fn view_options_contents(&mut self, ui: &mut egui::Ui) -> bool {
-        ui.spacing_mut().item_spacing = egui::vec2(6.0, 8.0);
-        ui.label(egui::RichText::new("View").size(material::FONT_TITLE).color(self.theme.text));
         self.file_options(ui)
     }
 
@@ -2064,7 +2213,7 @@ impl SkiApp {
                             continue;
                         }
                         ui.horizontal(|ui| {
-                            ui.set_min_height(34.0);
+                            ui.set_min_height(material::ENTRY_HEIGHT);
                             ui.add_space(8.0);
                             ui.label(egui::RichText::new(action.label()).size(material::FONT_BODY).color(theme.text));
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -2169,18 +2318,7 @@ impl SkiApp {
         }
         std::fs::rename(path, &target).map_err(|err| err.to_string())?;
 
-        if let Some(idx) = self.pins.iter().position(|p| p.as_path() == path) {
-            self.pins[idx] = target.clone();
-            Place::save_pins(&self.pins);
-        }
-        if let Some(icon) = self.folder_icons.remove(path) {
-            self.folder_icons.insert(target.clone(), icon);
-            save_folder_icons(&self.folder_icons);
-        }
-        if let Some(app) = self.open_overrides.remove(path) {
-            self.open_overrides.insert(target.clone(), app);
-            apps::save_overrides(&self.open_overrides);
-        }
+        self.retarget_path(path, &target);
 
         if self.is_mixed_listing() {
             if let Some(idx) = self.items.iter().position(|i| i.path == path)
@@ -2310,6 +2448,7 @@ impl SkiApp {
                 }
             }
             MenuAction::Rename(path) => self.open_rename(path),
+            MenuAction::RenameMany(paths) => self.open_batch_rename(paths),
             MenuAction::Trash(paths) => self.trash_paths(paths),
             MenuAction::DeleteForever(paths) => self.request_delete_forever(paths),
             MenuAction::Restore(paths) => self.restore_paths(paths),
@@ -2349,8 +2488,9 @@ impl SkiApp {
         // Clipboard / transfer / archive entries shared by every selection
         let file_groups = |paths: Vec<PathBuf>, archives: bool| {
             let mut manage = Vec::new();
-            if let [one] = paths.as_slice() {
-                manage.push((icons::RENAME, "Rename", MenuAction::Rename(one.clone())));
+            match paths.as_slice() {
+                [one] => manage.push((icons::RENAME, "Rename", MenuAction::Rename(one.clone()))),
+                many => manage.push((icons::RENAME, "Rename…", MenuAction::RenameMany(many.to_vec()))),
             }
             manage.push((icons::TRASH, "Move to trash", MenuAction::Trash(paths.clone())));
             let mut groups = vec![
@@ -2450,7 +2590,7 @@ impl SkiApp {
             MenuTarget::Main => vec![
                 vec![(icons::NEW_WINDOW, "New window", MenuAction::NewWindow)],
                 vec![
-                    (icons::REFRESH, "Refresh and reload theme", MenuAction::Refresh),
+                    (icons::REFRESH, "Refresh", MenuAction::Refresh),
                     (icons::SETTINGS, "Settings", MenuAction::OpenSettings),
                 ],
                 vec![(icons::KEYBOARD, "Keyboard shortcuts", MenuAction::Shortcuts)],
@@ -2483,7 +2623,7 @@ impl SkiApp {
             MenuAction::NewWindow => A::NewWindow,
             MenuAction::OpenSettings => A::Settings,
             MenuAction::Shortcuts => A::ShowShortcuts,
-            MenuAction::Rename(_) => A::Rename,
+            MenuAction::Rename(_) | MenuAction::RenameMany(_) => A::Rename,
             MenuAction::Trash(_) => A::Trash,
             MenuAction::DeleteForever(_) => A::DeleteForever,
             MenuAction::CopyPath(_) => A::CopyPath,
@@ -2617,7 +2757,8 @@ impl SkiApp {
 
         let preferred = match &dialog {
             Dialog::Settings { .. } => 720.0,
-            Dialog::OpenWith { .. } | Dialog::PickFolder { .. } => 480.0,
+            Dialog::OpenWith { .. } => 480.0,
+            Dialog::BatchRename { .. } => 560.0,
             Dialog::Confirm { .. } => 400.0,
             _ => 440.0,
         };
@@ -2648,7 +2789,7 @@ impl SkiApp {
                             Dialog::Icon { .. } => self.icon_dialog_contents(ui, &mut dialog),
                             Dialog::OpenWith { .. } => self.open_with_contents(ui, &mut dialog),
                             Dialog::Settings { .. } => self.settings_dialog_contents(ui, &mut dialog),
-                            Dialog::PickFolder { .. } => self.pick_folder_contents(ui, &mut dialog),
+                            Dialog::BatchRename { .. } => self.batch_rename_contents(ui, &mut dialog),
                             Dialog::Compress { .. } => self.compress_contents(ui, &mut dialog),
                             Dialog::Shortcuts => self.shortcuts_contents(ui),
                         };
@@ -2749,89 +2890,303 @@ impl SkiApp {
         close
     }
 
-    fn pick_folder_contents(&mut self, ui: &mut egui::Ui, dialog: &mut Dialog) -> bool {
-        let Dialog::PickFolder { op, items, dir, path_input } = dialog else { return false };
-        let theme = self.theme;
-        let (title, action) = match op {
-            TransferOp::Copy => ("Copy to…", "Copy here"),
-            TransferOp::Move => ("Move to…", "Move here"),
-            TransferOp::Extract => ("Extract to…", "Extract here"),
-        };
-        let mut close = material::dialog_header(ui, title, Some(&Self::describe_count(items)), &theme, "pf_close");
+    fn open_batch_rename(&mut self, paths: Vec<PathBuf>) {
+        let entries = paths
+            .into_iter()
+            .map(|path| {
+                let modified = path.symlink_metadata().ok().and_then(|m| m.modified().ok());
+                let stamp = crate::fs::props::format_datetime(modified);
+                let date = stamp.get(..10).filter(|d| d.as_bytes().get(4) == Some(&b'-')).unwrap_or("").to_owned();
+                RenameEntry { is_dir: path.is_dir(), path, date }
+            })
+            .collect();
+        self.dialog = Some(Dialog::BatchRename { entries, rules: RenameRules::new(), first_frame: true });
+    }
 
-        let mut goto: Option<PathBuf> = None;
-        ui.horizontal_wrapped(|ui| {
-            for (idx, place) in self.places.iter().enumerate() {
-                if place.kind != PlaceKind::Folder || trash::contains(&place.path) {
-                    continue;
-                }
-                if chip(ui, ("pf_place", idx), Some(place.icon), &place.name, &theme, *dir == place.path).clicked() {
-                    goto = Some(place.path.clone());
-                }
+    /// Pins, folder icons and default apps follow a path that was renamed.
+    fn retarget_path(&mut self, old: &Path, target: &Path) {
+        if let Some(idx) = self.pins.iter().position(|p| p.as_path() == old) {
+            self.pins[idx] = target.to_path_buf();
+            Place::save_pins(&self.pins);
+        }
+        if let Some(icon) = self.folder_icons.remove(old) {
+            self.folder_icons.insert(target.to_path_buf(), icon);
+            save_folder_icons(&self.folder_icons);
+        }
+        if let Some(app) = self.open_overrides.remove(old) {
+            self.open_overrides.insert(target.to_path_buf(), app);
+            apps::save_overrides(&self.open_overrides);
+        }
+    }
+
+    /// Refresh the listing after a batch rename and keep the renamed items selected.
+    fn finish_batch_rename(&mut self, done: &[(PathBuf, PathBuf)]) {
+        for (old, new) in done {
+            self.retarget_path(old, new);
+        }
+        if self.is_mixed_listing() {
+            for (old, new) in done {
+                if let Some(idx) = self.items.iter().position(|i| &i.path == old)
+                    && let Some(item) = FileItem::from_path(new) {
+                        self.items[idx] = item;
+                    }
+            }
+        } else {
+            self.reload_items();
+        }
+        self.selection = done.iter().filter_map(|(_, new)| self.items.iter().position(|i| &i.path == new)).collect();
+        self.selected_index = self.selection.iter().next().copied();
+        self.anchor = self.selected_index;
+        self.last_cursor = self.selected_index;
+    }
+
+    fn batch_rename_contents(&mut self, ui: &mut egui::Ui, dialog: &mut Dialog) -> bool {
+        let Dialog::BatchRename { entries, rules, first_frame } = dialog else { return false };
+        let theme = self.theme;
+        let names = batch_rename::preview(entries, rules);
+        let problem = batch_rename::problem(entries, &names);
+        let old_name = |e: &RenameEntry| e.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let changed = entries.iter().zip(&names).any(|(e, n)| old_name(e) != *n);
+        let (mut close, mut submit) = (false, false);
+
+        // Cancel and Rename at the corners, the title between them
+        let (row, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), material::BUTTON_HEIGHT), egui::Sense::hover());
+        ui.painter().text(
+            row.center(),
+            egui::Align2::CENTER_CENTER,
+            format!("Rename {} items", entries.len()),
+            egui::FontId::proportional(material::FONT_TITLE),
+            theme.text,
+        );
+        ui.scope_builder(egui::UiBuilder::new().max_rect(row).layout(egui::Layout::left_to_right(egui::Align::Center)), |ui| {
+            close |= material::button(ui, "br_cancel", None, "Cancel", &theme, ButtonKind::Tonal, true).clicked();
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let ready = problem.is_none() && changed;
+                submit |= material::button(ui, "br_go", None, "Rename", &theme, ButtonKind::Filled, ready).clicked() && ready;
+            });
+        });
+
+        ui.vertical_centered(|ui| {
+            let current = usize::from(rules.mode == RenameMode::Replace);
+            if let Some(i) = segmented(ui, "br_mode", &["Use a template", "Find and replace"], current, &theme) {
+                rules.mode = if i == 0 { RenameMode::Template } else { RenameMode::Replace };
+                *first_frame = true;
             }
         });
 
-        material::input_frame(&theme).show(ui, |ui| {
-            let resp = ui.add(
-                egui::TextEdit::singleline(path_input)
+        let font = egui::FontId::proportional(material::FONT_SUBTITLE);
+        let field = |ui: &mut egui::Ui, text: &mut String, hint: &str, focus: bool| {
+            let mut enter = false;
+            material::input_frame(&theme).show(ui, |ui| {
+                let out = egui::TextEdit::singleline(text)
                     .frame(egui::Frame::NONE)
                     .desired_width(f32::INFINITY)
-                    .hint_text("Folder path")
-                    .font(egui::FontId::proportional(material::FONT_BODY)),
-            );
-            if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                let typed = PathBuf::from(path_input.trim());
-                if typed.is_dir() {
-                    goto = Some(typed);
-                } else {
-                    self.set_toast("That folder does not exist");
+                    .hint_text(hint)
+                    .font(font.clone())
+                    .show(ui);
+                if focus {
+                    out.response.request_focus();
                 }
+                enter = out.response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+            });
+            enter
+        };
+        let focus = std::mem::take(first_frame);
+        match rules.mode {
+            RenameMode::Template => {
+                submit |= field(ui, &mut rules.template, "Template", focus);
+                ui.horizontal_wrapped(|ui| {
+                    for (token, label) in batch_rename::TOKENS {
+                        if chip(ui, ("br_token", label), None, &format!("+ {label}"), &theme, false).clicked() {
+                            rules.template.push_str(token);
+                        }
+                    }
+                });
             }
-        });
+            RenameMode::Replace => {
+                submit |= field(ui, &mut rules.find, "Text to find", focus);
+                submit |= field(ui, &mut rules.replace, "Replace with", false);
+            }
+        }
 
-        let mut folders: Vec<PathBuf> = std::fs::read_dir(&*dir)
-            .map(|rd| {
-                rd.flatten()
-                    .filter(|e| !e.file_name().to_string_lossy().starts_with('.'))
-                    .map(|e| e.path())
-                    .filter(|p| p.is_dir())
-                    .collect()
-            })
-            .unwrap_or_default();
-        folders.sort_by_key(|p| p.file_name().map(|n| n.to_string_lossy().to_lowercase()));
-        let max_height = (ui.ctx().content_rect().height() - 340.0).clamp(140.0, 300.0);
+        // Old name → new name for every file
+        let max_height = (ui.ctx().content_rect().height() - 380.0).clamp(120.0, 320.0);
         material::group_card(ui, &theme, |ui| {
-            egui::ScrollArea::vertical().max_height(max_height).auto_shrink([false, true]).id_salt("pf_scroll").show(ui, |ui| {
-                ui.spacing_mut().item_spacing.y = 2.0;
-                if let Some(parent) = dir.parent()
-                    && nav_item(ui, "pf_up", icons::ARROW_UP, "..", &theme, false).clicked() {
-                        goto = Some(parent.to_path_buf());
-                    }
-                for (idx, folder) in folders.iter().enumerate() {
-                    let label = folder.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-                    if nav_item(ui, ("pf_folder", idx), icons::FOLDER, &label, &theme, false).clicked() {
-                        goto = Some(folder.clone());
-                    }
-                }
-                if folders.is_empty() {
-                    ui.add_space(4.0);
-                    material::hint_label(ui, "No subfolders", &theme);
-                    ui.add_space(4.0);
+            egui::ScrollArea::vertical().max_height(max_height).auto_shrink([false, true]).id_salt("br_scroll").show(ui, |ui| {
+                ui.spacing_mut().item_spacing.y = 0.0;
+                for (entry, new) in entries.iter().zip(&names) {
+                    let old = old_name(entry);
+                    let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 32.0), egui::Sense::hover());
+                    let half = (rect.width() - 36.0) / 2.0;
+                    let paint = |x: f32, text: &str, color: egui::Color32| {
+                        let mut job = egui::text::LayoutJob::simple_singleline(text.to_owned(), egui::FontId::proportional(material::FONT_BODY), color);
+                        job.wrap = egui::text::TextWrapping::truncate_at_width(half.max(10.0));
+                        let galley = ui.painter().layout_job(job);
+                        ui.painter().galley(egui::pos2(x, rect.center().y - galley.size().y / 2.0), galley, color);
+                    };
+                    paint(rect.left() + 10.0, &old, theme.subtext1);
+                    material::paint_icon(ui.painter(), egui::pos2(rect.left() + 10.0 + half + 14.0, rect.center().y), icons::ARROW_FORWARD, material::ICON_XS, theme.subtext1);
+                    paint(rect.left() + 10.0 + half + 28.0, new, if old_name(entry) == *new { theme.subtext1 } else { theme.text });
                 }
             });
         });
-        if let Some(target) = goto {
-            *path_input = target.to_string_lossy().into_owned();
-            *dir = target;
+        if let Some(err) = &problem {
+            ui.label(egui::RichText::new(err).size(material::FONT_CAPTION).color(theme.red));
         }
 
-        let footer = material::dialog_footer(ui, &theme, FooterSpec::new("pf", icons::CHECK, action));
-        close |= footer.cancel;
-        if footer.primary {
-            self.transfer(*op, items.clone(), dir.clone());
+        if submit && problem.is_none() && changed {
+            let (done, error) = batch_rename::apply(entries, &names);
+            let count = done.len();
+            self.finish_batch_rename(&done);
+            match error {
+                None => self.set_toast(format!("Renamed {count} items")),
+                Some(err) => self.set_toast(format!("Renamed {count} items, then: {err}")),
+            }
             close = true;
         }
         close
+    }
+
+    /// Copy to / Move to / Extract to: a window of its own with the places on the left, a path
+    /// bar on top and the subfolders of the current folder to browse.
+    fn render_picker(&mut self, ctx: &egui::Context) {
+        let Some(mut picker) = self.picker.take() else { return };
+        let theme = self.theme;
+        let (title, verb) = match picker.op {
+            TransferOp::Copy => ("Copy to", "Copy"),
+            TransferOp::Move => ("Move to", "Move"),
+            TransferOp::Extract => ("Extract to", "Extract"),
+        };
+        let what = Self::describe_count(&picker.items);
+        let builder = egui::ViewportBuilder::default()
+            .with_title(format!("{title} — {what}"))
+            .with_inner_size([880.0, 600.0])
+            .with_min_inner_size([560.0, 380.0]);
+
+        let mut confirmed = false;
+        let mut cancelled = false;
+        let mut goto: Option<PathBuf> = None;
+        let places = &self.places;
+        let pins = &self.pins;
+        ctx.show_viewport_immediate(egui::ViewportId::from_hash_of("ski_folder_picker"), builder, |ui, _class| {
+            let ctx = ui.ctx().clone();
+            if ctx.input(|i| i.viewport().close_requested() || i.key_pressed(egui::Key::Escape)) {
+                cancelled = true;
+            }
+
+            egui::Panel::left("pk_places")
+                .exact_size(212.0)
+                .resizable(false)
+                .frame(egui::Frame::new().fill(theme.mantle).inner_margin(egui::Margin::symmetric(PAGE_MARGIN, 8)))
+                .show(ui, |ui| {
+                    ui.spacing_mut().item_spacing.y = 2.0;
+                    egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                        for (idx, place) in places.iter().enumerate() {
+                            if place.kind != PlaceKind::Folder || trash::contains(&place.path) {
+                                continue;
+                            }
+                            if nav_item(ui, ("pk_place", idx), place.icon, &place.name, &theme, picker.dir == place.path).clicked() {
+                                goto = Some(place.path.clone());
+                            }
+                        }
+                        if !pins.is_empty() {
+                            material::divider(ui, &theme);
+                        }
+                        for (idx, pin) in pins.iter().enumerate() {
+                            let name = pin.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| pin.display().to_string());
+                            if nav_item(ui, ("pk_pin", idx), icons::FOLDER, &name, &theme, picker.dir == *pin).clicked() {
+                                goto = Some(pin.clone());
+                            }
+                        }
+                    });
+                });
+
+            egui::Panel::top("pk_path")
+                .frame(egui::Frame::new().fill(theme.base).inner_margin(egui::Margin::symmetric(PAGE_MARGIN, 8)))
+                .show(ui, |ui| {
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(ui.available_width(), CONTROL_HEIGHT),
+                        egui::Layout::left_to_right(egui::Align::Center),
+                        |ui| {
+                            ui.spacing_mut().item_spacing.x = 6.0;
+                            let can_up = picker.dir.parent().is_some();
+                            if icon_button(ui, "pk_up", icons::ARROW_UP, &theme, can_up, "Parent folder").clicked()
+                                && let Some(parent) = picker.dir.parent() {
+                                    goto = Some(parent.to_path_buf());
+                                }
+                            let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), CONTROL_HEIGHT), egui::Sense::hover());
+                            ui.painter().rect_filled(rect, material::pill(rect), theme.surface1);
+                            let edit_rect = egui::Rect::from_min_max(egui::pos2(rect.left() + 16.0, rect.top()), egui::pos2(rect.right() - 12.0, rect.bottom()));
+                            let resp = material::put_over(
+                                ui,
+                                edit_rect,
+                                egui::TextEdit::singleline(&mut picker.path_input)
+                                    .frame(egui::Frame::NONE)
+                                    .align(egui::Align2::LEFT_CENTER)
+                                    .font(egui::FontId::proportional(material::FONT_BODY))
+                                    .hint_text("Type a folder path and press Enter"),
+                            );
+                            if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                                let typed = PathBuf::from(picker.path_input.trim());
+                                if typed.is_dir() {
+                                    goto = Some(typed.canonicalize().unwrap_or(typed));
+                                } else {
+                                    picker.path_input = picker.dir.to_string_lossy().into_owned();
+                                }
+                            }
+                        },
+                    );
+                });
+
+            egui::Panel::bottom("pk_footer")
+                .frame(egui::Frame::new().fill(theme.mantle).inner_margin(egui::Margin::symmetric(PAGE_MARGIN, 10)))
+                .show(ui, |ui| {
+                    let dest = picker.chosen.as_ref().unwrap_or(&picker.dir);
+                    let name = dest.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| dest.display().to_string());
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new(format!("{verb} {what} to")).size(material::FONT_CAPTION).color(theme.subtext1));
+                        ui.label(egui::RichText::new(format!("“{name}”")).size(material::FONT_BODY).color(theme.text));
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            confirmed |= material::button(ui, "pk_go", Some(icons::CHECK), verb, &theme, ButtonKind::Filled, true).clicked();
+                            cancelled |= material::button(ui, "pk_cancel", None, "Cancel", &theme, ButtonKind::Text, true).clicked();
+                        });
+                    });
+                });
+
+            egui::CentralPanel::default()
+                .frame(egui::Frame::new().fill(theme.base).inner_margin(egui::Margin { left: PAGE_MARGIN, right: PAGE_MARGIN, top: 0, bottom: 6 }))
+                .show(ui, |ui| {
+                    egui::ScrollArea::vertical().auto_shrink([false, false]).id_salt("pk_scroll").show(ui, |ui| {
+                        ui.spacing_mut().item_spacing.y = 2.0;
+                        let mut pick = None;
+                        for (idx, folder) in picker.folders.iter().enumerate() {
+                            let label = folder.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                            let resp = nav_item(ui, ("pk_folder", idx), icons::FOLDER, &label, &theme, picker.chosen.as_ref() == Some(folder));
+                            if resp.double_clicked() {
+                                goto = Some(folder.clone());
+                            } else if resp.clicked() {
+                                pick = Some(folder.clone());
+                            }
+                        }
+                        if pick.is_some() {
+                            picker.chosen = pick;
+                        }
+                        if picker.folders.is_empty() {
+                            material::empty_state(ui, &theme, icons::FOLDER, "No subfolders", Some("Choose this folder with the button below"));
+                        }
+                    });
+                });
+        });
+
+        if let Some(target) = goto {
+            picker.enter(target);
+        }
+        if confirmed {
+            let dest = picker.chosen.clone().unwrap_or_else(|| picker.dir.clone());
+            self.transfer(picker.op, picker.items, dest);
+        } else if !cancelled {
+            self.picker = Some(picker);
+        }
     }
 
     fn compress_contents(&mut self, ui: &mut egui::Ui, dialog: &mut Dialog) -> bool {
@@ -3099,7 +3454,8 @@ impl SkiApp {
         });
 
         ui.horizontal(|ui| {
-            if chip(ui, "icon_browse", Some(icons::FOLDER), "Choose image…", &theme, browse.is_some()).clicked() {
+            let label = if browse.is_some() { "Hide folders" } else { "Choose image…" };
+            if material::button(ui, "icon_browse", Some(icons::FOLDER), label, &theme, ButtonKind::Tonal, true).clicked() {
                 *browse = match browse {
                     Some(_) => None,
                     None => {
@@ -3268,7 +3624,7 @@ impl SkiApp {
                                 painter.rect_filled(line, 0, theme.with_alpha(theme.text, 14));
                             }
                             painter.text(egui::pos2(rect.left() + 16.0, rect.center().y), egui::Align2::LEFT_CENTER, *label, egui::FontId::proportional(12.5), theme.subtext1);
-                            let mut job = egui::text::LayoutJob::simple_singleline(value.clone(), egui::FontId::proportional(13.5), theme.text);
+                            let mut job = egui::text::LayoutJob::simple_singleline(value.clone(), egui::FontId::proportional(material::FONT_BODY), theme.text);
                             job.wrap = egui::text::TextWrapping::truncate_at_width((full - 140.0 - 36.0).max(20.0));
                             let galley = painter.layout_job(job);
                             painter.galley(egui::pos2(rect.left() + 118.0, rect.center().y - galley.size().y / 2.0), galley, theme.text);

@@ -38,6 +38,8 @@ pub const SETTINGS: &str = "\u{f08bb}";
 pub const CLOSE: &str = "\u{f0156}";
 pub const CHECK: &str = "\u{f012c}";
 pub const CHEVRON_RIGHT: &str = "\u{f0142}";
+pub const ADD: &str = "\u{f0415}";
+pub const REMOVE: &str = "\u{f0374}";
 pub const MORE: &str = "\u{f01d8}";
 
 pub const VIEW_LIST: &str = "\u{f0572}";

@@ -175,8 +175,12 @@ impl SkiApp {
         let theme = self.theme;
 
         material::section_label(ui, "Theme", &theme);
+        // The cards share the row evenly, so the last one never wraps onto a line of its own
+        let gap = 8.0;
+        let count = PRESETS.len() + 1;
+        let card_w = ((ui.available_width() - gap * (count - 1) as f32) / count as f32).floor().clamp(80.0, 120.0);
         ui.horizontal_wrapped(|ui| {
-            ui.spacing_mut().item_spacing = egui::vec2(10.0, 10.0);
+            ui.spacing_mut().item_spacing = egui::vec2(gap, gap);
             let mut choices: Vec<(&str, &str, SerpantinumTheme)> = vec![("system", "System", self.system_theme)];
             for (id, label, ..) in PRESETS.iter() {
                 let preset = Settings {
@@ -187,7 +191,7 @@ impl SkiApp {
                 choices.push((id, label, SerpantinumTheme::from_settings(&preset)));
             }
             for (id, label, preview) in choices {
-                if theme_card(ui, ("theme_card", id), label, &preview, &theme, self.settings.theme == id).clicked() {
+                if theme_card(ui, ("theme_card", id), card_w, label, &preview, &theme, self.settings.theme == id).clicked() {
                     self.settings.theme = id.to_owned();
                     self.rebuild_theme();
                     self.persist_settings();
@@ -675,7 +679,7 @@ impl SkiApp {
                 let is_overridden = self.settings.keybinds.contains_key(action.id());
 
                 ui.horizontal(|ui| {
-                    ui.set_min_height(36.0);
+                    ui.set_min_height(material::ENTRY_HEIGHT);
                     ui.add_space(8.0);
 
                     // Action label
@@ -826,7 +830,7 @@ fn keycap_pill(
     let remove_btn_w = if can_remove && !capturing { 20.0 } else { 0.0 };
     let total_w = galley.size().x + 20.0 + remove_btn_w;
 
-    let (rect, resp) = ui.allocate_exact_size(Vec2::new(total_w, 26.0), egui::Sense::click());
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(total_w, material::KEYCAP_HEIGHT), egui::Sense::click());
     let id = ui.make_persistent_id(id_source);
     let hover = material::animate(ui.ctx(), id.with("h"), resp.hovered());
     let on = material::animate(ui.ctx(), id.with("cap"), capturing);
@@ -842,13 +846,12 @@ fn keycap_pill(
 
     let mut remove_clicked = false;
     if can_remove && !capturing {
-        let remove_rect = Rect::from_center_size(Pos2::new(rect.right() - 12.0, rect.center().y), Vec2::new(16.0, 16.0));
-        let rem_hover = ui.rect_contains_pointer(remove_rect);
-        let rem_color = if rem_hover { theme.red } else { theme.subtext1 };
-        material::paint_icon(ui.painter(), remove_rect.center(), icons::CLOSE, 12.0, rem_color);
-        if rem_hover && ui.input(|i| i.pointer.primary_clicked()) {
-            remove_clicked = true;
-        }
+        let remove_rect = Rect::from_center_size(Pos2::new(rect.right() - 12.0, rect.center().y), Vec2::splat(material::KEYCAP_HEIGHT - 4.0));
+        let remove = ui.interact(remove_rect, id.with("rm"), egui::Sense::click()).on_hover_text("Remove shortcut");
+        let rem_hover = material::animate(ui.ctx(), id.with("rm_h"), remove.hovered());
+        ui.painter().rect_filled(remove_rect, material::pill(remove_rect), theme.with_alpha(theme.red, (rem_hover * 40.0) as u8));
+        material::paint_icon(ui.painter(), remove_rect.center(), icons::CLOSE, 12.0, material::lerp_color(theme.subtext1, theme.red, rem_hover));
+        remove_clicked = remove.clicked();
     }
 
     (resp, remove_clicked)
@@ -878,12 +881,13 @@ fn swatch(
 fn theme_card(
     ui: &mut egui::Ui,
     id_source: impl std::hash::Hash + std::fmt::Debug,
+    width: f32,
     label: &str,
     preview: &SerpantinumTheme,
     theme: &SerpantinumTheme,
     selected: bool,
 ) -> egui::Response {
-    let (rect, resp) = ui.allocate_exact_size(egui::vec2(104.0, 82.0), egui::Sense::click());
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(width, 82.0), egui::Sense::click());
     let id = ui.make_persistent_id(id_source);
     let fx = material::fx(ui, id, &resp, true, &material::FxSpec::CLICK);
     let sel = material::animate(ui.ctx(), id.with("sel"), selected);

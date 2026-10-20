@@ -16,6 +16,8 @@ pub enum Action {
     Filter,
     EditPath,
     ToggleHidden,
+    ZoomIn,
+    ZoomOut,
     ListView,
     GridView,
     PinFolder,
@@ -39,9 +41,9 @@ pub enum Action {
 }
 
 impl Action {
-    pub const ALL: [Action; 31] = [
+    pub const ALL: [Action; 33] = [
         Action::MoveDown, Action::MoveUp, Action::Open, Action::ParentFolder, Action::Back, Action::Forward,
-        Action::First, Action::Last, Action::Filter, Action::EditPath, Action::ToggleHidden, Action::ListView,
+        Action::First, Action::Last, Action::Filter, Action::EditPath, Action::ToggleHidden, Action::ZoomIn, Action::ZoomOut, Action::ListView,
         Action::GridView, Action::PinFolder, Action::Properties, Action::Copy, Action::Cut, Action::Paste,
         Action::SelectAll, Action::CopyPath, Action::Refresh, Action::NewFolder, Action::NewWindow,
         Action::Settings, Action::ShowShortcuts, Action::Rename, Action::Trash, Action::DeleteForever,
@@ -54,7 +56,7 @@ impl Action {
             Action::MoveDown => "move_down", Action::MoveUp => "move_up", Action::Open => "open",
             Action::ParentFolder => "parent_folder", Action::Back => "back", Action::Forward => "forward",
             Action::First => "first", Action::Last => "last", Action::Filter => "filter",
-            Action::EditPath => "edit_path", Action::ToggleHidden => "toggle_hidden",
+            Action::EditPath => "edit_path", Action::ToggleHidden => "toggle_hidden", Action::ZoomIn => "zoom_in", Action::ZoomOut => "zoom_out",
             Action::ListView => "list_view", Action::GridView => "grid_view", Action::PinFolder => "pin_folder",
             Action::Properties => "properties", Action::Copy => "copy", Action::Cut => "cut",
             Action::Paste => "paste", Action::SelectAll => "select_all", Action::CopyPath => "copy_path",
@@ -71,7 +73,7 @@ impl Action {
             Action::Open => "Open", Action::ParentFolder => "Parent folder", Action::Back => "Back",
             Action::Forward => "Forward", Action::First => "Jump to first", Action::Last => "Jump to last",
             Action::Filter => "Filter by name", Action::EditPath => "Edit path",
-            Action::ToggleHidden => "Toggle hidden files", Action::ListView => "List view",
+            Action::ToggleHidden => "Toggle hidden files", Action::ZoomIn => "Larger icons", Action::ZoomOut => "Smaller icons", Action::ListView => "List view",
             Action::GridView => "Grid view", Action::PinFolder => "Pin folder", Action::Properties => "Properties",
             Action::Copy => "Copy", Action::Cut => "Cut", Action::Paste => "Paste",
             Action::SelectAll => "Select all", Action::CopyPath => "Copy path", Action::Refresh => "Refresh",
@@ -87,7 +89,7 @@ impl Action {
         match self {
             Action::MoveDown | Action::MoveUp | Action::Open | Action::ParentFolder | Action::Back
             | Action::Forward | Action::First | Action::Last | Action::EditPath | Action::GoHome => "Navigation",
-            Action::Filter | Action::ToggleHidden | Action::ListView | Action::GridView | Action::Refresh
+            Action::Filter | Action::ToggleHidden | Action::ZoomIn | Action::ZoomOut | Action::ListView | Action::GridView | Action::Refresh
             | Action::Settings | Action::ShowShortcuts | Action::Quit => "View",
             _ => "Files",
         }
@@ -100,7 +102,7 @@ impl Action {
             Action::Back => &["Alt+ArrowLeft"], Action::Forward => &["Alt+ArrowRight"],
             Action::First => &["Home", "g"], Action::Last => &["End", "Shift+G"],
             Action::Filter => &["/", "Ctrl+F"], Action::EditPath => &["Ctrl+L"],
-            Action::ToggleHidden => &["Ctrl+H"], Action::ListView => &["Ctrl+1"], Action::GridView => &["Ctrl+2"],
+            Action::ToggleHidden => &["Ctrl+H"], Action::ZoomIn => &["Ctrl+="], Action::ZoomOut => &["Ctrl+-"], Action::ListView => &["Ctrl+1"], Action::GridView => &["Ctrl+2"],
             Action::PinFolder => &["Ctrl+D"], Action::Properties => &["Alt+Enter"],
             Action::Copy => &["Ctrl+C"], Action::Cut => &["Ctrl+X"], Action::Paste => &["Ctrl+V"],
             Action::SelectAll => &["Ctrl+A"], Action::CopyPath => &["y"], Action::Refresh => &["F5", "Ctrl+R"],

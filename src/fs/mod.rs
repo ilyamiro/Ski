@@ -7,3 +7,4 @@ pub mod recent;
 pub mod apps;
 pub mod ops;
 pub mod trash;
+pub mod batch_rename;

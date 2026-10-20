@@ -110,7 +110,7 @@ Right-click anything for a menu that shows the shortcut of each action.
 | `Shift`+arrows, `Shift`/`Ctrl`+click | Select several |
 | `Ctrl+A` | Select all |
 | `Ctrl+C` / `Ctrl+X` / `Ctrl+V` | Copy / cut / paste |
-| `F2` | Rename |
+| `F2` | Rename (with several files selected: by template, or find and replace) |
 | `Delete` / `Shift+Delete` | Move to trash / delete permanently |
 | `Ctrl+Shift+N` / `Ctrl+Alt+N` | New folder / new file |
 | `y` | Copy path |

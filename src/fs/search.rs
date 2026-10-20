@@ -7,9 +7,10 @@ use std::sync::{mpsc, Arc};
 use eframe::egui;
 
 use super::file_item::FileItem;
+use super::scanner::TypeFilter;
 use super::recent;
 
-const MAX_RESULTS: usize = 400;
+pub const MAX_RESULTS: usize = 400;
 const MAX_DEPTH: usize = 8;
 const BATCH: usize = 24;
 
@@ -36,7 +37,7 @@ impl Search {
         self.rx.is_some() && !self.finished
     }
 
-    pub fn start(&mut self, ctx: &egui::Context, root: PathBuf, query: String, show_hidden: bool) {
+    pub fn start(&mut self, ctx: &egui::Context, root: PathBuf, query: String, show_hidden: bool, filter: TypeFilter) {
         let my_gen = self.generation.fetch_add(1, Ordering::Relaxed) + 1;
         let generation = self.generation.clone();
         let (tx, rx) = mpsc::channel();
@@ -58,6 +59,7 @@ impl Search {
                 .filter(|p| p.file_name().is_some_and(|n| matches(&n.to_string_lossy())))
                 .filter(|p| show_hidden || !p.strip_prefix(&root).is_ok_and(|r| r.components().any(|c| c.as_os_str().to_string_lossy().starts_with('.'))))
                 .filter_map(|p| FileItem::from_path(&p).filter(|_| p.exists()))
+                .filter(|i| filter.accepts(i))
                 .take(MAX_RESULTS)
                 .collect();
             if !recents.is_empty() {
@@ -89,7 +91,7 @@ impl Search {
                         subdirs.push((mtime, path.clone()));
                     }
                     if matches(&name) && !seen.contains(&path) {
-                        if let Some(item) = FileItem::from_path(&path) {
+                        if let Some(item) = FileItem::from_path(&path).filter(|i| filter.accepts(i)) {
                             batch.push(item);
                             found += 1;
                         }
