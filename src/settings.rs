@@ -25,6 +25,8 @@ pub struct Settings {
     pub show_hidden: bool,
     pub folders_first: bool,
     pub columns: Vec<Column>,
+    /// Dragged list column widths, indexed like `Column::ALL`; 0 keeps the default.
+    pub column_widths: [f32; 6],
 
     // Startup
     pub start_location: StartLocation,
@@ -160,6 +162,7 @@ impl Default for Settings {
             show_hidden: false,
             folders_first: true,
             columns: vec![Column::Size, Column::Modified],
+            column_widths: [0.0; 6],
             start_location: StartLocation::Launch,
             start_path: None,
             last_dir: None,

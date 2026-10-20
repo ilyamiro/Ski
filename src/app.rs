@@ -121,6 +121,7 @@ pub(crate) enum Dialog {
     Create { is_dir: bool, name: String, error: Option<String>, first_frame: bool },
     Rename { path: PathBuf, name: String, error: Option<String>, first_frame: bool },
     Confirm { title: String, body: String, confirm: String, action: ConfirmAction },
+    Alert { title: String, body: String },
     Properties { props: Box<Properties>, scan: Option<FolderScan> },
     OpenWith {
         path: PathBuf,
@@ -155,6 +156,18 @@ pub(crate) enum Dialog {
     },
     Shortcuts,
     Icon { folder: PathBuf, input: String, error: Option<String>, candidates: Vec<PathBuf>, browse: Option<PathBuf> },
+}
+
+/// Rubber-band drag selection started inside the file listing.
+struct DragSelect {
+    /// Origin in content coordinates (`screen_y + scroll_offset.y`).
+    start_content: egui::Pos2,
+    /// Current pointer position in screen coordinates.
+    current_screen: egui::Pos2,
+    /// Selection before the drag began, kept when Ctrl or Shift is held.
+    base_selection: BTreeSet<usize>,
+    /// True once pointer travel passed the drag threshold.
+    active: bool,
 }
 
 /// The folder picker of Copy to / Move to / Extract to, shown in a window of its own.
@@ -263,6 +276,8 @@ pub struct SkiApp {
     // Accumulated Ctrl+scroll / pinch zoom, in log units
     zoom_accum: f32,
 
+    drag_select: Option<DragSelect>,
+
     pub(crate) capturing_key: bool,
 }
 
@@ -335,6 +350,7 @@ impl SkiApp {
             status_toast: None,
             scroll_to_selected: false,
             zoom_accum: 0.0,
+            drag_select: None,
             capturing_key: false,
         };
 
@@ -372,6 +388,7 @@ impl SkiApp {
         }
         self.path_input = self.current_path.to_string_lossy().to_string();
         self.selected_index = None;
+        self.drag_select = None;
         self.search_query.clear();
         self.search.cancel();
         self.show_search = false;
@@ -582,10 +599,16 @@ impl SkiApp {
         }
     }
 
-    fn set_clipboard(&mut self, paths: Vec<PathBuf>, cut: bool) {
+    fn set_clipboard(&mut self, ctx: &egui::Context, paths: Vec<PathBuf>, cut: bool) {
         if paths.is_empty() {
             return;
         }
+        let text = paths
+            .iter()
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect::<Vec<_>>()
+            .join("\n");
+        ctx.copy_text(text);
         let message = format!("{} {}", if cut { "Cut" } else { "Copied" }, Self::describe_count(&paths));
         self.clipboard = Some((paths, cut));
         self.set_toast(message);
@@ -601,6 +624,31 @@ impl SkiApp {
             return;
         }
         let dest = self.current_path.clone();
+        if cut {
+            let dest_canon = dest.canonicalize().unwrap_or_else(|_| dest.clone());
+            let same_folder = paths.iter().any(|p| {
+                p.parent()
+                    .map(|parent| parent.canonicalize().unwrap_or_else(|_| parent.to_path_buf()) == dest_canon)
+                    .unwrap_or(false)
+            });
+            if same_folder {
+                let any_dir = paths.iter().any(|p| p.is_dir());
+                let (title, body) = if paths.len() == 1 {
+                    let kind = if any_dir { "folder" } else { "file" };
+                    (
+                        format!("Can't move a {kind} over itself"),
+                        format!("The source {kind} is already in this folder and would overwrite itself."),
+                    )
+                } else {
+                    (
+                        "Can't move items over themselves".to_owned(),
+                        "The source items are already in this folder and would overwrite themselves.".to_owned(),
+                    )
+                };
+                self.dialog = Some(Dialog::Alert { title, body });
+                return;
+            }
+        }
         self.transfer(if cut { TransferOp::Move } else { TransferOp::Copy }, paths, dest);
         if cut {
             self.clipboard = None;
@@ -729,7 +777,7 @@ impl SkiApp {
             self.menu = None;
         } else {
             let rect = self.main_button_rect;
-            self.open_menu(ctx, egui::pos2(rect.left(), rect.bottom() + 6.0), MenuTarget::Main);
+            self.open_menu(ctx, egui::pos2(rect.left(), rect.bottom() + POPUP_GAP), MenuTarget::Main);
         }
     }
 
@@ -1163,14 +1211,14 @@ impl SkiApp {
             (
                 event(|e| matches!(e, egui::Event::Copy)),
                 event(|e| matches!(e, egui::Event::Cut)),
-                event(|e| matches!(e, egui::Event::Paste(_))),
+                event(|e| matches!(e, egui::Event::Paste(_) | egui::Event::PasteImage(_))),
             )
         });
         if ev_copy || self.is_act_pressed(ctx, crate::keymap::Action::Copy) {
-            self.set_clipboard(self.selected_paths(), false);
+            self.set_clipboard(ctx, self.selected_paths(), false);
             handled = true;
         } else if ev_cut || self.is_act_pressed(ctx, crate::keymap::Action::Cut) {
-            self.set_clipboard(self.selected_paths(), true);
+            self.set_clipboard(ctx, self.selected_paths(), true);
             handled = true;
         } else if ev_paste || self.is_act_pressed(ctx, crate::keymap::Action::Paste) {
             self.paste();
@@ -1221,10 +1269,20 @@ const MENU_WIDTH: f32 = 264.0;
 const SIDEBAR_BREAKPOINT: f32 = 680.0;
 /// Outer gutter shared by the sidebar, header, list and status bar so their edges line up.
 const PAGE_MARGIN: i8 = 10;
+/// Side margin of the header row: puts the round end buttons' icons on the sidebar's icon column.
+const HEADER_MARGIN: i8 = PAGE_MARGIN + HEADER_INSET as i8;
+const HEADER_INSET: f32 = material::INSET_ICON - material::CONTROL_HEIGHT / 2.0;
 /// Where a row's icon starts inside its rounded background; the status bar text lines up with it.
 const CONTENT_INSET: i8 = 16;
 /// Space between the navigation buttons and the address pill, and between it and the right buttons.
 const TITLE_GAP: f32 = 8.0;
+/// Space between a header button and the menu or popup that hangs from it.
+const POPUP_GAP: f32 = 6.0;
+/// Breadcrumb buttons sit as far from the pill's left end as from its top and bottom, so the
+/// first icon and label land on the sidebar's icon and label columns.
+const CRUMB_HEIGHT: f32 = 26.0;
+const CRUMB_INSET: f32 = (material::CONTROL_HEIGHT - CRUMB_HEIGHT) / 2.0;
+const CRUMB_ICON_STEP: f32 = material::INSET_LABEL - material::INSET_ICON + 8.0;
 
 impl eframe::App for SkiApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
@@ -1273,7 +1331,7 @@ impl eframe::App for SkiApp {
             .frame(
                 egui::Frame::new()
                     .fill(self.theme.base)
-                    .inner_margin(egui::Margin::symmetric(PAGE_MARGIN, 8)),
+                    .inner_margin(egui::Margin::symmetric(HEADER_MARGIN, 8)),
             )
             .show(ui, |ui| self.render_top_bar(ui, sidebar_visible));
 
@@ -1292,12 +1350,12 @@ impl eframe::App for SkiApp {
                     .inner_margin(egui::Margin { left: PAGE_MARGIN, right: PAGE_MARGIN, top: 0, bottom: 6 }),
             )
             .show(ui, |ui| {
-                let background = ui.interact(ui.max_rect(), ui.make_persistent_id("list_background"), egui::Sense::click());
+                let background = ui.interact(ui.max_rect(), ui.make_persistent_id("list_background"), egui::Sense::click_and_drag());
                 if background.secondary_clicked() && self.search_query.trim().is_empty() && !self.in_recent()
                     && let Some(pos) = background.interact_pointer_pos() {
                         self.open_menu(ui.ctx(), pos, MenuTarget::Folder);
                     }
-                if background.clicked() && !self.selection.is_empty() {
+                if background.clicked() && self.drag_select.is_none() && !self.selection.is_empty() {
                     self.selection.clear();
                     self.selected_index = None;
                     self.anchor = None;
@@ -1363,7 +1421,8 @@ impl SkiApp {
             egui::vec2(ui.available_width(), CONTROL_HEIGHT),
             egui::Layout::left_to_right(egui::Align::Center),
             |ui| {
-                ui.spacing_mut().item_spacing.x = gap;
+                // Every gap is spelled out below, so nothing depends on the layout's own spacing
+                ui.spacing_mut().item_spacing.x = 0.0;
 
                 let (back, forward) = material::nav_pair(ui, &self.theme, !self.back_history.is_empty(), !self.forward_history.is_empty());
                 if back.clicked() {
@@ -1372,17 +1431,17 @@ impl SkiApp {
                 if forward.clicked() {
                     self.go_forward();
                 }
-                // The address pill breathes: a wider gap before it than between the icon buttons
-                ui.spacing_mut().item_spacing.x = TITLE_GAP;
+                // The address pill breathes: a wider gap on both sides than between the icon buttons
+                ui.add_space(TITLE_GAP);
 
                 // Search lives in the sidebar; without a sidebar it becomes a header button.
                 let right_buttons = if sidebar_visible { 1.0 } else { 3.0 };
-                let reserved = right_buttons * CONTROL_HEIGHT + (right_buttons - 1.0) * gap;
+                let reserved = right_buttons * CONTROL_HEIGHT + (right_buttons - 1.0) * gap + TITLE_GAP;
                 let title_width = (ui.available_width() - reserved).max(40.0);
 
                 let (title_rect, title_resp) =
                     ui.allocate_exact_size(egui::vec2(title_width, CONTROL_HEIGHT), egui::Sense::click());
-                ui.spacing_mut().item_spacing.x = gap;
+                ui.add_space(TITLE_GAP);
 
                 if self.show_search && !sidebar_visible {
                     ui.painter().rect_filled(title_rect, material::pill(title_rect), self.theme.surface1);
@@ -1405,14 +1464,14 @@ impl SkiApp {
                             self.is_editing_path = false;
                         }
                     }
-                }
+                    ui.add_space(gap);
 
-                if !sidebar_visible {
                     let menu = icon_button(ui, "btn_main_menu", icons::MENU, &self.theme, true, "Main menu");
                     self.main_button_rect = menu.rect;
                     if menu.clicked() {
                         self.toggle_main_menu(ui.ctx());
                     }
+                    ui.add_space(gap);
                 }
 
                 let view_icon = match self.view_mode {
@@ -1435,13 +1494,13 @@ impl SkiApp {
     fn render_search_field(&mut self, ui: &mut egui::Ui, rect: egui::Rect) {
         material::paint_icon(
             ui.painter(),
-            egui::pos2(rect.left() + CONTROL_HEIGHT / 2.0, rect.center().y),
+            egui::pos2(rect.left() + material::INSET_ICON, rect.center().y),
             icons::SEARCH,
-            material::ICON_SM,
+            material::ICON_MD,
             self.theme.subtext1,
         );
         let edit_rect = egui::Rect::from_min_max(
-            egui::pos2(rect.left() + 36.0, rect.top()),
+            egui::pos2(rect.left() + material::INSET_LABEL, rect.top()),
             egui::pos2(rect.right() - 12.0, rect.bottom()),
         );
         let resp = material::put_over(
@@ -1504,11 +1563,11 @@ impl SkiApp {
             } else {
                 (icons::RECENT, "Recent".to_owned())
             };
-            material::paint_icon(ui.painter(), egui::pos2(rect.left() + 20.0, cy), icon, material::ICON_MD, theme.subtext1);
+            material::paint_icon(ui.painter(), egui::pos2(rect.left() + material::INSET_ICON, cy), icon, material::ICON_MD, theme.subtext1);
             let mut job = egui::text::LayoutJob::simple_singleline(text, egui::FontId::proportional(material::FONT_SUBTITLE), theme.text);
-            job.wrap = egui::text::TextWrapping::truncate_at_width((rect.width() - 52.0).max(10.0));
+            job.wrap = egui::text::TextWrapping::truncate_at_width((rect.width() - material::INSET_LABEL - 16.0).max(10.0));
             let galley = ui.painter().layout_job(job);
-            ui.painter().galley(egui::pos2(rect.left() + 38.0, cy - galley.size().y / 2.0), galley, theme.text);
+            ui.painter().galley(egui::pos2(rect.left() + material::INSET_LABEL, cy - galley.size().y / 2.0), galley, theme.text);
             return;
         }
 
@@ -1517,10 +1576,10 @@ impl SkiApp {
         let font = egui::FontId::proportional(material::FONT_SUBTITLE);
         let measure = |ui: &egui::Ui, c: &Crumb| {
             let text_w = ui.painter().layout_no_wrap(c.label.clone(), font.clone(), theme.text).size().x;
-            text_w + if c.icon.is_some() { 26.0 } else { 0.0 } + 20.0
+            text_w + if c.icon.is_some() { CRUMB_ICON_STEP } else { 0.0 } + 20.0
         };
         let mut widths: Vec<f32> = crumbs.iter().map(|c| measure(ui, c)).collect();
-        let (sep, avail) = (20.0, rect.width() - 16.0);
+        let (sep, avail) = (20.0, rect.width() - 2.0 * CRUMB_INSET);
         let total = |w: &[f32], folded: bool| w.iter().sum::<f32>() + sep * w.len().saturating_sub(1) as f32 + if folded { 32.0 + sep } else { 0.0 };
         let mut folded_to: Option<std::path::PathBuf> = None;
         while crumbs.len() > 1 && total(&widths, folded_to.is_some()) > avail {
@@ -1532,7 +1591,7 @@ impl SkiApp {
             *last = last.min(avail - if folded_to.is_some() { 32.0 + sep } else { 0.0 }).max(24.0);
         }
 
-        let mut x = rect.left() + 8.0;
+        let mut x = rect.left() + CRUMB_INSET;
         let mut go: Option<std::path::PathBuf> = None;
         let mut edit = false;
         let crumb_button = |ui: &mut egui::Ui, id: egui::Id, cell: egui::Rect, current: bool| {
@@ -1546,7 +1605,7 @@ impl SkiApp {
         };
 
         if let Some(target) = folded_to {
-            let cell = egui::Rect::from_min_size(egui::pos2(x, cy - 13.0), egui::vec2(32.0, 26.0));
+            let cell = egui::Rect::from_min_size(egui::pos2(x, cy - CRUMB_HEIGHT / 2.0), egui::vec2(32.0, CRUMB_HEIGHT));
             let (resp, color) = crumb_button(ui, ui.make_persistent_id("crumb_fold"), cell, false);
             ui.painter().text(cell.center(), egui::Align2::CENTER_CENTER, "…", font.clone(), color);
             if resp.clicked() {
@@ -1558,12 +1617,12 @@ impl SkiApp {
         }
         let last = crumbs.len().saturating_sub(1);
         for (i, (crumb, w)) in crumbs.iter().zip(&widths).enumerate() {
-            let cell = egui::Rect::from_min_size(egui::pos2(x, cy - 13.0), egui::vec2(*w, 26.0));
+            let cell = egui::Rect::from_min_size(egui::pos2(x, cy - CRUMB_HEIGHT / 2.0), egui::vec2(*w, CRUMB_HEIGHT));
             let (resp, color) = crumb_button(ui, ui.make_persistent_id(("crumb", i)), cell, i == last);
             let mut tx = cell.left() + 10.0;
             if let Some(icon) = crumb.icon {
                 material::paint_icon(ui.painter(), egui::pos2(tx + 8.0, cy), icon, material::ICON_MD, color);
-                tx += 26.0;
+                tx += CRUMB_ICON_STEP;
             }
             let mut job = egui::text::LayoutJob::simple_singleline(crumb.label.clone(), font.clone(), color);
             job.wrap = egui::text::TextWrapping::truncate_at_width((cell.right() - 10.0 - tx).max(10.0));
@@ -1593,7 +1652,7 @@ impl SkiApp {
         let mut picked = None;
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing = egui::vec2(6.0, 6.0);
-            ui.add_space(f32::from(CONTENT_INSET) - 6.0);
+            ui.add_space(f32::from(CONTENT_INSET));
             for filter in TypeFilter::ALL {
                 if chip(ui, ("bar_type", filter.label()), None, filter.label(), &theme, self.type_filter == filter).clicked() {
                     picked = Some(filter);
@@ -1638,7 +1697,8 @@ impl SkiApp {
 
     fn render_sidebar(&mut self, ui: &mut egui::Ui) {
         self.render_sidebar_search(ui);
-        ui.add_space(8.0);
+        // The search row is followed by the usual item spacing, which counts towards the 8px
+        ui.add_space(8.0 - ui.spacing().item_spacing.y);
 
         let browsing = self.search_query.trim().is_empty();
         let mut destination: Option<PathBuf> = None;
@@ -1711,7 +1771,8 @@ impl SkiApp {
         let open_t = material::animate_for(ui.ctx(), egui::Id::unique("sidebar_search_open"), open, material::ANIM_SLOW);
 
         let (row, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), CONTROL_HEIGHT), egui::Sense::hover());
-        let menu_rect = egui::Rect::from_min_size(egui::pos2(row.right() - CONTROL_HEIGHT, row.top()), egui::vec2(CONTROL_HEIGHT, CONTROL_HEIGHT));
+        // Round buttons are inset so their icons sit on the same column as the destinations' icons
+        let menu_rect = egui::Rect::from_min_size(egui::pos2(row.right() - HEADER_INSET - CONTROL_HEIGHT, row.top()), egui::vec2(CONTROL_HEIGHT, CONTROL_HEIGHT));
         let menu = ui.scope_builder(egui::UiBuilder::new().max_rect(menu_rect), |ui| {
             icon_button(ui, "sidebar_main_menu", icons::MENU, &self.theme, true, "Main menu")
         });
@@ -1721,11 +1782,11 @@ impl SkiApp {
         }
 
         // The search grows over the free space left of the menu button
-        let full = row.width() - CONTROL_HEIGHT - 4.0;
+        let full = menu_rect.left() - 4.0 - row.left();
         let slot = egui::Rect::from_min_size(row.min, egui::vec2(full, CONTROL_HEIGHT));
 
         if !open && open_t <= 0.0 {
-            let button = ui.scope_builder(egui::UiBuilder::new().max_rect(slot), |ui| {
+            let button = ui.scope_builder(egui::UiBuilder::new().max_rect(slot.translate(egui::vec2(HEADER_INSET, 0.0))), |ui| {
                 icon_button(ui, "sidebar_search_btn", icons::SEARCH, &self.theme, true, "Search (/)")
             });
             if button.inner.clicked() {
@@ -1735,20 +1796,25 @@ impl SkiApp {
             return;
         }
 
-        let rect = egui::Rect::from_min_size(slot.min, egui::vec2(CONTROL_HEIGHT + (full - CONTROL_HEIGHT) * open_t, CONTROL_HEIGHT));
+        // The pill grows out of the inset button; the icon stays on the destinations' icon column
+        let inset = HEADER_INSET * (1.0 - open_t);
+        let rect = egui::Rect::from_min_size(
+            slot.min + egui::vec2(inset, 0.0),
+            egui::vec2(CONTROL_HEIGHT + (full - CONTROL_HEIGHT) * open_t - inset, CONTROL_HEIGHT),
+        );
 
         let search_id = egui::Id::unique("sidebar_search");
         let focused = ui.memory(|m| m.has_focus(search_id));
         let fill = if focused { self.theme.surface2 } else { self.theme.surface1 };
         ui.painter().rect_filled(rect, material::pill(rect), fill);
-        material::paint_icon(ui.painter(), egui::pos2(rect.left() + CONTROL_HEIGHT / 2.0, rect.center().y), icons::SEARCH, material::ICON_SM, self.theme.subtext1);
+        material::paint_icon(ui.painter(), egui::pos2(slot.left() + material::INSET_ICON, rect.center().y), icons::SEARCH, material::ICON_MD, self.theme.subtext1);
 
         if open_t < 0.6 {
             return;
         }
         let clear_rect = egui::Rect::from_center_size(egui::pos2(rect.right() - CONTROL_HEIGHT / 2.0, rect.center().y), egui::vec2(26.0, 26.0));
         let edit_rect = egui::Rect::from_min_max(
-            egui::pos2(rect.left() + 36.0, rect.top()),
+            egui::pos2(slot.left() + material::INSET_LABEL, rect.top()),
             egui::pos2(clear_rect.left() - 4.0, rect.bottom()),
         );
         let resp = material::put_over(
@@ -1815,7 +1881,7 @@ impl SkiApp {
         let show_thumbs = self.settings.show_thumbnails;
 
         if !self.is_mixed_listing()
-            && let Some(key) = material::list_header(ui, &self.theme, &self.columns, self.sort_by, self.sort_order) {
+            && let Some(key) = material::list_header(ui, &self.theme, &self.columns, &mut self.settings.column_widths, self.sort_by, self.sort_order) {
                 if key == self.sort_by {
                     self.sort_order = if self.sort_order == SortOrder::Ascending { SortOrder::Descending } else { SortOrder::Ascending };
                 } else {
@@ -1831,25 +1897,17 @@ impl SkiApp {
         };
         let mut clicked: Option<(usize, egui::Modifiers)> = None;
         let mut menu_at: Option<(egui::Pos2, MenuTarget)> = None;
-        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+        let mut item_rects: Vec<(usize, egui::Rect)> = Vec::with_capacity(self.items.len());
+        let mut scroll_delta = 0.0;
+        let scroll_out = egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
             ui.spacing_mut().item_spacing.y = 1.0;
             for (idx, item) in self.items.iter().enumerate() {
                 let selected = self.selection.contains(&idx);
+                let is_cut = cut.contains(&item.path);
                 let hint = self.path_hint(item);
                 let thumb = thumb_for(&self.thumbs, &self.folder_icons, item, show_thumbs);
-                let draw = |ui: &mut egui::Ui| {
-                    file_row(ui, idx, item, &self.theme, selected, should_scroll, thumb, hint.as_deref(), &self.columns, row_height)
-                };
-                // Items waiting to be moved are shown faded
-                let resp = if cut.contains(&item.path) {
-                    ui.scope(|ui| {
-                        ui.set_opacity(0.5);
-                        draw(ui)
-                    })
-                    .inner
-                } else {
-                    draw(ui)
-                };
+                let resp = file_row(ui, idx, item, &self.theme, selected, is_cut, should_scroll, thumb, hint.as_deref(), &self.columns, &self.settings.column_widths, row_height);
+                item_rects.push((idx, resp.rect));
                 let mods = ui.input(|i| i.modifiers);
                 if resp.clicked() {
                     if self.settings.single_click_open && !mods.command && !mods.shift {
@@ -1868,16 +1926,25 @@ impl SkiApp {
                         menu_at = Some((pos, MenuTarget::Item(item.clone())));
                     }
             }
+            if let Some(drag) = &self.drag_select
+                && drag.active
+            {
+                scroll_delta = Self::drag_auto_scroll(ui, ui.clip_rect(), drag.current_screen.y);
+            }
         });
 
-        if let Some((idx, modifiers)) = clicked {
-            self.click_select(idx, modifiers);
+        let drag_consumed = self.handle_drag_select(ui, scroll_out.inner_rect, scroll_out.state.clamped_offset().y, scroll_delta, &item_rects);
+
+        if !drag_consumed {
+            if let Some((idx, modifiers)) = clicked {
+                self.click_select(idx, modifiers);
+            }
+            if let Some(item) = opened {
+                self.open_item(item);
+            }
         }
         if let Some((pos, target)) = menu_at {
             self.open_menu(ui.ctx(), pos, target);
-        }
-        if let Some(item) = opened {
-            self.open_item(item);
         }
     }
 
@@ -1896,7 +1963,9 @@ impl SkiApp {
         };
         let mut clicked: Option<(usize, egui::Modifiers)> = None;
         let mut menu_at: Option<(egui::Pos2, MenuTarget)> = None;
-        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+        let mut item_rects: Vec<(usize, egui::Rect)> = Vec::with_capacity(self.items.len());
+        let mut scroll_delta = 0.0;
+        let scroll_out = egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
             let spacing = 4.0;
             let cols = ((ui.available_width() + spacing) / (cell.x + spacing)).floor().max(1.0) as usize;
             // Leftover width is shared between the columns, so the grid fills the view like Nautilus does
@@ -1909,17 +1978,10 @@ impl SkiApp {
                     for (col_idx, item) in row.iter().enumerate() {
                         let idx = row_idx * cols + col_idx;
                         let selected = self.selection.contains(&idx);
+                        let is_cut = cut.contains(&item.path);
                         let thumb = thumb_for(&self.thumbs, &self.folder_icons, item, show_thumbs);
-                        let draw = |ui: &mut egui::Ui| file_tile(ui, idx, item, &self.theme, selected, should_scroll, thumb, grid_size, grid_lines);
-                        let resp = if cut.contains(&item.path) {
-                            ui.scope(|ui| {
-                                ui.set_opacity(0.5);
-                                draw(ui)
-                            })
-                            .inner
-                        } else {
-                            draw(ui)
-                        };
+                        let resp = file_tile(ui, idx, item, &self.theme, selected, is_cut, should_scroll, thumb, grid_size, grid_lines);
+                        item_rects.push((idx, resp.rect));
                         let mods = ui.input(|i| i.modifiers);
                         if resp.clicked() {
                             if self.settings.single_click_open && !mods.command && !mods.shift {
@@ -1940,17 +2002,153 @@ impl SkiApp {
                     }
                 });
             }
+            if let Some(drag) = &self.drag_select
+                && drag.active
+            {
+                scroll_delta = Self::drag_auto_scroll(ui, ui.clip_rect(), drag.current_screen.y);
+            }
         });
 
-        if let Some((idx, modifiers)) = clicked {
-            self.click_select(idx, modifiers);
+        let drag_consumed = self.handle_drag_select(ui, scroll_out.inner_rect, scroll_out.state.clamped_offset().y, scroll_delta, &item_rects);
+
+        if !drag_consumed {
+            if let Some((idx, modifiers)) = clicked {
+                self.click_select(idx, modifiers);
+            }
+            if let Some(item) = opened {
+                self.open_item(item);
+            }
         }
         if let Some((pos, target)) = menu_at {
             self.open_menu(ui.ctx(), pos, target);
         }
-        if let Some(item) = opened {
-            self.open_item(item);
+    }
+
+    fn drag_auto_scroll(ui: &mut egui::Ui, viewport: egui::Rect, pointer_y: f32) -> f32 {
+        let edge_zone = 36.0;
+        let dt = ui.input(|i| i.stable_dt).min(0.1);
+        let max_speed = 650.0;
+        let dy = if pointer_y < viewport.top() + edge_zone {
+            let t = ((viewport.top() + edge_zone - pointer_y) / edge_zone).clamp(0.0, 2.5);
+            t * max_speed * dt
+        } else if pointer_y > viewport.bottom() - edge_zone {
+            let t = ((pointer_y - (viewport.bottom() - edge_zone)) / edge_zone).clamp(0.0, 2.5);
+            -t * max_speed * dt
+        } else {
+            0.0
+        };
+        if dy != 0.0 {
+            ui.scroll_with_delta_animation(
+                egui::vec2(0.0, dy),
+                egui::style::ScrollAnimation::none(),
+            );
+            ui.ctx().request_repaint();
         }
+        dy
+    }
+
+    /// Rubber-band drag selection from any point inside the file listing (empty space or item).
+    /// Returns `true` when an active drag just finished or is in progress, so single clicks on the
+    /// starting item are suppressed.
+    fn handle_drag_select(
+        &mut self,
+        ui: &mut egui::Ui,
+        viewport: egui::Rect,
+        scroll_y: f32,
+        _scroll_delta: f32,
+        item_rects: &[(usize, egui::Rect)],
+    ) -> bool {
+        if self.dialog.is_some() || self.menu.is_some() || self.show_settings {
+            self.drag_select = None;
+            return false;
+        }
+
+        let (pressed, down, released, pos, mods) = ui.input(|i| {
+            (
+                i.pointer.button_pressed(egui::PointerButton::Primary),
+                i.pointer.button_down(egui::PointerButton::Primary),
+                i.pointer.button_released(egui::PointerButton::Primary),
+                i.pointer.latest_pos(),
+                i.modifiers,
+            )
+        });
+
+        // Leave room at the right edge so dragging the scrollbar thumb never starts a rubberband
+        let interactive_viewport = egui::Rect::from_min_max(
+            viewport.min,
+            egui::pos2((viewport.right() - 12.0).max(viewport.left()), viewport.bottom()),
+        );
+
+        if pressed
+            && let Some(p) = pos
+            && interactive_viewport.contains(p)
+        {
+            let base_selection = if mods.command || mods.shift {
+                self.selection.clone()
+            } else {
+                BTreeSet::new()
+            };
+            self.drag_select = Some(DragSelect {
+                start_content: egui::pos2(p.x, p.y + scroll_y),
+                current_screen: p,
+                base_selection,
+                active: false,
+            });
+        }
+
+        let Some(mut drag) = self.drag_select.take() else {
+            return false;
+        };
+
+        if let Some(p) = pos {
+            drag.current_screen = p;
+        }
+
+        let start_screen = egui::pos2(drag.start_content.x, drag.start_content.y - scroll_y);
+        if !drag.active && drag.current_screen.distance(start_screen) >= 5.0 {
+            drag.active = true;
+        }
+
+        if drag.active {
+            let box_screen = egui::Rect::from_two_pos(start_screen, drag.current_screen);
+            let mut next_selection = drag.base_selection.clone();
+            let mut first_hit = None;
+            let mut last_hit = None;
+
+            for &(idx, rect) in item_rects {
+                if box_screen.intersects(rect) {
+                    if first_hit.is_none() {
+                        first_hit = Some(idx);
+                    }
+                    last_hit = Some(idx);
+                    if mods.command && drag.base_selection.contains(&idx) {
+                        next_selection.remove(&idx);
+                    } else {
+                        next_selection.insert(idx);
+                    }
+                }
+            }
+
+            self.selection = next_selection;
+            self.selected_index = last_hit.or_else(|| self.selection.iter().next_back().copied());
+            self.anchor = first_hit.or(self.selected_index);
+            self.last_cursor = self.selected_index;
+
+            let clipped = box_screen.intersect(viewport);
+            if clipped.is_positive() {
+                let painter = ui.ctx().layer_painter(egui::LayerId::new(
+                    egui::Order::Foreground,
+                    egui::Id::unique("rubberband_overlay"),
+                ));
+                material::paint_rubberband(&painter, clipped, &self.theme);
+            }
+        }
+
+        let was_active = drag.active;
+        if down && !released {
+            self.drag_select = Some(drag);
+        }
+        was_active
     }
 
     /// One quiet line under the listing: what is shown or selected, and what waits in the clipboard.
@@ -2062,7 +2260,14 @@ impl SkiApp {
         // Fades in while sliding down from the button; closing plays the same motion backwards.
         let area = egui::Area::new(egui::Id::unique("settings_popup"))
             .order(egui::Order::Foreground)
-            .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-10.0, 52.0 - (1.0 - t) * 14.0))
+            // Pinned by its top-right corner at a known width, so the first frame (size not yet
+            // measured) lands where the later ones do. It never rises above the button, or it
+            // would swallow clicks meant for the button while closing.
+            .pivot(egui::Align2::RIGHT_TOP)
+            .fixed_pos(egui::pos2(
+                self.settings_button_rect.right(),
+                self.settings_button_rect.bottom() + POPUP_GAP - (1.0 - t) * (POPUP_GAP - 1.0),
+            ))
             .interactable(self.show_settings)
             .show(ctx, |ui| {
                 ui.set_opacity(t);
@@ -2460,8 +2665,8 @@ impl SkiApp {
             MenuAction::NewWindow => self.new_window(),
             MenuAction::OpenSettings => self.open_settings_dialog(),
             MenuAction::Shortcuts => self.dialog = Some(Dialog::Shortcuts),
-            MenuAction::Copy(paths) => self.set_clipboard(paths, false),
-            MenuAction::Cut(paths) => self.set_clipboard(paths, true),
+            MenuAction::Copy(paths) => self.set_clipboard(ctx, paths, false),
+            MenuAction::Cut(paths) => self.set_clipboard(ctx, paths, true),
             MenuAction::Paste => self.paste(),
             MenuAction::SelectAll => self.select_all(),
             MenuAction::CopyTo(paths) => self.open_pick_folder(TransferOp::Copy, paths),
@@ -2759,7 +2964,7 @@ impl SkiApp {
             Dialog::Settings { .. } => 720.0,
             Dialog::OpenWith { .. } => 480.0,
             Dialog::BatchRename { .. } => 560.0,
-            Dialog::Confirm { .. } => 400.0,
+            Dialog::Confirm { .. } | Dialog::Alert { .. } => 400.0,
             _ => 440.0,
         };
         let width = (screen.width() - 32.0).clamp(240.0, preferred);
@@ -2785,6 +2990,7 @@ impl SkiApp {
                             Dialog::Create { .. } => self.create_dialog_contents(ui, &mut dialog),
                             Dialog::Rename { .. } => self.rename_dialog_contents(ui, &mut dialog),
                             Dialog::Confirm { .. } => self.confirm_dialog_contents(ui, &mut dialog),
+                            Dialog::Alert { .. } => self.alert_dialog_contents(ui, &mut dialog),
                             Dialog::Properties { .. } => self.properties_contents(ui, &mut dialog),
                             Dialog::Icon { .. } => self.icon_dialog_contents(ui, &mut dialog),
                             Dialog::OpenWith { .. } => self.open_with_contents(ui, &mut dialog),
@@ -2887,6 +3093,20 @@ impl SkiApp {
             }
             close = true;
         }
+        close
+    }
+
+    fn alert_dialog_contents(&mut self, ui: &mut egui::Ui, dialog: &mut Dialog) -> bool {
+        let Dialog::Alert { title, body } = dialog else { return false };
+        let theme = self.theme;
+        let mut close = material::dialog_header(ui, title, None, &theme, "alert_close");
+        ui.label(egui::RichText::new(body.as_str()).size(material::FONT_BODY).color(theme.subtext0));
+
+        ui.add_space(8.0);
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            close |= material::button(ui, "alert_ok", Some(icons::CHECK), "Got it", &theme, ButtonKind::Filled, true).clicked();
+        });
+        close |= ui.input(|i| i.key_pressed(egui::Key::Enter));
         close
     }
 
@@ -3102,13 +3322,13 @@ impl SkiApp {
                 });
 
             egui::Panel::top("pk_path")
-                .frame(egui::Frame::new().fill(theme.base).inner_margin(egui::Margin::symmetric(PAGE_MARGIN, 8)))
+                .frame(egui::Frame::new().fill(theme.base).inner_margin(egui::Margin::symmetric(HEADER_MARGIN, 8)))
                 .show(ui, |ui| {
                     ui.allocate_ui_with_layout(
                         egui::vec2(ui.available_width(), CONTROL_HEIGHT),
                         egui::Layout::left_to_right(egui::Align::Center),
                         |ui| {
-                            ui.spacing_mut().item_spacing.x = 6.0;
+                            ui.spacing_mut().item_spacing.x = TITLE_GAP;
                             let can_up = picker.dir.parent().is_some();
                             if icon_button(ui, "pk_up", icons::ARROW_UP, &theme, can_up, "Parent folder").clicked()
                                 && let Some(parent) = picker.dir.parent() {
@@ -3139,7 +3359,7 @@ impl SkiApp {
                 });
 
             egui::Panel::bottom("pk_footer")
-                .frame(egui::Frame::new().fill(theme.mantle).inner_margin(egui::Margin::symmetric(PAGE_MARGIN, 10)))
+                .frame(egui::Frame::new().fill(theme.mantle).inner_margin(egui::Margin::symmetric(CONTENT_INSET, 10)))
                 .show(ui, |ui| {
                     let dest = picker.chosen.as_ref().unwrap_or(&picker.dir);
                     let name = dest.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| dest.display().to_string());
@@ -3794,6 +4014,68 @@ mod tests {
         app.go_back();
         assert_eq!(app.current_path, work.canonicalize().unwrap());
         assert!(app.can_modify_here());
+
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn rubberband_drag_selects_from_any_point() {
+        let base = std::env::temp_dir().join(format!("ski_drag_test_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        for name in ["alpha.txt", "beta.txt", "gamma.txt", "delta.txt"] {
+            std::fs::write(base.join(name), name).unwrap();
+        }
+
+        let ctx = egui::Context::default();
+        let mut app = SkiApp::new(base.clone(), SerpantinumTheme::default(), Settings::default(), &ctx);
+        app.view_mode = ViewMode::Grid;
+
+        let viewport = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(800.0, 600.0));
+        let item_rects = vec![
+            (0, egui::Rect::from_min_size(egui::pos2(20.0, 20.0), egui::vec2(100.0, 100.0))),
+            (1, egui::Rect::from_min_size(egui::pos2(140.0, 20.0), egui::vec2(100.0, 100.0))),
+            (2, egui::Rect::from_min_size(egui::pos2(260.0, 20.0), egui::vec2(100.0, 100.0))),
+            (3, egui::Rect::from_min_size(egui::pos2(380.0, 20.0), egui::vec2(100.0, 100.0))),
+        ];
+
+        // Start drag right on top of item 0 and drag across to item 2
+        let mut raw = egui::RawInput::default();
+        raw.events.push(egui::Event::PointerMoved(egui::pos2(50.0, 50.0)));
+        raw.events.push(egui::Event::PointerButton {
+            pos: egui::pos2(50.0, 50.0),
+            button: egui::PointerButton::Primary,
+            pressed: true,
+            modifiers: egui::Modifiers::NONE,
+        });
+        let mut out = ctx.run_ui(raw, |ui| {
+            assert!(!app.handle_drag_select(ui, viewport, 0.0, 0.0, &item_rects));
+        });
+        out.textures_delta.clear();
+
+        let mut raw = egui::RawInput::default();
+        raw.events.push(egui::Event::PointerMoved(egui::pos2(300.0, 90.0)));
+        let mut out = ctx.run_ui(raw, |ui| {
+            assert!(app.handle_drag_select(ui, viewport, 0.0, 0.0, &item_rects));
+        });
+        out.textures_delta.clear();
+        assert_eq!(app.selection, BTreeSet::from([0, 1, 2]));
+        assert_eq!(app.selected_index, Some(2));
+
+        // Release ends the drag while keeping the selection and suppressing click-select
+        let mut raw = egui::RawInput::default();
+        raw.events.push(egui::Event::PointerButton {
+            pos: egui::pos2(300.0, 90.0),
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: egui::Modifiers::NONE,
+        });
+        let mut out = ctx.run_ui(raw, |ui| {
+            assert!(app.handle_drag_select(ui, viewport, 0.0, 0.0, &item_rects));
+        });
+        out.textures_delta.clear();
+        assert!(app.drag_select.is_none());
+        assert_eq!(app.selection, BTreeSet::from([0, 1, 2]));
 
         std::fs::remove_dir_all(&base).unwrap();
     }

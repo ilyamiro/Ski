@@ -10,6 +10,10 @@ pub enum SortBy {
     Name,
     Size,
     Modified,
+    Created,
+    Accessed,
+    Owner,
+    Permissions,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -134,6 +138,10 @@ fn sort_items(items: &mut [FileItem], opts: &ListOptions) {
             SortBy::Name => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
             SortBy::Size => a.size.cmp(&b.size),
             SortBy::Modified => a.modified.cmp(&b.modified),
+            SortBy::Created => a.created.cmp(&b.created),
+            SortBy::Accessed => a.accessed.cmp(&b.accessed),
+            SortBy::Owner => a.uid.cmp(&b.uid),
+            SortBy::Permissions => a.mode.cmp(&b.mode),
         };
 
         match sort_order {

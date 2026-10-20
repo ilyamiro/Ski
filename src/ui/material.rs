@@ -434,7 +434,9 @@ pub fn segmented(
     // The indicator glides to the selected cell
     let target = cells.get(selected).copied().unwrap_or(inner);
     let ctx = ui.ctx();
-    let ix = ctx.animate_value_with_time(id.with("ix"), target.left(), dur(ANIM));
+    // Animated relative to the control, so a popup that moves while it is being placed
+    // doesn't make the indicator drift
+    let ix = inner.left() + ctx.animate_value_with_time(id.with("ix"), target.left() - inner.left(), dur(ANIM));
     let iw = ctx.animate_value_with_time(id.with("iw"), target.width(), dur(ANIM));
     let indicator = Rect::from_min_size(Pos2::new(ix, inner.top()), Vec2::new(iw, inner.height()));
     ui.painter().rect_filled(snap(ui.painter(), indicator), pill(indicator), blend_over(theme.surface1, theme.with_alpha(theme.mauve, 72)));
@@ -524,6 +526,12 @@ const ROW_PAD_RIGHT: f32 = 16.0;
 /// Narrowest the name may get before detail columns start dropping out.
 const ROW_NAME_MIN: f32 = 160.0;
 
+/// Smallest and largest a column can be dragged to.
+const COLUMN_MIN: f32 = 60.0;
+const COLUMN_MAX: f32 = 420.0;
+/// Per-column widths indexed like `Column::ALL`; 0 means the default.
+pub type ColumnWidths = [f32; 6];
+
 /// Optional detail columns of the list view, in display order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Column {
@@ -556,8 +564,12 @@ impl Column {
         }
     }
 
-    /// Slot width, including the gap to the column on its left.
-    fn width(self) -> f32 {
+    fn index(self) -> usize {
+        Self::ALL.iter().position(|c| *c == self).unwrap_or(0)
+    }
+
+    /// Width a column starts with, including the gap to the column on its left.
+    pub fn default_width(self) -> f32 {
         match self {
             Column::Size => 92.0,
             Column::Modified | Column::Created | Column::Accessed => 146.0,
@@ -566,12 +578,21 @@ impl Column {
         }
     }
 
+    /// Slot width as dragged by the user; unset (or invalid) falls back to the default.
+    fn width(self, widths: &ColumnWidths) -> f32 {
+        let w = widths[self.index()];
+        if w.is_finite() && w >= COLUMN_MIN { w.min(COLUMN_MAX) } else { self.default_width() }
+    }
+
     /// The sort order this column header toggles, if the listing can be sorted by it.
     pub fn sort_key(self) -> Option<SortBy> {
         match self {
             Column::Size => Some(SortBy::Size),
             Column::Modified => Some(SortBy::Modified),
-            _ => None,
+            Column::Created => Some(SortBy::Created),
+            Column::Accessed => Some(SortBy::Accessed),
+            Column::Owner => Some(SortBy::Owner),
+            Column::Permissions => Some(SortBy::Permissions),
         }
     }
 
@@ -588,28 +609,28 @@ impl Column {
 }
 
 /// Columns that fit next to a readable name in a row of `width`, dropping the rightmost first.
-fn fitting_columns(columns: &[Column], width: f32) -> Vec<Column> {
+fn fitting_columns(columns: &[Column], widths: &ColumnWidths, width: f32) -> Vec<Column> {
     let budget = width - ROW_NAME_X - ROW_PAD_RIGHT - ROW_NAME_MIN;
     let mut used = 0.0;
     columns
         .iter()
         .copied()
         .take_while(|c| {
-            used += c.width();
+            used += c.width(widths);
             used <= budget
         })
         .collect()
 }
 
-/// Right edge of every shown column, right-aligned to the end of the row.
-fn column_edges(fitting: &[Column], row: Rect) -> Vec<(Column, f32)> {
+/// Right edge of every shown column; the block of columns ends at the end of the row.
+fn column_edges(fitting: &[Column], widths: &ColumnWidths, row: Rect) -> Vec<(Column, f32)> {
     let mut right = row.right() - ROW_PAD_RIGHT;
     let mut edges: Vec<(Column, f32)> = fitting
         .iter()
         .rev()
         .map(|c| {
             let edge = (*c, right);
-            right -= c.width();
+            right -= c.width(widths);
             edge
         })
         .collect();
@@ -617,51 +638,60 @@ fn column_edges(fitting: &[Column], row: Rect) -> Vec<(Column, f32)> {
     edges
 }
 
-/// Header of the list view: column titles that sort the listing when clicked.
-/// Returns the sort field that was clicked.
+/// Header of the list view: column titles that sort the listing when clicked, and whose
+/// left borders can be dragged to resize the column. Returns the sort field that was clicked.
 pub fn list_header(
     ui: &mut egui::Ui,
     theme: &SerpantinumTheme,
     columns: &[Column],
+    widths: &mut ColumnWidths,
     sort_by: SortBy,
     order: SortOrder,
 ) -> Option<SortBy> {
     let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 30.0), egui::Sense::hover());
-    let fitting = fitting_columns(columns, rect.width());
+    let fitting = fitting_columns(columns, widths, rect.width());
     let mut clicked = None;
 
-    let mut cell = |ui: &mut egui::Ui, id: &str, key: Option<SortBy>, label: &str, cell: Rect, align_right: bool| {
+    let mut cell = |ui: &mut egui::Ui, id: &str, key: Option<SortBy>, label: &str, cell: Rect| {
         let resp = ui.interact(cell, ui.make_persistent_id(("list_header", id)), if key.is_some() { egui::Sense::click() } else { egui::Sense::hover() });
         let hover = animate(ui.ctx(), resp.id.with("h"), key.is_some() && resp.hovered());
         let active = key == Some(sort_by);
-        ui.painter().rect_filled(snap(ui.painter(), cell), pill(cell), theme.with_alpha(theme.text, (hover * ALPHA_HOVER as f32) as u8));
+        ui.painter().rect_filled(snap(ui.painter(), cell), CornerRadius::same(RADIUS_SM), theme.with_alpha(theme.text, (hover * ALPHA_HOVER as f32) as u8));
         let color = lerp_color(theme.subtext1, theme.text, hover.max(if active { 1.0 } else { 0.0 }));
         let font = egui::FontId::proportional(FONT_CAPTION);
         let arrow = if active { Some(if order == SortOrder::Ascending { icons::SORT_ASC } else { icons::SORT_DESC }) } else { None };
-        let (anchor, pos) = if align_right {
-            (Align2::RIGHT_CENTER, Pos2::new(cell.right() - 10.0, cell.center().y))
-        } else {
-            (Align2::LEFT_CENTER, Pos2::new(cell.left() + 10.0, cell.center().y))
-        };
-        let text_rect = ui.painter().text(pos, anchor, label, font, color);
+        let text_rect = ui.painter().text(Pos2::new(cell.left() + 10.0, cell.center().y), Align2::LEFT_CENTER, label, font, color);
         if let Some(a) = arrow {
-            let x = if align_right { text_rect.left() - 10.0 } else { text_rect.right() + 10.0 };
-            paint_icon(ui.painter(), Pos2::new(x, cell.center().y), a, ICON_XS, theme.mauve);
+            paint_icon(ui.painter(), Pos2::new(text_rect.right() + 13.0, cell.center().y), a, ICON_XS, theme.mauve);
         }
         if resp.clicked() {
             clicked = key;
         }
     };
 
-    let name_cell = Rect::from_min_size(
+    let edges = column_edges(&fitting, widths, rect);
+    let name_right = edges.first().map_or(rect.right() - ROW_PAD_RIGHT, |(c, e)| e - c.width(widths));
+    let name_cell = Rect::from_min_max(
         Pos2::new(rect.left() + ROW_NAME_X - 10.0, rect.top() + 2.0),
-        Vec2::new(72.0, rect.height() - 4.0),
+        Pos2::new(name_right - 2.0, rect.bottom() - 2.0),
     );
-    cell(ui, "name", Some(SortBy::Name), "Name", name_cell, false);
-    for (column, edge) in column_edges(&fitting, rect) {
-        let width = (column.width() - 6.0).min(110.0);
-        let slot = Rect::from_min_size(Pos2::new(edge + 10.0 - width, rect.top() + 2.0), Vec2::new(width, rect.height() - 4.0));
-        cell(ui, column.label(), column.sort_key(), column.label(), slot, true);
+    cell(ui, "name", Some(SortBy::Name), "Name", name_cell);
+    for (column, edge) in edges {
+        let width = column.width(widths);
+        let slot = Rect::from_min_max(Pos2::new(edge - width + 2.0, rect.top() + 2.0), Pos2::new(edge, rect.bottom() - 2.0));
+        cell(ui, column.label(), column.sort_key(), column.label(), slot);
+
+        // Grab strip on the column's left border; dragging it left widens the column
+        let grip = Rect::from_x_y_ranges((edge - width - 4.0)..=(edge - width + 4.0), rect.y_range());
+        let resp = ui.interact(grip, ui.make_persistent_id(("list_header_grip", column.label())), egui::Sense::drag());
+        if resp.hovered() || resp.dragged() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+            let x = edge - width;
+            ui.painter().line_segment([Pos2::new(x, rect.top() + 6.0), Pos2::new(x, rect.bottom() - 6.0)], egui::Stroke::new(1.5, theme.mauve));
+        }
+        if resp.dragged() {
+            widths[column.index()] = (width - resp.drag_delta().x).clamp(COLUMN_MIN, COLUMN_MAX);
+        }
     }
     clicked
 }
@@ -675,46 +705,75 @@ pub fn file_row(
     item: &FileItem,
     theme: &SerpantinumTheme,
     selected: bool,
+    cut: bool,
     should_scroll: bool,
     thumb: Option<&egui::TextureHandle>,
     path_hint: Option<&str>,
     columns: &[Column],
+    widths: &ColumnWidths,
     row_height: f32,
 ) -> egui::Response {
     let (rect, response) = ui.allocate_exact_size(Vec2::new(ui.available_width(), row_height), egui::Sense::click());
     let id = ui.make_persistent_id(("row", idx));
     let fx = fx(ui, id, &response, true, &FxSpec::ROW);
     let sel_t = animate(ui.ctx(), id.with("sel"), selected);
+    let cut_t = animate(ui.ctx(), id.with("cut"), cut);
     let r = scaled(rect, fx.scale);
 
-    paint_fill(ui.painter(), r, CornerRadius::same(RADIUS_MD), selectable_bg(theme, &fx, sel_t), &fx);
+    let bg = lerp_color(
+        selectable_bg(theme, &fx, sel_t),
+        theme.with_alpha(theme.peach, 28),
+        cut_t * (1.0 - sel_t * 0.5),
+    );
+    paint_fill(ui.painter(), r, CornerRadius::same(RADIUS_MD), bg, &fx);
 
+    let fade = lerp(1.0, 0.58, cut_t);
     let icon_center = Pos2::new(r.left() + 28.0, r.center().y);
     match thumb {
-        Some(tex) => paint_thumb(ui, tex, Rect::from_center_size(icon_center, Vec2::splat(32.0)), RADIUS_SM),
+        Some(tex) => {
+            ui.scope(|ui| {
+                ui.set_opacity(fade);
+                paint_thumb(ui, tex, Rect::from_center_size(icon_center, Vec2::splat(32.0)), RADIUS_SM);
+            });
+        }
         None => {
             let (glyph, color) = item_icon(item, theme, selected);
-            paint_icon(ui.painter(), icon_center, glyph, 24.0, color);
+            paint_icon(ui.painter(), icon_center, glyph, 24.0, color.gamma_multiply(fade));
         }
+    }
+    if cut_t > 0.01 {
+        paint_cut_badge(ui.painter(), Pos2::new(icon_center.x + 11.0, icon_center.y + 9.0), 16.0 * cut_t, theme);
     }
 
     let mut right = r.right() - ROW_PAD_RIGHT;
-    let small = egui::FontId::proportional(FONT_CAPTION);
-    let subtext_color = theme.subtext1;
+    let subtext_color = theme.subtext1.gamma_multiply(fade);
     if let Some(hint) = path_hint {
         let galley = truncated(ui, hint, FONT_CAPTION, subtext_color, (r.width() * 0.4).min(260.0));
         let pos = Pos2::new(right - galley.size().x, r.center().y - galley.size().y / 2.0);
         right = pos.x - 12.0;
         ui.painter().galley(pos, galley, subtext_color);
     } else {
-        let fitting = fitting_columns(columns, r.width());
-        for (column, edge) in column_edges(&fitting, r) {
-            ui.painter().text(Pos2::new(edge, r.center().y), Align2::RIGHT_CENTER, column.value(item), small.clone(), subtext_color);
+        let fitting = fitting_columns(columns, widths, r.width());
+        for (column, edge) in column_edges(&fitting, widths, r) {
+            let width = column.width(widths);
+            paint_label(ui, edge - width + 10.0, r.center().y, &column.value(item), FONT_CAPTION, subtext_color, width - 14.0);
         }
-        right -= fitting.iter().map(|c| c.width()).sum::<f32>();
+        right -= fitting.iter().map(|c| c.width(widths)).sum::<f32>();
     }
 
-    paint_label(ui, r.left() + ROW_NAME_X, r.center().y, item.display_name(), FONT_SUBTITLE, theme.text, right - r.left() - ROW_NAME_X - 6.0);
+    if cut_t > 0.01 {
+        let pill_w = 54.0;
+        let pill_h = 20.0;
+        let pill_rect = Rect::from_min_size(Pos2::new(right - pill_w, r.center().y - pill_h / 2.0), Vec2::new(pill_w, pill_h));
+        let pill_bg = theme.with_alpha(theme.peach, (44.0 * cut_t) as u8);
+        let pill_fg = theme.peach.gamma_multiply(cut_t);
+        ui.painter().rect_filled(snap(ui.painter(), pill_rect), pill(pill_rect), pill_bg);
+        paint_icon(ui.painter(), Pos2::new(pill_rect.left() + 13.0, pill_rect.center().y), icons::CUT, 11.0, pill_fg);
+        ui.painter().text(Pos2::new(pill_rect.left() + 24.0, pill_rect.center().y), Align2::LEFT_CENTER, "Cut", egui::FontId::proportional(11.5), pill_fg);
+        right = pill_rect.left() - 10.0;
+    }
+
+    paint_label(ui, r.left() + ROW_NAME_X, r.center().y, item.display_name(), FONT_SUBTITLE, theme.text.gamma_multiply(fade), right - r.left() - ROW_NAME_X - 6.0);
 
     if selected && should_scroll {
         response.scroll_to_me(Some(egui::Align::Center));
@@ -758,6 +817,7 @@ pub fn file_tile(
     item: &FileItem,
     theme: &SerpantinumTheme,
     selected: bool,
+    cut: bool,
     should_scroll: bool,
     thumb: Option<&egui::TextureHandle>,
     grid_size: crate::settings::GridSize,
@@ -768,23 +828,38 @@ pub fn file_tile(
     let id = ui.make_persistent_id(("tile", idx));
     let fx = fx(ui, id, &response, true, &FxSpec::CLICK);
     let sel_t = animate(ui.ctx(), id.with("sel"), selected);
+    let cut_t = animate(ui.ctx(), id.with("cut"), cut);
     let r = scaled(rect, fx.scale);
 
-    paint_fill(ui.painter(), r, CornerRadius::same(RADIUS_LG), selectable_bg(theme, &fx, sel_t), &fx);
+    let bg = lerp_color(
+        selectable_bg(theme, &fx, sel_t),
+        theme.with_alpha(theme.peach, 28),
+        cut_t * (1.0 - sel_t * 0.5),
+    );
+    paint_fill(ui.painter(), r, CornerRadius::same(RADIUS_LG), bg, &fx);
 
+    let fade = lerp(1.0, 0.58, cut_t);
     let pic_sz = grid_size.picture_size();
     let picture = Rect::from_center_size(Pos2::new(r.center().x, r.top() + pic_sz * 0.5 + 12.0), Vec2::splat(pic_sz));
     match thumb {
-        Some(tex) => paint_thumb(ui, tex, picture, RADIUS_SM),
+        Some(tex) => {
+            ui.scope(|ui| {
+                ui.set_opacity(fade);
+                paint_thumb(ui, tex, picture, RADIUS_SM);
+            });
+        }
         None => {
             let (glyph, color) = item_icon(item, theme, selected);
-            paint_icon(ui.painter(), picture.center(), glyph, grid_size.icon_size(), color);
+            paint_icon(ui.painter(), picture.center(), glyph, grid_size.icon_size(), color.gamma_multiply(fade));
         }
+    }
+    if cut_t > 0.01 {
+        paint_cut_badge(ui.painter(), Pos2::new(picture.right() - 6.0, picture.bottom() - 6.0), 22.0 * cut_t, theme);
     }
 
     // Names wrap over the configured lines and are centered under the picture, like Nautilus.
     // With halign Center the galley is centered on x = 0, so it is painted at the cell's center.
-    let name_color = theme.text;
+    let name_color = theme.text.gamma_multiply(fade);
     let mut job = LayoutJob::simple(item.display_name().to_string(), egui::FontId::proportional(FONT_CAPTION), name_color, r.width() - 14.0);
     job.wrap = TextWrapping { max_width: r.width() - 14.0, max_rows: max_name_lines, break_anywhere: false, overflow_character: Some('…') };
     job.halign = egui::Align::Center;
@@ -795,6 +870,13 @@ pub fn file_tile(
         response.scroll_to_me(Some(egui::Align::Center));
     }
     response
+}
+
+/// Flat tonal scissors badge drawn on the corner of a cut item's icon.
+fn paint_cut_badge(painter: &egui::Painter, center: Pos2, size: f32, theme: &SerpantinumTheme) {
+    let pill_fill = blend_over(theme.surface2, theme.with_alpha(theme.peach, 72));
+    painter.circle_filled(center, size * 0.5, pill_fill);
+    paint_icon(painter, center, icons::CUT, (size * 0.56).round().max(1.0), theme.peach);
 }
 
 /// Material switch row: icon, label (with an optional description) and an animated on/off switch.
@@ -929,10 +1011,10 @@ pub fn stepper_row(
 
 /// Back and forward as one joined pill: two flat halves, dimmed when there is nowhere to go.
 pub fn nav_pair(ui: &mut egui::Ui, theme: &SerpantinumTheme, can_back: bool, can_forward: bool) -> (egui::Response, egui::Response) {
-    const W: f32 = 32.0;
-    const H: f32 = 30.0;
-    let (slot, _) = ui.allocate_exact_size(Vec2::new(W * 2.0, CONTROL_HEIGHT), egui::Sense::hover());
-    let body = Rect::from_center_size(slot.center(), Vec2::new(W * 2.0, H));
+    // Same height as every other header control; each half is as wide as a round icon button
+    const W: f32 = CONTROL_HEIGHT;
+    const H: f32 = CONTROL_HEIGHT;
+    let (body, _) = ui.allocate_exact_size(Vec2::new(W * 2.0, H), egui::Sense::hover());
     ui.painter().rect_filled(snap(ui.painter(), body), pill(body), theme.surface0);
     let id = ui.make_persistent_id("nav_pair");
     let mut responses = Vec::with_capacity(2);
@@ -944,7 +1026,7 @@ pub fn nav_pair(ui: &mut egui::Ui, theme: &SerpantinumTheme, can_back: bool, can
         let fill = theme.with_alpha(theme.text, (hover * ALPHA_HOVER as f32) as u8 + if press { ALPHA_PRESS - ALPHA_HOVER } else { 0 });
         ui.painter().rect_filled(snap(ui.painter(), cell.shrink(2.0)), pill(cell.shrink(2.0)), fill);
         let color = if enabled { lerp_color(theme.subtext1, theme.text, hover) } else { theme.with_alpha(theme.subtext1, 70) };
-        paint_icon(ui.painter(), cell.center(), icon, ICON_SM, color);
+        paint_icon(ui.painter(), cell.center(), icon, ICON_MD, color);
         responses.push(resp.on_hover_text(tip));
     }
     let forward = responses.pop().unwrap();
@@ -1143,6 +1225,16 @@ pub fn put_over(ui: &mut egui::Ui, rect: Rect, widget: impl egui::Widget) -> egu
 /// An icon inside a line of widgets (the magnifier in front of a search field).
 pub fn inline_icon(ui: &mut egui::Ui, icon: &str, size: f32, color: Color32) {
     ui.label(egui::RichText::new(icon).font(icons::font(size)).color(color));
+}
+
+/// Paints the rubber-band drag selection rectangle using the flat Material 3 accent tonal fill
+/// and a subtle accent border.
+pub fn paint_rubberband(painter: &egui::Painter, rect: Rect, theme: &SerpantinumTheme) {
+    let rect = snap(painter, rect);
+    let radius = CornerRadius::same(RADIUS_MD);
+    let fill = theme.with_alpha(theme.mauve, 34);
+    let stroke = egui::Stroke::new(1.0, theme.with_alpha(theme.mauve, 110));
+    painter.rect(rect, radius, fill, stroke, egui::StrokeKind::Inside);
 }
 
 #[cfg(test)]
