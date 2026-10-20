@@ -16,7 +16,7 @@ use crate::fs::{
 use crate::fs::batch_rename::{self, Entry as RenameEntry, Mode as RenameMode, Rules as RenameRules};
 use crate::fs::ops::{self, ArchiveFormat, Jobs};
 use crate::fs::scanner::{SortBy, SortOrder};
-use crate::settings::{Density, GridSize, Settings};
+use crate::settings::{Density, Settings};
 use crate::thumbs::Thumbnails;
 use crate::ui::{
     icons,
@@ -155,7 +155,6 @@ pub(crate) enum Dialog {
         conflict_warning: Option<(String, crate::keymap::Action, crate::keymap::Action, Option<usize>)>,
     },
     Shortcuts,
-    Icon { folder: PathBuf, input: String, error: Option<String>, candidates: Vec<PathBuf>, browse: Option<PathBuf> },
 }
 
 /// Rubber-band drag selection started inside the file listing.
@@ -180,6 +179,10 @@ struct Picker {
     chosen: Option<PathBuf>,
     /// Subfolders of `dir`, read when the folder changes.
     folders: Vec<PathBuf>,
+    /// Set when choosing an image for this folder instead of a destination.
+    icon_for: Option<PathBuf>,
+    /// Images in `dir`, only read when choosing an icon.
+    images: Vec<PathBuf>,
 }
 
 impl Picker {
@@ -195,6 +198,15 @@ impl Picker {
             })
             .unwrap_or_default();
         self.folders.sort_by_key(|p| p.file_name().map(|n| n.to_string_lossy().to_lowercase()));
+        self.images = if self.icon_for.is_some() {
+            let mut images: Vec<PathBuf> = std::fs::read_dir(&dir)
+                .map(|rd| rd.flatten().filter(|e| !e.file_name().to_string_lossy().starts_with('.')).map(|e| e.path()).filter(|p| crate::thumbs::is_image(p)).collect())
+                .unwrap_or_default();
+            images.sort_by_key(|p| p.file_name().map(|n| n.to_string_lossy().to_lowercase()));
+            images
+        } else {
+            Vec::new()
+        };
         self.dir = dir;
         self.chosen = None;
     }
@@ -739,7 +751,7 @@ impl SkiApp {
 
     fn open_pick_folder(&mut self, op: TransferOp, items: Vec<PathBuf>) {
         let dir = self.current_path.clone();
-        let mut picker = Picker { op, path_input: String::new(), dir: PathBuf::new(), items, chosen: None, folders: Vec::new() };
+        let mut picker = Picker { op, path_input: String::new(), dir: PathBuf::new(), items, chosen: None, folders: Vec::new(), icon_for: None, images: Vec::new() };
         picker.enter(dir);
         self.picker = Some(picker);
     }
@@ -902,7 +914,7 @@ impl SkiApp {
                     return;
                 }
                 self.settings.grid_size = next;
-                format!("{} icons", next.label())
+                format!("Icons {}", next.label())
             }
             ViewMode::List => {
                 let next = self.settings.density.step(delta);
@@ -1303,6 +1315,8 @@ const MENU_WIDTH: f32 = 264.0;
 
 /// Content width below which the sidebar is hidden.
 const SIDEBAR_BREAKPOINT: f32 = 680.0;
+/// Narrowest the path pill may get before header buttons start to drop out.
+const TITLE_MIN: f32 = 110.0;
 /// Outer gutter shared by the sidebar, header, list and status bar so their edges line up.
 const PAGE_MARGIN: i8 = 10;
 /// Side margin of the header row: puts the round end buttons' icons on the sidebar's icon column.
@@ -1474,26 +1488,47 @@ impl SkiApp {
                 // Every gap is spelled out below, so nothing depends on the layout's own spacing
                 ui.spacing_mut().item_spacing.x = 0.0;
 
-                let (back, forward) = material::nav_pair(ui, &self.theme, !self.back_history.is_empty(), !self.forward_history.is_empty());
-                if back.clicked() {
-                    self.go_back();
+                // Controls leave one by one as the window narrows, like in Nautilus: the view button first,
+                // then search, then back / forward. The path and the main menu stay.
+                let nav_w = 2.0 * CONTROL_HEIGHT + TITLE_GAP;
+                let button_w = CONTROL_HEIGHT + gap;
+                let (mut show_view, mut show_search_btn, mut show_nav) = (true, !sidebar_visible, true);
+                let needed = |view: bool, search: bool, nav: bool| {
+                    let menu = if sidebar_visible { 0.0 } else { button_w };
+                    TITLE_MIN + TITLE_GAP + menu + if view { button_w } else { 0.0 } + if search { button_w } else { 0.0 } + if nav { nav_w } else { 0.0 }
+                };
+                let room = ui.available_width();
+                if needed(show_view, show_search_btn, show_nav) > room {
+                    show_view = false;
                 }
-                if forward.clicked() {
-                    self.go_forward();
+                if needed(show_view, show_search_btn, show_nav) > room {
+                    show_search_btn = false;
                 }
-                // The address pill breathes: a wider gap on both sides than between the icon buttons
-                ui.add_space(TITLE_GAP);
+                if needed(show_view, show_search_btn, show_nav) > room {
+                    show_nav = false;
+                }
+
+                if show_nav {
+                    let (back, forward) = material::nav_pair(ui, &self.theme, !self.back_history.is_empty(), !self.forward_history.is_empty());
+                    if back.clicked() {
+                        self.go_back();
+                    }
+                    if forward.clicked() {
+                        self.go_forward();
+                    }
+                    // The address pill breathes: a wider gap on both sides than between the icon buttons
+                    ui.add_space(TITLE_GAP);
+                }
 
                 // Search lives in the sidebar; without a sidebar it becomes a header button.
-                let right_buttons = if sidebar_visible { 1.0 } else { 3.0 };
-                let reserved = right_buttons * CONTROL_HEIGHT + (right_buttons - 1.0) * gap + TITLE_GAP;
-                let title_width = (ui.available_width() - reserved).max(40.0);
+                let right_w = if sidebar_visible { 0.0 } else { button_w } + if show_search_btn { button_w } else { 0.0 } + if show_view { CONTROL_HEIGHT } else { 0.0 };
+                let title_width = (ui.available_width() - right_w - TITLE_GAP).max(40.0);
 
                 let (title_rect, title_resp) =
                     ui.allocate_exact_size(egui::vec2(title_width, CONTROL_HEIGHT), egui::Sense::click());
                 ui.add_space(TITLE_GAP);
 
-                let editing_top_pill = (self.show_search && !sidebar_visible) || self.is_editing_path;
+                let editing_top_pill = self.show_search || self.is_editing_path;
                 let pill_hover = material::animate(ui.ctx(), title_resp.id.with("hover"), !editing_top_pill && title_resp.hovered());
                 let pill_edit = material::animate(ui.ctx(), egui::Id::unique("top_pill_edit"), editing_top_pill);
                 let pill_fill = material::lerp_color(
@@ -1501,9 +1536,10 @@ impl SkiApp {
                     self.theme.surface2,
                     pill_edit,
                 );
-                ui.painter().rect_filled(material::snap(ui.painter(), title_rect), material::pill(title_rect), pill_fill);
+                let pill_radius = if self.show_search { egui::CornerRadius::same(material::RADIUS_MD) } else { material::pill(title_rect) };
+                ui.painter().rect_filled(material::snap(ui.painter(), title_rect), pill_radius, pill_fill);
 
-                if self.show_search && !sidebar_visible {
+                if self.show_search {
                     self.render_search_field(ui, title_rect);
                 } else if self.is_editing_path {
                     self.render_path_field(ui, title_rect);
@@ -1511,7 +1547,7 @@ impl SkiApp {
                     self.render_title(ui, title_rect, &title_resp);
                 }
 
-                if !sidebar_visible {
+                if show_search_btn {
                     let icon = if self.show_search { icons::CLOSE } else { icons::SEARCH };
                     if icon_button(ui, "btn_search", icon, &self.theme, true, "Search (/)").clicked() {
                         if self.show_search {
@@ -1523,7 +1559,8 @@ impl SkiApp {
                         }
                     }
                     ui.add_space(gap);
-
+                }
+                if !sidebar_visible {
                     let menu = icon_button(ui, "btn_main_menu", icons::MENU, &self.theme, true, "Main menu");
                     self.main_button_rect = menu.rect;
                     if menu.clicked() {
@@ -1532,6 +1569,9 @@ impl SkiApp {
                     ui.add_space(gap);
                 }
 
+                if !show_view {
+                    return;
+                }
                 let view_icon = match self.view_mode {
                     ViewMode::List => icons::VIEW_LIST,
                     ViewMode::Grid => icons::GRID_VIEW,
@@ -1560,8 +1600,25 @@ impl SkiApp {
         );
         let edit_rect = egui::Rect::from_min_max(
             egui::pos2(rect.left() + material::INSET_LABEL, rect.top()),
-            egui::pos2(rect.right() - 12.0, rect.bottom()),
+            egui::pos2(rect.right() - 40.0, rect.bottom()),
         );
+        let clear_rect = egui::Rect::from_center_size(egui::pos2(rect.right() - 20.0, rect.center().y), egui::vec2(26.0, 26.0));
+        let clear_id = ui.make_persistent_id("search_clear");
+        let clear = ui.interact(clear_rect, clear_id, egui::Sense::click());
+        let fx = material::fx(ui, clear_id, &clear, true, &material::FxSpec::ICON);
+        let r = material::scaled(clear_rect, fx.scale);
+        material::paint_fill(ui.painter(), r, material::pill(r), material::row_layer(&self.theme, &fx), &fx);
+        material::paint_icon(
+            ui.painter(),
+            clear_rect.center(),
+            icons::CLOSE,
+            material::ICON_XS,
+            material::lerp_color(self.theme.subtext1, self.theme.text, fx.hover.max(fx.press)),
+        );
+        if clear.clicked() {
+            self.close_search();
+            return;
+        }
         let resp = material::put_over(
             ui,
             edit_rect,
@@ -1823,11 +1880,8 @@ impl SkiApp {
         }
     }
 
-    /// Search icon (growing into the search field when clicked) with the main menu button at the right.
+    /// Search button (the field itself lives in the header) with the main menu button at the right.
     fn render_sidebar_search(&mut self, ui: &mut egui::Ui) {
-        let open = self.show_search || !self.search_query.is_empty();
-        let open_t = material::animate_for(ui.ctx(), egui::Id::unique("sidebar_search_open"), open, material::ANIM_SLOW);
-
         let (row, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), CONTROL_HEIGHT), egui::Sense::hover());
         // Round buttons are inset so their icons sit on the same column as the destinations' icons
         let menu_rect = egui::Rect::from_min_size(egui::pos2(row.right() - HEADER_INSET - CONTROL_HEIGHT, row.top()), egui::vec2(CONTROL_HEIGHT, CONTROL_HEIGHT));
@@ -1839,89 +1893,19 @@ impl SkiApp {
             self.toggle_main_menu(ui.ctx());
         }
 
-        // The search grows over the free space left of the menu button
-        let full = menu_rect.left() - 4.0 - row.left();
-        let slot = egui::Rect::from_min_size(row.min, egui::vec2(full, CONTROL_HEIGHT));
-
-        if !open && open_t <= 0.0 {
-            let button = ui.scope_builder(egui::UiBuilder::new().max_rect(slot.translate(egui::vec2(HEADER_INSET, 0.0))), |ui| {
-                icon_button(ui, "sidebar_search_btn", icons::SEARCH, &self.theme, true, "Search (/)")
-            });
-            if button.inner.clicked() {
+        let search_rect = egui::Rect::from_min_size(egui::pos2(row.left() + HEADER_INSET, row.top()), egui::vec2(CONTROL_HEIGHT, CONTROL_HEIGHT));
+        let button = ui.scope_builder(egui::UiBuilder::new().max_rect(search_rect), |ui| {
+            icon_button(ui, "sidebar_search_btn", icons::SEARCH, &self.theme, true, "Search (/)")
+        });
+        if button.inner.clicked() {
+            if self.show_search {
+                self.close_search();
+            } else {
                 self.show_search = true;
                 self.focus_search = true;
+                self.is_editing_path = false;
             }
-            return;
         }
-
-        // The pill grows out of the inset button; the icon stays on the destinations' icon column
-        let rect = egui::Rect::from_min_max(
-            egui::pos2(slot.min.x + HEADER_INSET * (1.0 - open_t), slot.top()),
-            egui::pos2(material::lerp(slot.min.x + HEADER_INSET + CONTROL_HEIGHT, slot.min.x + full, open_t), slot.bottom()),
-        );
-
-        let search_id = egui::Id::unique("sidebar_search");
-        let focused = ui.memory(|m| m.has_focus(search_id));
-        let focus_t = material::animate(ui.ctx(), egui::Id::unique("sidebar_search_focus"), focused);
-        let fill = material::lerp_color(
-            egui::Color32::TRANSPARENT,
-            material::lerp_color(self.theme.surface1, self.theme.surface2, focus_t),
-            open_t,
-        );
-        ui.painter().rect_filled(material::snap(ui.painter(), rect), material::pill(rect), fill);
-        material::paint_icon(ui.painter(), egui::pos2(slot.left() + material::INSET_ICON, rect.center().y), icons::SEARCH, material::ICON_MD, self.theme.subtext1);
-
-        let content_alpha = ((open_t - 0.35) / 0.65).clamp(0.0, 1.0);
-        if content_alpha <= 0.0 && !self.focus_search {
-            return;
-        }
-        let clear_rect = egui::Rect::from_center_size(egui::pos2(rect.right() - CONTROL_HEIGHT / 2.0, rect.center().y), egui::vec2(26.0, 26.0));
-        let edit_left = slot.left() + material::INSET_LABEL;
-        let edit_right = (clear_rect.left() - 4.0).max(edit_left + 8.0);
-        let edit_rect = egui::Rect::from_min_max(
-            egui::pos2(edit_left, rect.top()),
-            egui::pos2(edit_right, rect.bottom()),
-        );
-        ui.scope(|ui| {
-            ui.set_clip_rect(rect.intersect(ui.clip_rect()));
-            ui.set_opacity(content_alpha);
-            let resp = material::put_over(
-                ui,
-                edit_rect,
-                egui::TextEdit::singleline(&mut self.search_query)
-                    .id(search_id)
-                    .frame(egui::Frame::NONE)
-                    .align(egui::Align2::LEFT_CENTER)
-                    .font(egui::FontId::proportional(material::FONT_BODY))
-                    .hint_text("Search files"),
-            );
-            if self.focus_search {
-                resp.request_focus();
-                self.focus_search = false;
-            }
-            if resp.changed() {
-                let ctx = ui.ctx().clone();
-                self.on_query_changed(&ctx);
-            }
-
-            if content_alpha > 0.01 {
-                let clear_id = ui.make_persistent_id("sidebar_search_clear");
-                let clear = ui.interact(clear_rect, clear_id, if open { egui::Sense::click() } else { egui::Sense::hover() });
-                let fx = material::fx(ui, clear_id, &clear, open, &material::FxSpec::ICON);
-                let r = material::scaled(clear_rect, fx.scale);
-                material::paint_fill(ui.painter(), r, material::pill(r), material::row_layer(&self.theme, &fx), &fx);
-                material::paint_icon(
-                    ui.painter(),
-                    clear_rect.center(),
-                    icons::CLOSE,
-                    material::ICON_XS,
-                    material::lerp_color(self.theme.subtext1, self.theme.text, fx.hover.max(fx.press)),
-                );
-                if clear.clicked() && open {
-                    self.close_search();
-                }
-            }
-        });
     }
 
     fn open_item(&mut self, item: FileItem) {
@@ -2051,38 +2035,46 @@ impl SkiApp {
             let cols = ((ui.available_width() + spacing) / (cell.x + spacing)).floor().max(1.0) as usize;
             // Leftover width is shared between the columns, so the grid fills the view like Nautilus does
             let gap = ((ui.available_width() - cols as f32 * cell.x) / cols as f32).max(spacing);
-            ui.spacing_mut().item_spacing = egui::vec2(gap, spacing);
+            // Every tile sits at a position computed from its row and column, never from its neighbours
+            let rows = self.items.len().div_ceil(cols);
+            let (_, area) = ui.allocate_space(egui::vec2(ui.available_width(), rows as f32 * (cell.y + spacing)));
 
             for (row_idx, row) in self.items.chunks(cols).enumerate() {
-                ui.horizontal(|ui| {
-                    ui.add_space(gap / 2.0 - spacing.min(gap / 2.0));
-                    for (col_idx, item) in row.iter().enumerate() {
-                        let idx = row_idx * cols + col_idx;
-                        let selected = self.selection.contains(&idx);
-                        let is_cut = cut.contains(&item.path);
-                        let thumb = thumb_for(&self.thumbs, &self.folder_icons, item, show_thumbs);
-                        let resp = file_tile(ui, idx, item, &self.theme, selected, is_cut, should_scroll, thumb, grid_size, grid_lines);
-                        item_rects.push((idx, resp.rect));
-                        let mods = ui.input(|i| i.modifiers);
-                        if resp.clicked() {
-                            if self.settings.single_click_open && !mods.command && !mods.shift {
-                                opened = Some(item.clone());
-                            } else {
-                                clicked = Some((idx, mods));
-                            }
-                        } else if resp.secondary_clicked() && !selected {
-                            clicked = Some((idx, egui::Modifiers::NONE));
-                        }
-                        if resp.double_clicked() {
+                for (col_idx, item) in row.iter().enumerate() {
+                    let origin = egui::pos2(
+                        area.left() + gap / 2.0 + col_idx as f32 * (cell.x + gap),
+                        area.top() + row_idx as f32 * (cell.y + spacing),
+                    );
+                    let slot = egui::Rect::from_min_size(origin, cell);
+                    let idx = row_idx * cols + col_idx;
+                    let selected = self.selection.contains(&idx);
+                    let is_cut = cut.contains(&item.path);
+                    let thumb = thumb_for(&self.thumbs, &self.folder_icons, item, show_thumbs);
+                    let resp = ui
+                        .scope_builder(egui::UiBuilder::new().max_rect(slot), |ui| {
+                            file_tile(ui, idx, item, &self.theme, selected, is_cut, should_scroll, thumb, grid_size, grid_lines)
+                        })
+                        .inner;
+                    item_rects.push((idx, resp.rect));
+                    let mods = ui.input(|i| i.modifiers);
+                    if resp.clicked() {
+                        if self.settings.single_click_open && !mods.command && !mods.shift {
                             opened = Some(item.clone());
+                        } else {
+                            clicked = Some((idx, mods));
                         }
-                        if resp.secondary_clicked()
-                            && let Some(pos) = resp.interact_pointer_pos() {
-                                menu_at = Some((pos, MenuTarget::Item(item.clone())));
-                            }
+                    } else if resp.secondary_clicked() && !selected {
+                        clicked = Some((idx, egui::Modifiers::NONE));
                     }
-                });
-            }
+                    if resp.double_clicked() {
+                        opened = Some(item.clone());
+                    }
+                    if resp.secondary_clicked()
+                        && let Some(pos) = resp.interact_pointer_pos() {
+                            menu_at = Some((pos, MenuTarget::Item(item.clone())));
+                        }
+                }
+        }
             if let Some(drag) = &self.drag_select
                 && drag.active
             {
@@ -2424,15 +2416,15 @@ impl SkiApp {
 
         match self.view_mode {
             ViewMode::Grid => {
-                let at = GridSize::ALL.iter().position(|g| *g == self.settings.grid_size).unwrap_or(1);
-                let (less, more) = material::stepper_row(ui, "vo_icon_size", "Icon size", &theme, at > 0, at + 1 < GridSize::ALL.len());
+                let size = self.settings.grid_size;
+                let (less, more) = material::stepper_row(ui, "vo_icon_size", "Icon size", &theme, &size.label(), size.can_step(-1), size.can_step(1));
                 if less || more {
                     self.settings.grid_size = self.settings.grid_size.step(if more { 1 } else { -1 });
                 }
             }
             ViewMode::List => {
                 let at = Density::ALL.iter().position(|d| *d == self.settings.density).unwrap_or(1);
-                let (less, more) = material::stepper_row(ui, "vo_row_height", "Row height", &theme, at > 0, at + 1 < Density::ALL.len());
+                let (less, more) = material::stepper_row(ui, "vo_row_height", "Row height", &theme, self.settings.density.label(), at > 0, at + 1 < Density::ALL.len());
                 if less || more {
                     self.settings.density = Density::ALL[if more { at + 1 } else { at - 1 }];
                 }
@@ -3039,13 +3031,6 @@ impl SkiApp {
             return;
         };
 
-        if is_open
-            && let Dialog::Icon { input, error, .. } = &mut dialog
-                && let Some(path) = ctx.input(|i| i.raw.dropped_files.first().map(|f| f.path().to_path_buf())) {
-                    *input = path.to_string_lossy().into_owned();
-                    *error = None;
-                }
-
         let screen = ctx.content_rect();
         let mut close = false;
 
@@ -3093,7 +3078,6 @@ impl SkiApp {
                             Dialog::Confirm { .. } => self.confirm_dialog_contents(ui, &mut dialog),
                             Dialog::Alert { .. } => self.alert_dialog_contents(ui, &mut dialog),
                             Dialog::Properties { .. } => self.properties_contents(ui, &mut dialog),
-                            Dialog::Icon { .. } => self.icon_dialog_contents(ui, &mut dialog),
                             Dialog::OpenWith { .. } => self.open_with_contents(ui, &mut dialog),
                             Dialog::Settings { .. } => self.settings_dialog_contents(ui, &mut dialog),
                             Dialog::BatchRename { .. } => self.batch_rename_contents(ui, &mut dialog),
@@ -3204,10 +3188,15 @@ impl SkiApp {
         ui.label(egui::RichText::new(body.as_str()).size(material::FONT_BODY).color(theme.subtext0));
 
         ui.add_space(8.0);
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        // Fixed height: a bare right-to-left layout would claim all remaining height and stretch the card
+        ui.allocate_ui_with_layout(egui::vec2(ui.available_width(), 36.0), egui::Layout::right_to_left(egui::Align::Center), |ui| {
             close |= material::button(ui, "alert_ok", Some(icons::CHECK), "Got it", &theme, ButtonKind::Filled, true).clicked();
         });
         close |= ui.input(|i| i.key_pressed(egui::Key::Enter));
+        if close {
+            // Dismissing the "can't move over itself" notice drops the pending cut, like Nautilus
+            self.clipboard = None;
+        }
         close
     }
 
@@ -3330,6 +3319,59 @@ impl SkiApp {
             }
         }
 
+        egui::CollapsingHeader::new(egui::RichText::new("More options").size(material::FONT_CAPTION).color(theme.subtext1))
+            .id_salt("br_more")
+            .show(ui, |ui| {
+                if rules.mode == RenameMode::Replace {
+                    ui.horizontal_wrapped(|ui| {
+                        if chip(ui, "br_match_case", None, "Match case", &theme, rules.match_case).clicked() {
+                            rules.match_case = !rules.match_case;
+                        }
+                    });
+                }
+                ui.columns(2, |cols| {
+                    field(&mut cols[0], &mut rules.prefix, "Add at start", false);
+                    field(&mut cols[1], &mut rules.suffix, "Add at end", false);
+                });
+                ui.columns(2, |cols| {
+                    field(&mut cols[0], &mut rules.trim_start, "Remove first N characters", false);
+                    field(&mut cols[1], &mut rules.trim_end, "Remove last N characters", false);
+                });
+                material::section_label(ui, "Letter case", &theme);
+                ui.horizontal_wrapped(|ui| {
+                    for (case, label) in batch_rename::Case::ALL {
+                        if chip(ui, ("br_case", label), None, label, &theme, rules.case == case).clicked() {
+                            rules.case = case;
+                        }
+                    }
+                });
+                material::section_label(ui, "Spaces", &theme);
+                ui.horizontal_wrapped(|ui| {
+                    for (spaces, label) in batch_rename::Spaces::ALL {
+                        if chip(ui, ("br_spaces", label), None, label, &theme, rules.spaces == spaces).clicked() {
+                            rules.spaces = spaces;
+                        }
+                    }
+                    if chip(ui, "br_lower_ext", None, "Lowercase extension", &theme, rules.lowercase_ext).clicked() {
+                        rules.lowercase_ext = !rules.lowercase_ext;
+                    }
+                });
+                if rules.mode == RenameMode::Template {
+                    material::section_label(ui, "Numbering", &theme);
+                    ui.horizontal_wrapped(|ui| {
+                        for (order, label) in batch_rename::Order::ALL {
+                            if chip(ui, ("br_order", label), None, label, &theme, rules.order == order).clicked() {
+                                rules.order = order;
+                            }
+                        }
+                    });
+                    ui.columns(2, |cols| {
+                        field(&mut cols[0], &mut rules.start, "Start at", false);
+                        field(&mut cols[1], &mut rules.step, "Step", false);
+                    });
+                }
+            });
+
         // Old name → new name for every file
         let max_height = (ui.ctx().content_rect().height() - 380.0).clamp(120.0, 320.0);
         material::group_card(ui, &theme, |ui| {
@@ -3373,12 +3415,19 @@ impl SkiApp {
     fn render_picker(&mut self, ctx: &egui::Context) {
         let Some(mut picker) = self.picker.take() else { return };
         let theme = self.theme;
+        let icon_for = picker.icon_for.clone();
         let (title, verb) = match picker.op {
+            _ if icon_for.is_some() => ("Folder icon", "Set icon"),
             TransferOp::Copy => ("Copy to", "Copy"),
             TransferOp::Move => ("Move to", "Move"),
             TransferOp::Extract => ("Extract to", "Extract"),
         };
-        let what = Self::describe_count(&picker.items);
+        let what = match &icon_for {
+            Some(f) => format!("“{}”", f.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()),
+            None => Self::describe_count(&picker.items),
+        };
+        let has_icon = icon_for.as_ref().is_some_and(|f| self.folder_icons.contains_key(f));
+        let mut reset = false;
         let builder = egui::ViewportBuilder::default()
             .with_title(format!("{title} — {what}"))
             .with_inner_size([880.0, 600.0])
@@ -3464,12 +3513,22 @@ impl SkiApp {
                 .show(ui, |ui| {
                     let dest = picker.chosen.as_ref().unwrap_or(&picker.dir);
                     let name = dest.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| dest.display().to_string());
+                    // Choosing an icon needs an image; a destination can always be the open folder
+                    let ready = icon_for.is_none() || picker.chosen.as_ref().is_some_and(|c| !c.is_dir());
                     ui.horizontal(|ui| {
-                        ui.label(egui::RichText::new(format!("{verb} {what} to")).size(material::FONT_CAPTION).color(theme.subtext1));
-                        ui.label(egui::RichText::new(format!("“{name}”")).size(material::FONT_BODY).color(theme.text));
+                        if icon_for.is_some() {
+                            let text = if ready { format!("Icon for {what}: “{name}”") } else { format!("Choose an image for {what}") };
+                            ui.label(egui::RichText::new(text).size(material::FONT_BODY).color(theme.text));
+                        } else {
+                            ui.label(egui::RichText::new(format!("{verb} {what} to")).size(material::FONT_CAPTION).color(theme.subtext1));
+                            ui.label(egui::RichText::new(format!("“{name}”")).size(material::FONT_BODY).color(theme.text));
+                        }
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            confirmed |= material::button(ui, "pk_go", Some(icons::CHECK), verb, &theme, ButtonKind::Filled, true).clicked();
+                            confirmed |= material::button(ui, "pk_go", Some(icons::CHECK), verb, &theme, ButtonKind::Filled, ready).clicked() && ready;
                             cancelled |= material::button(ui, "pk_cancel", None, "Cancel", &theme, ButtonKind::Text, true).clicked();
+                            if has_icon {
+                                reset |= material::button(ui, "pk_reset", None, "Reset", &theme, ButtonKind::Text, true).clicked();
+                            }
                         });
                     });
                 });
@@ -3489,10 +3548,20 @@ impl SkiApp {
                                 pick = Some(folder.clone());
                             }
                         }
+                        for image in &picker.images {
+                            let label = image.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                            let resp = nav_item(ui, ("pk_image", image), icons::IMAGE, &label, &theme, picker.chosen.as_ref() == Some(image));
+                            if resp.double_clicked() {
+                                picker.chosen = Some(image.clone());
+                                confirmed = true;
+                            } else if resp.clicked() {
+                                pick = Some(image.clone());
+                            }
+                        }
                         if pick.is_some() {
                             picker.chosen = pick;
                         }
-                        if picker.folders.is_empty() {
+                        if picker.folders.is_empty() && picker.images.is_empty() {
                             material::empty_state(ui, &theme, icons::FOLDER, "No subfolders", Some("Choose this folder with the button below"));
                         }
                     });
@@ -3502,7 +3571,15 @@ impl SkiApp {
         if let Some(target) = goto {
             picker.enter(target);
         }
-        if confirmed {
+        if let Some(folder) = icon_for {
+            if reset {
+                self.apply_folder_icon(&folder, None);
+            } else if confirmed && let Some(image) = picker.chosen.as_ref().filter(|c| !c.is_dir()) {
+                self.apply_folder_icon(&folder, Some(image));
+            } else if !cancelled {
+                self.picker = Some(picker);
+            }
+        } else if confirmed {
             let dest = picker.chosen.clone().unwrap_or_else(|| picker.dir.clone());
             self.transfer(picker.op, picker.items, dest);
         } else if !cancelled {
@@ -3716,17 +3793,27 @@ impl SkiApp {
         close
     }
 
+    /// Pick an image for a folder in the same window as Move to.
     fn open_icon_dialog(&mut self, folder: PathBuf) {
-        let candidates = std::fs::read_dir(&folder)
-            .map(|rd| {
-                let mut images: Vec<PathBuf> = rd.flatten().map(|e| e.path()).filter(|p| crate::thumbs::is_image(p)).collect();
-                images.sort();
-                images.truncate(6);
-                images
-            })
-            .unwrap_or_default();
-        let input = self.folder_icons.get(&folder).map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
-        self.dialog = Some(Dialog::Icon { folder, input, error: None, candidates, browse: None });
+        let start = self
+            .folder_icons
+            .get(&folder)
+            .and_then(|p| p.parent())
+            .filter(|p| p.is_dir())
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| if folder.is_dir() { folder.clone() } else { self.current_path.clone() });
+        let mut picker = Picker {
+            op: TransferOp::Copy,
+            items: Vec::new(),
+            dir: PathBuf::new(),
+            path_input: String::new(),
+            chosen: None,
+            folders: Vec::new(),
+            icon_for: Some(folder),
+            images: Vec::new(),
+        };
+        picker.enter(start);
+        self.picker = Some(picker);
     }
 
     /// Set (or with `None` remove) the custom icon of a folder.
@@ -3743,121 +3830,6 @@ impl SkiApp {
             }
         }
         save_folder_icons(&self.folder_icons);
-    }
-
-    fn icon_dialog_contents(&mut self, ui: &mut egui::Ui, dialog: &mut Dialog) -> bool {
-        let Dialog::Icon { folder, input, error, candidates, browse } = dialog else { return false };
-        let theme = self.theme;
-        let name = folder.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "Computer".to_owned());
-        let mut close = material::dialog_header(
-            ui,
-            "Folder icon",
-            Some(&format!("Choose an image for “{name}”. You can also drop a file here.")),
-            &theme,
-            "icon_close",
-        );
-
-        let mut apply = false;
-        material::input_frame(&theme).show(ui, |ui| {
-            let resp = ui.add(
-                egui::TextEdit::singleline(input)
-                    .frame(egui::Frame::NONE)
-                    .desired_width(f32::INFINITY)
-                    .hint_text("No image chosen")
-                    .font(egui::FontId::proportional(material::FONT_BODY)),
-            );
-            if resp.changed() {
-                *error = None;
-            }
-            if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                apply = true;
-            }
-        });
-
-        ui.horizontal(|ui| {
-            let label = if browse.is_some() { "Hide folders" } else { "Choose image…" };
-            if material::button(ui, "icon_browse", Some(icons::FOLDER), label, &theme, ButtonKind::Tonal, true).clicked() {
-                *browse = match browse {
-                    Some(_) => None,
-                    None => {
-                        let typed = PathBuf::from(input.trim());
-                        let start = typed.parent().filter(|p| p.is_dir()).map(Path::to_path_buf);
-                        Some(start.unwrap_or_else(|| if folder.is_dir() { folder.clone() } else { self.current_path.clone() }))
-                    }
-                };
-            }
-        });
-        if let Some(dir) = browse.clone() {
-            let mut entries: Vec<(PathBuf, bool)> = std::fs::read_dir(&dir)
-                .map(|rd| {
-                    rd.flatten()
-                        .filter(|e| !e.file_name().to_string_lossy().starts_with('.'))
-                        .map(|e| e.path())
-                        .filter_map(|p| if p.is_dir() { Some((p, true)) } else { crate::thumbs::is_image(&p).then_some((p, false)) })
-                        .collect()
-                })
-                .unwrap_or_default();
-            entries.sort_by_key(|(p, is_dir)| (!*is_dir, p.file_name().map(|n| n.to_string_lossy().to_lowercase())));
-            material::hint_label(ui, &dir.to_string_lossy(), &theme);
-            material::group_card(ui, &theme, |ui| {
-                egui::ScrollArea::vertical().max_height(220.0).auto_shrink([false, true]).id_salt("icon_browser").show(ui, |ui| {
-                    ui.spacing_mut().item_spacing.y = 2.0;
-                    if let Some(parent) = dir.parent()
-                        && nav_item(ui, "icon_browse_up", icons::ARROW_UP, "..", &theme, false).clicked() {
-                            *browse = Some(parent.to_path_buf());
-                        }
-                    for (path, is_dir) in &entries {
-                        let label = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-                        let glyph = if *is_dir { icons::FOLDER } else { icons::IMAGE };
-                        let on = !*is_dir && *input == path.to_string_lossy();
-                        if nav_item(ui, ("icon_browse_entry", path), glyph, &label, &theme, on).clicked() {
-                            if *is_dir {
-                                *browse = Some(path.clone());
-                            } else {
-                                *input = path.to_string_lossy().into_owned();
-                                *error = None;
-                                *browse = None;
-                            }
-                        }
-                    }
-                });
-            });
-        } else if !candidates.is_empty() {
-            material::section_label(ui, "Images in this folder", &theme);
-            ui.horizontal_wrapped(|ui| {
-                for path in candidates.iter() {
-                    let label = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-                    let on = *input == path.to_string_lossy();
-                    if chip(ui, ("icon_candidate", path), None, &label, &theme, on).clicked() {
-                        *input = path.to_string_lossy().into_owned();
-                        *error = None;
-                    }
-                }
-            });
-        }
-        if let Some(err) = error.as_ref() {
-            ui.label(egui::RichText::new(err).size(material::FONT_CAPTION).color(theme.red));
-        }
-
-        let has_icon = self.folder_icons.contains_key(folder.as_path());
-        let footer = material::dialog_footer(ui, &theme, FooterSpec { extra: has_icon.then_some("Reset"), ..FooterSpec::new("icon", icons::CHECK, "Apply") });
-        close |= footer.cancel;
-        apply |= footer.primary;
-        if footer.extra {
-            self.apply_folder_icon(folder, None);
-            close = true;
-        }
-
-        if apply {
-            let path = PathBuf::from(input.trim().trim_matches('\''));
-            if path.is_file() && crate::thumbs::is_image(&path) {
-                self.apply_folder_icon(folder, Some(&path));
-                close = true;
-            } else {
-                *error = Some("Pick an existing png, jpg, gif, webp or bmp image".to_owned());
-            }
-        }
-        close
     }
 
     /// Nautilus-style properties: a centered header, then grouped cards of label / value rows.
@@ -3887,6 +3859,7 @@ impl SkiApp {
 
         let mut copied: Option<String> = None;
         let mut change_icon = false;
+        let mut reset_icon = false;
         let mut close = false;
 
         close |= material::dialog_header(ui, "Properties", None, &theme, "dlg_close");
@@ -3924,6 +3897,11 @@ impl SkiApp {
                         ui.add_space(6.0);
                         if material::button(ui, "props_icon", Some(icons::IMAGE), "Custom icon…", &theme, ButtonKind::Tonal, true).clicked() {
                             change_icon = true;
+                        }
+                        if self.folder_icons.contains_key(&item.path)
+                            && material::button(ui, "props_icon_reset", Some(icons::TRASH), "Reset icon", &theme, ButtonKind::Text, true).clicked()
+                        {
+                            reset_icon = true;
                         }
                     }
                 });
@@ -3963,7 +3941,7 @@ impl SkiApp {
             });
 
         ui.add_space(6.0);
-        ui.horizontal(|ui| {
+        ui.allocate_ui_with_layout(egui::vec2(ui.available_width(), material::BUTTON_HEIGHT), egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if material::button(ui, "dlg_copy_path", Some(icons::COPY), "Copy path", &theme, ButtonKind::Tonal, true).clicked() {
                 copied = Some(props.item.path.to_string_lossy().into_owned());
             }
@@ -3973,6 +3951,9 @@ impl SkiApp {
         if let Some(text) = copied {
             ctx.copy_text(text);
             self.set_toast("Copied to clipboard");
+        }
+        if reset_icon {
+            self.apply_folder_icon(&folder, None);
         }
         if change_icon {
             self.open_icon_dialog(folder);

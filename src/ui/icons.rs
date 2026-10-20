@@ -37,6 +37,7 @@ pub const SEARCH: &str = "\u{f0349}";
 pub const SETTINGS: &str = "\u{f08bb}";
 pub const CLOSE: &str = "\u{f0156}";
 pub const CHECK: &str = "\u{f012c}";
+pub const CHEVRON_LEFT: &str = "\u{f0141}";
 pub const CHEVRON_RIGHT: &str = "\u{f0142}";
 pub const ADD: &str = "\u{f0415}";
 pub const REMOVE: &str = "\u{f0374}";

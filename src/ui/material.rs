@@ -56,7 +56,6 @@ pub const ALPHA_DIVIDER: u8 = 24;
 
 /// Shared motion
 pub const ANIM: f32 = 0.25;
-pub const ANIM_SLOW: f32 = 0.32;
 pub const ANIM_FAST: f32 = 0.15;
 
 static ANIMATIONS: AtomicBool = AtomicBool::new(true);
@@ -1184,15 +1183,23 @@ pub fn stepper_row(
     id_source: impl std::hash::Hash + std::fmt::Debug,
     label: &str,
     theme: &SerpantinumTheme,
+    value: &str,
     can_dec: bool,
     can_inc: bool,
 ) -> (bool, bool) {
     let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), MENU_ROW_HEIGHT), egui::Sense::hover());
     let id = ui.make_persistent_id(id_source);
-    paint_label(ui, rect.left() + 12.0, rect.center().y, label, FONT_BODY, theme.text, rect.width() - 100.0);
+    paint_label(ui, rect.left() + 12.0, rect.center().y, label, FONT_BODY, theme.text, rect.width() - 150.0);
+    // The current value sits between the two buttons
+    let value_galley = ui.painter().layout_no_wrap(value.to_owned(), egui::FontId::proportional(FONT_CAPTION), theme.subtext1);
+    ui.painter().galley(
+        Pos2::new(rect.right() - 12.0 - 22.0 * 2.0 - 8.0 - value_galley.size().x - 6.0, rect.center().y - value_galley.size().y / 2.0),
+        value_galley,
+        theme.subtext1,
+    );
     let mut out = [false; 2];
     for (i, (icon, enabled)) in [(icons::REMOVE, can_dec), (icons::ADD, can_inc)].into_iter().enumerate() {
-        let cell = Rect::from_center_size(Pos2::new(rect.right() - 25.0 - (1 - i) as f32 * 32.0, rect.center().y), Vec2::splat(26.0));
+        let cell = Rect::from_center_size(Pos2::new(rect.right() - 23.0 - (1 - i) as f32 * 26.0, rect.center().y), Vec2::splat(22.0));
         let btn_id = id.with(i);
         let resp = ui.interact(cell, btn_id, if enabled { egui::Sense::click() } else { egui::Sense::hover() });
         let fx = fx(ui, btn_id, &resp, enabled, &FxSpec::ICON);
@@ -1206,7 +1213,7 @@ pub fn stepper_row(
         paint_fill(ui.painter(), r, pill(r), fill, &fx);
         let active_color = lerp_color(theme.subtext1, theme.text, fx.hover.max(fx.press));
         let color = lerp_color(theme.with_alpha(theme.subtext1, 70), active_color, en_t);
-        paint_icon(ui.painter(), cell.center(), icon, ICON_SM, color);
+        paint_icon(ui.painter(), cell.center(), icon, ICON_XS, color);
         out[i] = resp.clicked();
     }
     (out[0], out[1])
@@ -1221,7 +1228,7 @@ pub fn nav_pair(ui: &mut egui::Ui, theme: &SerpantinumTheme, can_back: bool, can
     ui.painter().rect_filled(snap(ui.painter(), body), pill(body), theme.surface0);
     let id = ui.make_persistent_id("nav_pair");
     let mut responses = Vec::with_capacity(2);
-    for (i, (icon, enabled, tip)) in [(icons::ARROW_BACK, can_back, "Back"), (icons::ARROW_FORWARD, can_forward, "Forward")].into_iter().enumerate() {
+    for (i, (icon, enabled, tip)) in [(icons::CHEVRON_LEFT, can_back, "Back"), (icons::CHEVRON_RIGHT, can_forward, "Forward")].into_iter().enumerate() {
         let cell = Rect::from_min_size(body.min + Vec2::new(W * i as f32, 0.0), Vec2::new(W, H));
         let btn_id = id.with(i);
         let resp = ui.interact(cell, btn_id, if enabled { egui::Sense::click() } else { egui::Sense::hover() });
@@ -1231,7 +1238,7 @@ pub fn nav_pair(ui: &mut egui::Ui, theme: &SerpantinumTheme, can_back: bool, can
         paint_fill(ui.painter(), inner, pill(inner), row_layer(theme, &fx), &fx);
         let active_color = lerp_color(theme.subtext1, theme.text, fx.hover.max(fx.press * 0.5));
         let color = lerp_color(theme.with_alpha(theme.subtext1, 70), active_color, en_t);
-        paint_icon(ui.painter(), cell.center(), icon, ICON_MD, color);
+        paint_icon(ui.painter(), cell.center(), icon, ICON_SM, color);
         responses.push(resp.on_hover_text(tip));
     }
     let forward = responses.pop().unwrap();

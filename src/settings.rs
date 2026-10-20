@@ -98,53 +98,72 @@ impl Density {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub enum GridSize {
-    Small,
-    #[default]
-    Medium,
-    Large,
-}
+/// Size of the picture box of a grid tile, in points.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(transparent)]
+pub struct GridSize(u32);
 
 impl GridSize {
-    pub const ALL: [GridSize; 3] = [GridSize::Small, GridSize::Medium, GridSize::Large];
+    pub const MIN: u32 = 32;
+    pub const MAX: u32 = 256;
+    const STEP: u32 = 16;
 
-    pub fn label(self) -> &'static str {
-        match self {
-            GridSize::Small => "Small",
-            GridSize::Medium => "Medium",
-            GridSize::Large => "Large",
-        }
+    /// Older settings stored the size as a name.
+    fn from_name(name: &str) -> Option<Self> {
+        Some(Self(match name {
+            "Small" => 56,
+            "Medium" => 72,
+            "Large" => 96,
+            _ => return None,
+        }))
+    }
+
+    pub fn label(self) -> String {
+        format!("{} px", self.0)
     }
 
     /// One step larger (`1`) or smaller (`-1`), stopping at the ends.
     pub fn step(self, delta: i32) -> Self {
-        let at = Self::ALL.iter().position(|g| *g == self).unwrap_or(1) as i32;
-        Self::ALL[(at + delta).clamp(0, Self::ALL.len() as i32 - 1) as usize]
+        let next = self.0 as i32 + delta * Self::STEP as i32;
+        Self(next.clamp(Self::MIN as i32, Self::MAX as i32) as u32)
+    }
+
+    pub fn can_step(self, delta: i32) -> bool {
+        self.step(delta) != self
     }
 
     pub fn cell_size(self) -> (f32, f32) {
-        match self {
-            GridSize::Small => (92.0, 104.0),
-            GridSize::Medium => (116.0, 128.0),
-            GridSize::Large => (144.0, 156.0),
-        }
+        let w = (self.0 as f32 + 44.0).max(92.0);
+        (w, w + 12.0)
     }
 
     pub fn icon_size(self) -> f32 {
-        match self {
-            GridSize::Small => 36.0,
-            GridSize::Medium => 48.0,
-            GridSize::Large => 64.0,
-        }
+        self.0 as f32 * 0.92
     }
 
     pub fn picture_size(self) -> f32 {
-        match self {
-            GridSize::Small => 56.0,
-            GridSize::Medium => 72.0,
-            GridSize::Large => 96.0,
+        self.0 as f32
+    }
+}
+
+impl Default for GridSize {
+    fn default() -> Self {
+        Self(72)
+    }
+}
+
+impl<'de> Deserialize<'de> for GridSize {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Raw {
+            Px(u32),
+            Name(String),
         }
+        Ok(match Raw::deserialize(deserializer)? {
+            Raw::Px(px) => Self(px.clamp(Self::MIN, Self::MAX)),
+            Raw::Name(name) => Self::from_name(&name).unwrap_or_default(),
+        })
     }
 }
 
@@ -172,7 +191,7 @@ impl Default for Settings {
             confirm_delete: true,
             type_to_filter: false,
             density: Density::Comfortable,
-            grid_size: GridSize::Medium,
+            grid_size: GridSize::default(),
             grid_name_lines: 2,
             show_sidebar: true,
             show_status_bar: true,

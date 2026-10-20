@@ -10,15 +10,84 @@ pub const TOKEN_NUM_1: &str = "[1, 2, 3]";
 pub const TOKEN_NUM_2: &str = "[01, 02, 03]";
 pub const TOKEN_NUM_3: &str = "[001, 002, 003]";
 pub const TOKEN_DATE: &str = "[Modified date]";
+pub const TOKEN_FOLDER: &str = "[Parent folder]";
+pub const TOKEN_EXT: &str = "[Extension]";
 
 /// Tokens offered next to the template field, with the label shown on their buttons.
-pub const TOKENS: [(&str, &str); 5] = [
+pub const TOKENS: [(&str, &str); 7] = [
     (TOKEN_NAME, "Original name"),
     (TOKEN_NUM_1, "1, 2, 3"),
     (TOKEN_NUM_2, "01, 02, 03"),
     (TOKEN_NUM_3, "001, 002, 003"),
     (TOKEN_DATE, "Modified date"),
+    (TOKEN_FOLDER, "Parent folder"),
+    (TOKEN_EXT, "Extension"),
 ];
+
+/// Letter case applied to the new name, after the template or replacement.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Case {
+    Keep,
+    Lower,
+    Upper,
+    Title,
+    Sentence,
+}
+
+impl Case {
+    pub const ALL: [(Case, &'static str); 5] =
+        [(Case::Keep, "Keep"), (Case::Lower, "lowercase"), (Case::Upper, "UPPERCASE"), (Case::Title, "Title Case"), (Case::Sentence, "Sentence case")];
+
+    fn apply(self, text: &str) -> String {
+        match self {
+            Case::Keep => text.to_owned(),
+            Case::Lower => text.to_lowercase(),
+            Case::Upper => text.to_uppercase(),
+            Case::Title => {
+                let mut start = true;
+                text.chars()
+                    .map(|c| {
+                        let out = if start { c.to_uppercase().collect::<String>() } else { c.to_lowercase().collect() };
+                        start = !c.is_alphanumeric() && c != '\'';
+                        out
+                    })
+                    .collect()
+            }
+            Case::Sentence => {
+                let mut chars = text.chars();
+                match chars.next() {
+                    Some(first) => first.to_uppercase().chain(chars.flat_map(char::to_lowercase)).collect(),
+                    None => String::new(),
+                }
+            }
+        }
+    }
+}
+
+/// What to do with spaces in the new name.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Spaces {
+    Keep,
+    Underscore,
+    Dash,
+    Remove,
+}
+
+impl Spaces {
+    pub const ALL: [(Spaces, &'static str); 4] = [(Spaces::Keep, "Keep"), (Spaces::Underscore, "→ _"), (Spaces::Dash, "→ -"), (Spaces::Remove, "Remove")];
+}
+
+/// Order in which files are numbered.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Order {
+    AsListed,
+    Name,
+    Date,
+}
+
+impl Order {
+    pub const ALL: [(Order, &'static str); 3] = [(Order::AsListed, "As listed"), (Order::Name, "By name"), (Order::Date, "By date")];
+}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
@@ -41,12 +110,77 @@ pub struct Rules {
     pub template: String,
     pub find: String,
     pub replace: String,
+    /// Find and replace only matches the exact letter case.
+    pub match_case: bool,
+    pub case: Case,
+    pub spaces: Spaces,
+    pub prefix: String,
+    pub suffix: String,
+    /// Characters cut from the start / end of the original name, as typed.
+    pub trim_start: String,
+    pub trim_end: String,
+    /// Number the first file gets, and how much each next one adds, as typed.
+    pub start: String,
+    pub step: String,
+    pub order: Order,
+    pub lowercase_ext: bool,
 }
 
 impl Rules {
     pub fn new() -> Self {
-        Self { mode: Mode::Template, template: TOKEN_NAME.to_owned(), find: String::new(), replace: String::new() }
+        Self {
+            mode: Mode::Template,
+            template: TOKEN_NAME.to_owned(),
+            find: String::new(),
+            replace: String::new(),
+            match_case: true,
+            case: Case::Keep,
+            spaces: Spaces::Keep,
+            prefix: String::new(),
+            suffix: String::new(),
+            trim_start: String::new(),
+            trim_end: String::new(),
+            start: "1".to_owned(),
+            step: "1".to_owned(),
+            order: Order::AsListed,
+            lowercase_ext: false,
+        }
     }
+
+    fn start_number(&self) -> i64 {
+        self.start.trim().parse().unwrap_or(1)
+    }
+
+    fn step_number(&self) -> i64 {
+        self.step.trim().parse().unwrap_or(1)
+    }
+}
+
+fn trim_chars(text: &str, start: usize, end: usize) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let start = start.min(chars.len());
+    let end = end.min(chars.len() - start);
+    chars[start..chars.len() - end].iter().collect()
+}
+
+fn replace_text(text: &str, find: &str, with: &str, match_case: bool) -> String {
+    if match_case {
+        return text.replace(find, with);
+    }
+    let (lower_text, lower_find) = (text.to_lowercase(), find.to_lowercase());
+    // Lowercasing can change byte lengths; fall back to an exact match when it does
+    if lower_text.len() != text.len() || lower_find.len() != find.len() {
+        return text.replace(find, with);
+    }
+    let mut out = String::new();
+    let mut at = 0;
+    while let Some(i) = lower_text[at..].find(&lower_find) {
+        out.push_str(&text[at..at + i]);
+        out.push_str(with);
+        at += i + find.len();
+    }
+    out.push_str(&text[at..]);
+    out
 }
 
 /// Splits a file name into the part that gets renamed and the extension that stays.
@@ -59,30 +193,56 @@ pub fn split_name(name: &str, is_dir: bool) -> (&str, &str) {
 
 /// The name each entry gets, in the same order. Unchanged entries keep their name.
 pub fn preview(entries: &[Entry], rules: &Rules) -> Vec<String> {
+    // Numbers follow the chosen order, not the order of the list
+    let mut ranked: Vec<usize> = (0..entries.len()).collect();
+    match rules.order {
+        Order::AsListed => {}
+        Order::Name => ranked.sort_by_key(|&i| entries[i].path.file_name().map(|n| n.to_string_lossy().to_lowercase())),
+        Order::Date => ranked.sort_by(|&a, &b| entries[a].date.cmp(&entries[b].date)),
+    }
+    let mut rank = vec![0usize; entries.len()];
+    for (position, &i) in ranked.iter().enumerate() {
+        rank[i] = position;
+    }
+    let (start, step) = (rules.start_number(), rules.step_number());
+    let (cut_start, cut_end) = (rules.trim_start.trim().parse().unwrap_or(0), rules.trim_end.trim().parse().unwrap_or(0));
+
     entries
         .iter()
         .enumerate()
         .map(|(index, entry)| {
             let name = entry.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
             let (stem, ext) = split_name(&name, entry.is_dir);
-            let new_stem = match rules.mode {
-                Mode::Template => expand(&rules.template, stem, index, &entry.date),
-                Mode::Replace if rules.find.is_empty() => stem.to_owned(),
-                Mode::Replace => stem.replace(&rules.find, &rules.replace),
+            let folder = entry.path.parent().and_then(Path::file_name).map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            let number = start + rank[index] as i64 * step;
+            let base = trim_chars(stem, cut_start, cut_end);
+            let mut new_stem = match rules.mode {
+                Mode::Template => expand(&rules.template, &base, number, &entry.date, &folder, ext.trim_start_matches('.')),
+                Mode::Replace if rules.find.is_empty() => base,
+                Mode::Replace => replace_text(&base, &rules.find, &rules.replace, rules.match_case),
             };
-            format!("{new_stem}{ext}")
+            new_stem = match rules.spaces {
+                Spaces::Keep => new_stem,
+                Spaces::Underscore => new_stem.replace(' ', "_"),
+                Spaces::Dash => new_stem.replace(' ', "-"),
+                Spaces::Remove => new_stem.replace(' ', ""),
+            };
+            new_stem = rules.case.apply(&new_stem);
+            let ext = if rules.lowercase_ext { ext.to_lowercase() } else { ext.to_owned() };
+            format!("{}{new_stem}{}{ext}", rules.prefix, rules.suffix)
         })
         .collect()
 }
 
-fn expand(template: &str, stem: &str, index: usize, date: &str) -> String {
-    let n = index + 1;
+fn expand(template: &str, stem: &str, number: i64, date: &str, folder: &str, ext: &str) -> String {
     // The original name goes in last so a name that looks like a token is left alone
     template
-        .replace(TOKEN_NUM_3, &format!("{n:03}"))
-        .replace(TOKEN_NUM_2, &format!("{n:02}"))
-        .replace(TOKEN_NUM_1, &n.to_string())
+        .replace(TOKEN_NUM_3, &format!("{number:03}"))
+        .replace(TOKEN_NUM_2, &format!("{number:02}"))
+        .replace(TOKEN_NUM_1, &number.to_string())
         .replace(TOKEN_DATE, date)
+        .replace(TOKEN_FOLDER, folder)
+        .replace(TOKEN_EXT, ext)
         .replace(TOKEN_NAME, stem)
 }
 
@@ -169,6 +329,37 @@ mod tests {
         let entries = [entry("/d/a.txt"), entry("/d/b.txt")];
         assert_eq!(preview(&entries, &rules("[Modified date]-[1, 2, 3]")), ["2026-01-02-1.txt", "2026-01-02-2.txt"]);
         assert_eq!(preview(&entries, &rules("x[001, 002, 003]")), ["x001.txt", "x002.txt"]);
+    }
+
+    #[test]
+    fn numbering_start_step_and_order() {
+        let entries = [entry("/d/b.txt"), entry("/d/a.txt")];
+        let r = Rules { template: "n[01, 02, 03]".to_owned(), start: "10".to_owned(), step: "5".to_owned(), order: Order::Name, ..Rules::new() };
+        assert_eq!(preview(&entries, &r), ["n15.txt", "n10.txt"]);
+    }
+
+    #[test]
+    fn case_spaces_trim_prefix_and_extension() {
+        let entries = [entry("/d/hello big World.JPG")];
+        let r = Rules { case: Case::Title, spaces: Spaces::Underscore, prefix: "p_".to_owned(), lowercase_ext: true, ..Rules::new() };
+        assert_eq!(preview(&entries, &r), ["p_Hello_Big_World.jpg"]);
+        let r = Rules { trim_start: "6".to_owned(), trim_end: "2".to_owned(), suffix: "!".to_owned(), ..Rules::new() };
+        assert_eq!(preview(&entries, &r), ["big Wor!.JPG"]);
+        let r = Rules { case: Case::Sentence, ..Rules::new() };
+        assert_eq!(preview(&entries, &r), ["Hello big world.JPG"]);
+    }
+
+    #[test]
+    fn folder_and_extension_tokens() {
+        let entries = [entry("/d/photos/a.png")];
+        assert_eq!(preview(&entries, &rules("[Parent folder]-[Original name]-[Extension]")), ["photos-a-png.png"]);
+    }
+
+    #[test]
+    fn case_insensitive_replace() {
+        let entries = [entry("/d/Foo foo FOO.txt")];
+        let r = Rules { mode: Mode::Replace, find: "foo".to_owned(), replace: "x".to_owned(), match_case: false, ..Rules::new() };
+        assert_eq!(preview(&entries, &r), ["x x x.txt"]);
     }
 
     #[test]

@@ -6,7 +6,7 @@ use crate::app::{app_row, Dialog, SkiApp, ViewMode};
 use crate::fs::apps::{self, AppEntry};
 use crate::fs::scanner::{SortBy, SortOrder};
 use crate::keymap::{self, Action};
-use crate::settings::{Density, GridSize, Settings, StartLocation};
+use crate::settings::{Density, Settings, StartLocation};
 use crate::ui::fonts::SystemFont;
 use crate::ui::icons;
 use crate::ui::material::{self, button, chip, choice_row, filled_icon_button, group_card, nav_item, switch_row_with, ButtonKind, Column};
@@ -284,7 +284,7 @@ impl SkiApp {
         let mut picked: Option<Option<SystemFont>> = None;
         group_card(ui, &theme, |ui| {
             egui::ScrollArea::vertical()
-                .max_height(190.0)
+                .max_height(360.0)
                 .auto_shrink([false, true])
                 .id_salt("font_list")
                 .show_rows(ui, material::ENTRY_HEIGHT + 2.0, total, |ui, range| {
@@ -397,10 +397,10 @@ impl SkiApp {
 
         material::section_label(ui, "Grid view", &theme);
         group_card(ui, &theme, |ui| {
-            let sizes = [GridSize::Small, GridSize::Medium, GridSize::Large];
-            let current = sizes.iter().position(|g| *g == self.settings.grid_size).unwrap_or(1);
-            if let Some(i) = choice_row(ui, "fv_grid_size", icons::GRID_VIEW, "Icon size", &["Small", "Medium", "Large"], current, &theme) {
-                self.settings.grid_size = sizes[i];
+            let size = self.settings.grid_size;
+            let (less, more) = material::stepper_row(ui, "fv_grid_size", "Icon size", &theme, &size.label(), size.can_step(-1), size.can_step(1));
+            if less || more {
+                self.settings.grid_size = size.step(if more { 1 } else { -1 });
                 self.persist_settings();
             }
             let lines = [1u8, 2, 3];
