@@ -48,6 +48,11 @@ let
     pname = "ski";
     version = "0.1.1";
     strictDeps = true;
+
+    # rustc already uses several threads per crate, and wgpu, resvg and the like are big, so
+    # one job per core can exhaust the RAM. Two jobs build slower but stay in memory.
+    # Raise it here if you have memory to spare.
+    CARGO_BUILD_JOBS = "2";
     nativeBuildInputs = with pkgs; [ pkg-config makeWrapper ];
   };
 
@@ -55,6 +60,11 @@ let
 in
 craneLib.buildPackage (common // {
   inherit cargoArtifacts;
+
+  # The sandbox's HOME is read-only, and the tests exercise the preview cache on disk
+  preCheck = ''
+    export XDG_CACHE_HOME=$TMPDIR/cache
+  '';
 
   postInstall = ''
     install -Dm644 assets/ski.desktop $out/share/applications/ski.desktop
