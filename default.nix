@@ -46,7 +46,7 @@ let
   common = {
     inherit src;
     pname = "ski";
-    version = "0.1.0";
+    version = "0.1.1";
     strictDeps = true;
     nativeBuildInputs = with pkgs; [ pkg-config makeWrapper ];
   };
