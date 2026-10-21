@@ -5,6 +5,14 @@
 let
   inherit (pkgs) lib;
 
+  # Crane builds the dependencies as a derivation of their own, keyed on Cargo.toml and Cargo.lock,
+  # so editing src/ recompiles only Ski and not egui, wgpu and the rest
+  crane = fetchTarball {
+    url = "https://github.com/ipetkov/crane/archive/refs/tags/v0.24.0.tar.gz";
+    sha256 = "06y3dvs9ms4c70r2ia50k77650yrihc09jibqbqrzly23dn42s4m";
+  };
+  craneLib = import crane { inherit pkgs; };
+
   runtimeLibs = with pkgs; [
     libGL
     wayland
@@ -23,10 +31,6 @@ let
     p7zip
     ffmpeg-headless
   ];
-in
-pkgs.rustPlatform.buildRustPackage {
-  pname = "ski";
-  version = "0.1.0";
 
   # Only what the build reads, so editing the README, docs or nix files doesn't rebuild
   src = lib.fileset.toSource {
@@ -39,9 +43,18 @@ pkgs.rustPlatform.buildRustPackage {
     ];
   };
 
-  cargoLock.lockFile = ./Cargo.lock;
+  common = {
+    inherit src;
+    pname = "ski";
+    version = "0.1.0";
+    strictDeps = true;
+    nativeBuildInputs = with pkgs; [ pkg-config makeWrapper ];
+  };
 
-  nativeBuildInputs = with pkgs; [ pkg-config makeWrapper ];
+  cargoArtifacts = craneLib.buildDepsOnly common;
+in
+craneLib.buildPackage (common // {
+  inherit cargoArtifacts;
 
   postInstall = ''
     install -Dm644 assets/ski.desktop $out/share/applications/ski.desktop
@@ -66,4 +79,4 @@ pkgs.rustPlatform.buildRustPackage {
     mainProgram = "ski";
     platforms = lib.platforms.linux;
   };
-}
+})

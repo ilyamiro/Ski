@@ -192,14 +192,8 @@ impl SkiApp {
                         }
                     }
                     if !ch.spec.filters.is_empty() {
-                        let shown = ch.spec.filters.get(ch.filter).map(|f| f.label.clone()).unwrap_or_default();
-                        let before = ch.filter;
-                        egui::ComboBox::from_id_salt("chooser_filter").selected_text(shown).show_ui(ui, |ui| {
-                            for (i, f) in ch.spec.filters.iter().enumerate() {
-                                ui.selectable_value(&mut ch.filter, i, &f.label);
-                            }
-                        });
-                        if ch.filter != before {
+                        let labels: Vec<String> = ch.spec.filters.iter().map(|f| f.label.clone()).collect();
+                        if material::dropdown(ui, "chooser_filter", &labels, &mut ch.filter, &theme) {
                             self.reload_items();
                         }
                     }
@@ -212,12 +206,11 @@ impl SkiApp {
                             }
                         } else {
                             ui.label(egui::RichText::new(choice.label.replace('_', "")).size(material::FONT_CAPTION).color(theme.subtext1));
-                            let shown = choice.options.iter().find(|(id, _)| id == value).map(|(_, label)| label.clone()).unwrap_or_default();
-                            egui::ComboBox::from_id_salt(("chooser_choice", &choice.id)).selected_text(shown).show_ui(ui, |ui| {
-                                for (id, label) in &choice.options {
-                                    ui.selectable_value(value, id.clone(), label);
-                                }
-                            });
+                            let labels: Vec<String> = choice.options.iter().map(|(_, label)| label.clone()).collect();
+                            let mut at = choice.options.iter().position(|(id, _)| id == value).unwrap_or(0);
+                            if material::dropdown(ui, ("chooser_choice", &choice.id), &labels, &mut at, &theme) {
+                                *value = choice.options[at].0.clone();
+                            }
                         }
                     }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {

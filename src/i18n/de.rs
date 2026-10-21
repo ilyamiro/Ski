@@ -87,6 +87,8 @@ pub const CATALOG: &[(&str, &str)] = &[
     ("Animations", "Animationen"),
     ("Font", "Schrift"),
     ("Adwaita Sans (default)", "Adwaita Sans (Standard)"),
+    ("Search languages", "Sprache suchen"),
+    ("No matching languages", "Keine passende Sprache"),
     ("Search installed fonts", "Installierte Schriften durchsuchen"),
     ("Default view", "Standardansicht"),
     ("List", "Liste"),

@@ -1193,6 +1193,76 @@ pub fn menu_item(
     response
 }
 
+/// Dropdown for picking one of `options`: a tonal button with a chevron that opens a menu of
+/// `menu_item`-style rows under it. Returns true when the selection changed.
+pub fn dropdown(
+    ui: &mut egui::Ui,
+    id_source: impl std::hash::Hash + std::fmt::Debug,
+    options: &[String],
+    selected: &mut usize,
+    theme: &SerpantinumTheme,
+) -> bool {
+    let font = egui::FontId::proportional(FONT_BODY);
+    let shown = options.get(*selected).map(String::as_str).unwrap_or("");
+    let text_w = options
+        .iter()
+        .map(|o| ui.painter().layout_no_wrap(o.clone(), font.clone(), theme.text).size().x)
+        .fold(0.0, f32::max);
+    let width = text_w + 16.0 + 14.0 + 24.0;
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(width, 32.0), egui::Sense::click());
+    let id = ui.make_persistent_id(id_source);
+    let open = egui::Popup::is_id_open(ui.ctx(), egui::Popup::default_response_id(&response));
+    let bfx = fx(ui, id, &response, true, &FxSpec::CLICK);
+    let r = scaled(rect, bfx.scale);
+    let fill = lerp_color(
+        lerp_color(theme.surface1, theme.surface2, bfx.hover.max(open as u8 as f32)),
+        lerp_color(theme.surface2, theme.text, 0.08),
+        bfx.press,
+    );
+    paint_fill(ui.painter(), r, pill(r), fill, &bfx);
+    ui.painter().text(Pos2::new(rect.left() + 16.0, rect.center().y), Align2::LEFT_CENTER, shown, font.clone(), theme.text);
+    // Chevron that points up while the menu is open
+    let c = Pos2::new(rect.right() - 20.0, rect.center().y);
+    let dy = if open { -2.5 } else { 2.5 };
+    ui.painter().add(egui::Shape::convex_polygon(
+        vec![Pos2::new(c.x - 5.0, c.y - dy), Pos2::new(c.x + 5.0, c.y - dy), Pos2::new(c.x, c.y + dy)],
+        theme.subtext0,
+        egui::Stroke::NONE,
+    ));
+
+    let mut changed = false;
+    egui::Popup::menu(&response)
+        .gap(4.0)
+        .frame(
+            egui::Frame::new()
+                .fill(theme.mantle)
+                .corner_radius(CornerRadius::same(radius_container()))
+                .shadow(ui.ctx().global_style().visuals.window_shadow)
+                .inner_margin(egui::Margin::same(6)),
+        )
+        .show(|ui| {
+            // Same width as the button, so the menu reads as an extension of it
+            ui.set_width(width - 12.0);
+            ui.spacing_mut().item_spacing.y = 2.0;
+            for (i, label) in options.iter().enumerate() {
+                let current = i == *selected;
+                let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 32.0), egui::Sense::click());
+                let fx = fx(ui, id.with(i), &resp, true, &FxSpec::ROW);
+                let r = scaled(rect, fx.scale);
+                let layer = if current { theme.tint(34) } else { row_layer(theme, &fx) };
+                paint_fill(ui.painter(), r, pill(r), layer, &fx);
+                let color = if current { theme.mauve } else { lerp_color(theme.subtext0, theme.text, fx.hover.max(fx.press)) };
+                paint_label(ui, rect.left() + 16.0, rect.center().y, label, FONT_BODY, color, rect.width() - 32.0);
+                if resp.clicked() {
+                    *selected = i;
+                    changed = !current;
+                    ui.close();
+                }
+            }
+        });
+    changed
+}
+
 /// One cell of the grid view.
 #[allow(clippy::too_many_arguments)]
 pub fn file_tile(
