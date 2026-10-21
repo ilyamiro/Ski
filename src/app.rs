@@ -4699,7 +4699,7 @@ impl SkiApp {
                 }
                 None => {
                     let color = if item.is_dir { theme.blue } else { theme.subtext0 };
-                    let glyph = if item.is_symlink { icons::SYMLINK } else { item.file_type.icon() };
+                    let glyph = item.file_type.icon();
                     material::paint_icon(ui.painter(), tile.center(), glyph, 44.0, color);
                 }
             }

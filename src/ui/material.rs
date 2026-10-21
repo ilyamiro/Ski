@@ -850,7 +850,7 @@ pub fn item_icon_animated(item: &FileItem, theme: &SerpantinumTheme, sel_t: f32)
     if item.is_dir {
         return (icons::FOLDER, lerp_color(theme.blue, theme.mauve, sel_t));
     }
-    if item.is_symlink {
+    if item.file_type == FileType::Symlink {
         return (icons::SYMLINK, lerp_color(theme.subtext0, theme.mauve, sel_t));
     }
     if let Some((glyph, tint)) = specific_icon(&item.name) {
@@ -1128,6 +1128,7 @@ pub fn file_row(
     if cut_t > 0.01 {
         paint_cut_badge(ui.painter(), Pos2::new(icon_center.x + 11.0, icon_center.y + 9.0), 16.0, cut_t, theme);
     }
+    paint_item_badges(ui.painter(), item, Pos2::new(icon_center.x + 10.0, icon_center.y - 9.0), Pos2::new(icon_center.x - 10.0, icon_center.y - 9.0), 13.0, theme, fade);
 
     let mut right = r.right() - ROW_PAD_RIGHT;
     let subtext_color = theme.subtext1.gamma_multiply(fade);
@@ -1344,6 +1345,16 @@ pub fn file_tile(
     if cut_t > 0.01 {
         paint_cut_badge(ui.painter(), Pos2::new(picture.right() - 6.0, picture.bottom() - 6.0), 22.0, cut_t, theme);
     }
+    let badge = (pic_sz * 0.22).clamp(14.0, 22.0);
+    paint_item_badges(
+        ui.painter(),
+        item,
+        Pos2::new(picture.right() - badge * 0.4, picture.top() + badge * 0.4),
+        Pos2::new(picture.left() + badge * 0.4, picture.top() + badge * 0.4),
+        badge,
+        theme,
+        fade,
+    );
 
     // Names wrap over the configured lines and are centered under the picture, like Nautilus.
     // With halign Center the galley is centered on x = 0, so it is painted at the cell's center.
@@ -1359,6 +1370,21 @@ pub fn file_tile(
         response.scroll_to_me(Some(egui::Align::Center));
     }
     response
+}
+
+/// Small round badges on a file's icon: a lock at `lock_at` when it is read-only for the user,
+/// and a link at `link_at` when it is a symlink to something that exists.
+fn paint_item_badges(painter: &egui::Painter, item: &FileItem, lock_at: Pos2, link_at: Pos2, size: f32, theme: &SerpantinumTheme, fade: f32) {
+    let badge = |center: Pos2, glyph: &str, fg: Color32| {
+        painter.circle_filled(center, size * 0.5, theme.surface2.gamma_multiply(fade));
+        paint_icon(painter, center, glyph, (size * 0.62).round(), fg.gamma_multiply(fade));
+    };
+    if item.is_locked {
+        badge(lock_at, icons::LOCK, theme.subtext1);
+    }
+    if item.is_live_symlink() {
+        badge(link_at, icons::LINK, theme.mauve);
+    }
 }
 
 /// Flat tonal scissors badge drawn on the corner of a cut item's icon.

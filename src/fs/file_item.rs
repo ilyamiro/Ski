@@ -65,19 +65,23 @@ pub fn specific_icon(name: &str) -> Option<(&'static str, Tint)> {
         "license" | "licence" | "copying" | "readme" => return Some((icons::TEXT, Tint::Muted)),
         _ => {}
     }
+    if lower.ends_with(".fb2.zip") {
+        return Some((icons::EBOOK, Tint::Peach));
+    }
     let ext = lower.rsplit_once('.')?.1;
     Some(match ext {
         "pdf" => (icons::PDF, Tint::Red),
         "html" | "htm" | "xhtml" => (icons::HTML, Tint::Peach),
         "iso" | "img" | "dmg" | "cue" | "nrg" => (icons::DISC, Tint::Blue),
-        "doc" | "docx" | "odt" | "rtf" | "dotx" => (icons::WORD, Tint::Blue),
-        "xls" | "xlsx" | "ods" | "xlsm" => (icons::EXCEL, Tint::Green),
+        "doc" | "docx" | "docm" | "dot" | "dotx" | "odt" | "ott" | "rtf" | "pages" | "wpd" => (icons::WORD, Tint::Blue),
+        "xls" | "xlsx" | "xlsm" | "xlsb" | "ods" | "ots" | "numbers" => (icons::EXCEL, Tint::Green),
         "csv" | "tsv" => (icons::TABLE, Tint::Green),
-        "ppt" | "pptx" | "odp" => (icons::POWERPOINT, Tint::Peach),
-        "md" | "markdown" | "rst" => (icons::MARKDOWN, Tint::Muted),
-        "txt" => (icons::TEXT, Tint::Muted),
+        "ppt" | "pptx" | "pptm" | "pps" | "ppsx" | "potx" | "odp" | "otp" => (icons::POWERPOINT, Tint::Peach),
+        "md" | "markdown" | "rst" | "adoc" => (icons::MARKDOWN, Tint::Muted),
+        "txt" | "tex" | "nfo" | "org" => (icons::TEXT, Tint::Muted),
         "log" => (icons::LOG, Tint::Muted),
-        "epub" | "mobi" | "azw3" | "djvu" => (icons::EBOOK, Tint::Peach),
+        "epub" | "mobi" | "azw" | "azw3" | "azw4" | "kfx" | "prc" | "fb2" | "djvu" | "djv" | "lit" | "lrf" | "chm" | "ibooks"
+        | "cbz" | "cbr" | "cb7" | "cbt" => (icons::EBOOK, Tint::Peach),
         "py" | "pyc" | "ipynb" => (icons::PYTHON, Tint::Blue),
         "rs" => (icons::RUST, Tint::Peach),
         "js" | "mjs" | "cjs" | "jsx" => (icons::JAVASCRIPT, Tint::Peach),
@@ -97,15 +101,15 @@ pub fn specific_icon(name: &str) -> Option<(&'static str, Tint)> {
         "nix" => (icons::NIX, Tint::Blue),
         "toml" | "yaml" | "yml" | "ini" | "conf" | "cfg" | "env" | "desktop" | "service" => (icons::CONFIG, Tint::Muted),
         "sql" | "db" | "sqlite" | "sqlite3" => (icons::DATABASE, Tint::Mauve),
-        "svg" => (icons::VECTOR, Tint::Green),
+        "svg" | "svgz" | "ai" | "eps" => (icons::VECTOR, Tint::Green),
         "ttf" | "otf" | "woff" | "woff2" => (icons::FONT, Tint::Muted),
         "pem" | "key" | "gpg" | "pub" | "asc" => (icons::KEY, Tint::Peach),
         "crt" | "cer" | "p12" => (icons::CERTIFICATE, Tint::Peach),
         "deb" | "rpm" | "apk" | "pkg" | "flatpakref" | "snap" => (icons::PACKAGE, Tint::Peach),
         "appimage" | "exe" | "msi" => (icons::APPLICATION, Tint::Green),
         "torrent" => (icons::TORRENT, Tint::Green),
-        "zip" | "tar" | "gz" | "bz2" | "xz" | "7z" | "rar" | "zst" | "tgz" => (icons::ZIP, Tint::Peach),
-        "dxf" | "dwg" | "stl" | "obj" | "step" | "stp" => (icons::CAD, Tint::Mauve),
+        "zip" | "tar" | "gz" | "bz2" | "xz" | "7z" | "rar" | "zst" | "tgz" | "tbz2" | "txz" | "lz" | "lzma" | "lz4" | "cab" | "cpio" | "zipx" => (icons::ZIP, Tint::Peach),
+        "dxf" | "dwg" | "stl" | "obj" | "step" | "stp" | "3mf" | "blend" | "fcstd" => (icons::CAD, Tint::Mauve),
         _ => return None,
     })
 }
@@ -156,6 +160,8 @@ pub struct FileItem {
     pub mode: u32,
     pub file_type: FileType,
     pub is_hidden: bool,
+    /// The current user cannot write to it, so it gets a lock badge.
+    pub is_locked: bool,
 }
 
 impl FileItem {
@@ -205,10 +211,13 @@ impl FileItem {
             FileType::Directory
         } else if is_symlink && metadata.is_none() {
             FileType::Symlink
-        } else if is_executable {
-            FileType::Executable
         } else {
-            detect_file_type(&name)
+            // The executable bit alone proves nothing for known formats: files from FAT, NTFS or
+            // network shares come out all-executable, and a book is still a book
+            match detect_file_type(&name) {
+                FileType::Other if is_executable => FileType::Executable,
+                known => known,
+            }
         };
 
         Some(Self {
@@ -224,7 +233,13 @@ impl FileItem {
             mode,
             file_type,
             is_hidden,
+            is_locked: metadata.is_some() && !writable(path),
         })
+    }
+
+    /// Shown as its target's kind with a link badge; a dangling link keeps the plain link icon.
+    pub fn is_live_symlink(&self) -> bool {
+        self.is_symlink && self.file_type != FileType::Symlink
     }
 
     pub fn display_name(&self) -> &str {
@@ -308,19 +323,37 @@ pub fn format_bytes_ext(bytes: u64, decimal: bool) -> String {
     }
 }
 
-fn detect_file_type(filename: &str) -> FileType {
-    let ext = filename
-        .rsplit('.')
-        .next()
-        .map(|s| s.to_ascii_lowercase())
-        .unwrap_or_default();
+fn writable(path: &Path) -> bool {
+    use std::os::unix::ffi::OsStrExt;
+    match std::ffi::CString::new(path.as_os_str().as_bytes()) {
+        // SAFETY: a valid NUL-terminated path; access only reads it
+        Ok(c) => unsafe { libc::access(c.as_ptr(), libc::W_OK) == 0 },
+        Err(_) => true,
+    }
+}
 
-    match ext.as_str() {
-        "txt" | "md" | "pdf" | "doc" | "docx" | "odt" | "rtf" | "epub" => FileType::Document,
-        "png" | "jpg" | "jpeg" | "gif" | "svg" | "webp" | "bmp" | "ico" | "tiff" => FileType::Image,
-        "mp3" | "flac" | "wav" | "ogg" | "m4a" | "aac" | "opus" => FileType::Audio,
-        "mp4" | "mkv" | "webm" | "avi" | "mov" | "flv" | "wmv" => FileType::Video,
-        "zip" | "tar" | "gz" | "bz2" | "xz" | "7z" | "rar" | "zst" => FileType::Archive,
+fn detect_file_type(filename: &str) -> FileType {
+    let lower = filename.to_ascii_lowercase();
+    if lower.ends_with(".fb2.zip") {
+        return FileType::Document;
+    }
+    let ext = match lower.rsplit_once('.') {
+        Some((_, ext)) => ext,
+        None => return FileType::Other,
+    };
+
+    match ext {
+        "txt" | "md" | "pdf" | "doc" | "docx" | "docm" | "dot" | "dotx" | "odt" | "ott" | "rtf" | "tex" | "pages" | "wpd"
+        | "xls" | "xlsx" | "xlsm" | "xlsb" | "ods" | "ots" | "csv" | "tsv" | "numbers"
+        | "ppt" | "pptx" | "pptm" | "pps" | "ppsx" | "potx" | "odp" | "otp" | "odg"
+        | "epub" | "mobi" | "azw" | "azw3" | "azw4" | "kfx" | "prc" | "fb2" | "djvu" | "djv" | "lit" | "lrf" | "chm" | "ibooks"
+        | "cbz" | "cbr" | "cb7" | "cbt" => FileType::Document,
+        "png" | "apng" | "jpg" | "jpeg" | "jpe" | "jfif" | "gif" | "svg" | "svgz" | "webp" | "bmp" | "ico" | "tif" | "tiff" | "heic" | "heif"
+        | "avif" | "jxl" | "psd" | "xcf" | "kra" | "ora" | "exr" | "hdr" | "tga" | "dds" | "qoi" | "ppm" | "pgm" | "pbm" | "pnm" | "jp2" | "j2k" | "pcx"
+        | "raw" | "cr2" | "cr3" | "crw" | "nef" | "nrw" | "arw" | "sr2" | "srf" | "dng" | "orf" | "rw2" | "raf" | "pef" | "srw" | "3fr" | "erf" | "kdc" | "dcr" | "mrw" | "x3f" => FileType::Image,
+        "mp3" | "flac" | "wav" | "ogg" | "oga" | "m4a" | "m4b" | "aac" | "opus" | "wma" | "aif" | "aiff" | "ape" | "wv" | "mid" | "midi" | "mka" | "mpc" | "dsf" | "tta" | "amr" | "ac3" | "dts" => FileType::Audio,
+        "mp4" | "m4v" | "mkv" | "webm" | "avi" | "mov" | "flv" | "wmv" | "mpg" | "mpeg" | "ogv" | "3gp" | "3g2" | "m2ts" | "m2t" | "mts" | "vob" | "asf" | "rm" | "rmvb" | "divx" | "f4v" | "mxf" | "ogm" | "mpe" | "qt" | "dv" => FileType::Video,
+        "zip" | "tar" | "gz" | "bz2" | "xz" | "7z" | "rar" | "zst" | "tgz" | "tbz2" | "txz" | "lz" | "lzma" | "lz4" | "cab" | "cpio" | "zipx" => FileType::Archive,
         "rs" | "c" | "cpp" | "h" | "hpp" | "py" | "js" | "ts" | "jsx" | "tsx" | "html"
         | "css" | "scss" | "json" | "toml" | "yaml" | "yml" | "nix" | "sh" | "bash"
         | "lua" | "go" | "java" | "kt" | "swift" | "sql" => FileType::Code,
@@ -355,6 +388,7 @@ mod tests {
             file_type: FileType::Document,
             is_hidden: false,
             is_symlink: false,
+            is_locked: false,
         };
         set_show_extensions(true);
         assert_eq!(item.display_name(), "document.pdf");
@@ -375,10 +409,38 @@ mod tests {
             file_type: FileType::Code,
             is_hidden: true,
             is_symlink: false,
+            is_locked: false,
         };
         assert_eq!(dotfile.display_name(), ".gitignore");
 
         // Reset to default
         set_show_extensions(true);
+    }
+
+    #[test]
+    fn executable_bit_does_not_hide_a_known_format() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join("ski-item-kind-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        for (name, kind) in [("book.fb2", FileType::Document), ("comic.cbz", FileType::Document), ("run-me", FileType::Executable)] {
+            let file = dir.join(name);
+            std::fs::write(&file, b"x").unwrap();
+            std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o755)).unwrap();
+            assert_eq!(FileItem::from_path(&file).unwrap().file_type, kind, "{name}");
+        }
+        assert!(specific_icon("book.fb2").is_some() && specific_icon("comic.cbz").is_some() && specific_icon("x.fb2.zip").is_some());
+    }
+
+    #[test]
+    fn read_only_files_are_locked() {
+        use std::os::unix::fs::PermissionsExt;
+        let file = std::env::temp_dir().join("ski-item-lock-test");
+        std::fs::write(&file, b"x").unwrap();
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o444)).unwrap();
+        // Root can write anywhere, so there is nothing to lock for it
+        let root = unsafe { libc::geteuid() } == 0;
+        assert_eq!(FileItem::from_path(&file).unwrap().is_locked, !root);
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(!FileItem::from_path(&file).unwrap().is_locked);
     }
 }
