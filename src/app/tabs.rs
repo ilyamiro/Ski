@@ -108,7 +108,7 @@ impl SkiApp {
 
     /// Open `path` in a new tab next to the current one and show it.
     pub(super) fn new_tab(&mut self, path: PathBuf) {
-        let path = if path.as_os_str() == RECENT_PATH { path } else { path.canonicalize().unwrap_or(path) };
+        let path = if is_virtual(&path) { path } else { path.canonicalize().unwrap_or(path) };
         let state = self.take_tab_state();
         self.tabs[self.active_tab].saved = Some(state);
         let id = self.next_tab_id;
@@ -116,7 +116,7 @@ impl SkiApp {
         let at = self.active_tab + 1;
         self.tabs.insert(at, TabSlot::live(id));
         self.active_tab = at;
-        if !path.as_os_str().is_empty() && path.as_os_str() != RECENT_PATH {
+        if !path.as_os_str().is_empty() && !is_virtual(&path) {
             recent::record(&path);
         }
         self.put_tab_state(TabState::fresh(path));
@@ -180,6 +180,8 @@ impl SkiApp {
         };
         if !query.trim().is_empty() {
             (icons::SEARCH, tr("Search").to_owned())
+        } else if path.as_os_str() == BOOKMARKS_PATH {
+            (icons::HEART, tr("Bookmarks").to_owned())
         } else if path.as_os_str() == RECENT_PATH {
             (icons::RECENT, tr("Recent").to_owned())
         } else if trash::is_trash_folder(path) {

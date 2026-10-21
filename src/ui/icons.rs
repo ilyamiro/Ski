@@ -52,6 +52,8 @@ pub const VISIBILITY_OFF: &str = "\u{f06d1}";
 pub const SORT_ASC: &str = "\u{f04bc}";
 pub const SORT_DESC: &str = "\u{f04bd}";
 
+pub const HEART: &str = "\u{f02d1}";
+pub const HEART_OUTLINE: &str = "\u{f02d5}";
 pub const PIN: &str = "\u{f0403}";
 pub const PIN_OFF: &str = "\u{f0406}";
 pub const FOLDER_PLUS: &str = "\u{f0257}";

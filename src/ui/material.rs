@@ -1193,6 +1193,29 @@ pub fn menu_item(
     response
 }
 
+/// Menu entry that opens more entries to its side; `open` keeps it lit while its flyout is showing.
+pub fn menu_submenu_item(
+    ui: &mut egui::Ui,
+    id_source: impl std::hash::Hash + std::fmt::Debug,
+    icon: &str,
+    label: &str,
+    open: bool,
+    theme: &SerpantinumTheme,
+) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(ui.available_width(), ENTRY_HEIGHT), egui::Sense::click());
+    let id = ui.make_persistent_id(id_source);
+    let fx = fx(ui, id, &response, true, &FxSpec::ROW);
+    let lit = animate(ui.ctx(), id.with("open"), open);
+    let r = scaled(rect, fx.scale);
+    paint_fill(ui.painter(), r, pill(r), lerp_color(row_layer(theme, &fx), theme.surface2, lit), &fx);
+
+    let color = lerp_color(theme.subtext0, theme.text, fx.hover.max(fx.press).max(lit));
+    paint_icon(ui.painter(), Pos2::new(rect.left() + INSET_ICON, rect.center().y), icon, ICON_MD, color);
+    paint_icon(ui.painter(), Pos2::new(rect.right() - 20.0, rect.center().y), icons::CHEVRON_RIGHT, ICON_MD, color);
+    paint_label(ui, rect.left() + INSET_LABEL, rect.center().y, label, FONT_BODY, color, rect.width() - INSET_LABEL - 36.0);
+    response
+}
+
 /// Dropdown for picking one of `options`: a tonal button with a chevron that opens a menu of
 /// `menu_item`-style rows under it. Returns true when the selection changed.
 pub fn dropdown(
@@ -1690,9 +1713,31 @@ pub fn dialog_header(
     theme: &SerpantinumTheme,
     close_id: impl std::hash::Hash + std::fmt::Debug,
 ) -> bool {
+    dialog_header_with_heart(ui, title, subtitle, theme, close_id, None).0
+}
+
+/// A dialog header with a heart toggle before the title; `heart` is whether it is on.
+/// Returns whether the dialog should close and whether the heart was clicked.
+pub fn dialog_header_with_heart(
+    ui: &mut egui::Ui,
+    title: &str,
+    subtitle: Option<&str>,
+    theme: &SerpantinumTheme,
+    close_id: impl std::hash::Hash + std::fmt::Debug,
+    heart: Option<bool>,
+) -> (bool, bool) {
     const SIZE: f32 = 30.0;
     let mut close = false;
+    let mut hearted = false;
     ui.horizontal_top(|ui| {
+        if let Some(on) = heart {
+            let (icon, tip) = if on { (icons::HEART, tr("Remove from bookmarks")) } else { (icons::HEART_OUTLINE, tr("Add to bookmarks")) };
+            let resp = filled_icon_button(ui, "dlg_heart", icon, theme, SIZE, tip, Some(theme.red));
+            if on {
+                paint_icon(ui.painter(), resp.rect.center(), icon, (SIZE * 0.5).round(), theme.red);
+            }
+            hearted = resp.clicked();
+        }
         ui.vertical(|ui| {
             ui.spacing_mut().item_spacing.y = 0.0;
             let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width() - SIZE - 8.0, SIZE), egui::Sense::hover());
@@ -1709,7 +1754,7 @@ pub fn dialog_header(
             }
         });
     });
-    close
+    (close, hearted)
 }
 
 /// What the footer of a dialog reported.

@@ -18,7 +18,7 @@ use crate::fs::{
     drives::Drive,
     file_item::FileItem,
     apps::{self, AppEntry},
-    places::{load_folder_icons, save_folder_icons, Place, PlaceGroup, PlaceKind, RECENT_PATH},
+    places::{load_folder_icons, save_folder_icons, Place, PlaceGroup, PlaceKind, BOOKMARKS_PATH, RECENT_PATH, is_virtual},
     props::{FolderScan, Properties},
     scanner::{read_directory, ListOptions, TypeFilter},
     recent,
@@ -61,6 +61,8 @@ enum MenuTarget {
     Drive(Drive, String, PathBuf),
 }
 
+type MenuEntry = (&'static str, &'static str, MenuAction);
+
 struct ContextMenu {
     pos: egui::Pos2,
     target: MenuTarget,
@@ -97,6 +99,10 @@ enum MenuAction {
     UseAsIcon(PathBuf),
     Pin(PathBuf),
     Unpin(PathBuf),
+    Bookmark(PathBuf),
+    Unbookmark(PathBuf),
+    /// Entries that open to the side while the pointer rests on this one.
+    Submenu(Vec<MenuEntry>),
     NewFile,
     NewFolder,
     Refresh,
@@ -147,7 +153,7 @@ struct Toast {
 /// A context menu that was just closed, kept on screen while it fades away.
 struct MenuGhost {
     origin: egui::Pos2,
-    groups: Vec<Vec<(&'static str, &'static str, MenuAction)>>,
+    groups: Vec<Vec<MenuEntry>>,
     open_label: Option<String>,
 }
 
@@ -334,6 +340,10 @@ pub struct SkiApp {
     pub(crate) theme_dirty: bool,
     pub(crate) fonts_dirty: bool,
     pins: Vec<PathBuf>,
+    bookmarks: Vec<PathBuf>,
+    /// The submenu entry (group, index) whose flyout is open, and where the flyout was drawn.
+    menu_sub: Option<(usize, usize)>,
+    menu_sub_rect: Option<egui::Rect>,
     menu: Option<ContextMenu>,
     pub(crate) dialog: Option<Dialog>,
     picker: Option<Picker>,
@@ -449,6 +459,9 @@ impl SkiApp {
             theme_dirty: false,
             fonts_dirty: false,
             pins: Place::load_pins(),
+            bookmarks: Place::load_bookmarks(),
+            menu_sub: None,
+            menu_sub_rect: None,
             menu: None,
             dialog: None,
             picker: None,
@@ -481,11 +494,11 @@ impl SkiApp {
             return;
         }
 
-        let canonical = if target.as_os_str() == RECENT_PATH { target } else { target.canonicalize().unwrap_or(target) };
-        if canonical.as_os_str() == RECENT_PATH || canonical.is_dir() {
+        let canonical = if is_virtual(&target) { target } else { target.canonicalize().unwrap_or(target) };
+        if is_virtual(&canonical) || canonical.is_dir() {
             self.back_history.push(self.current_path.clone());
             self.forward_history.clear();
-            if canonical.as_os_str() != RECENT_PATH {
+            if !is_virtual(&canonical) {
                 recent::record(&canonical);
             }
             self.arrive(canonical);
@@ -516,9 +529,13 @@ impl SkiApp {
         self.reload_items();
     }
 
-    /// Showing the Recent view rather than a folder.
+    /// Showing Recent or Bookmarks, which list items from many folders, rather than a folder.
     pub fn in_recent(&self) -> bool {
-        self.current_path.as_os_str() == RECENT_PATH
+        is_virtual(&self.current_path)
+    }
+
+    fn in_bookmarks(&self) -> bool {
+        self.current_path.as_os_str() == BOOKMARKS_PATH
     }
 
     fn in_trash(&self) -> bool {
@@ -609,10 +626,11 @@ impl SkiApp {
         self.sync_selection(true);
     }
 
-    /// The files and folders used lately, most recent first.
+    /// The files and folders used lately, most recent first, or the bookmarked ones in the Bookmarks view.
     fn recent_items(&self) -> Vec<FileItem> {
         const LIMIT: usize = 150;
-        recent::load()
+        let paths = if self.in_bookmarks() { self.bookmarks.clone() } else { recent::load() };
+        paths
             .into_iter()
             .filter(|p| self.show_hidden || !p.components().any(|c| c.as_os_str().to_string_lossy().starts_with('.')))
             .filter_map(|p| FileItem::from_path(&p).filter(|_| p.symlink_metadata().is_ok()))
@@ -1128,6 +1146,8 @@ impl SkiApp {
     fn location_name(&self) -> String {
         if !self.search_query.trim().is_empty() {
             tr("Search").to_owned()
+        } else if self.in_bookmarks() {
+            tr("Bookmarks").to_owned()
         } else if self.in_recent() {
             tr("Recent").to_owned()
         } else if trash::is_trash_folder(&self.current_path) {
@@ -1649,6 +1669,8 @@ impl eframe::App for SkiApp {
                         } else {
                             (icons::SEARCH_OFF, tr("No results"), Some(if self.type_filter == TypeFilter::All { tr("Try a different name") } else { tr("Try a different name or file type") }))
                         }
+                    } else if self.in_bookmarks() {
+                        (icons::HEART, tr("No bookmarks yet"), Some(tr("Mark files and folders with a heart to find them here")))
                     } else if self.in_recent() {
                         (icons::RECENT, tr("Nothing recent yet"), Some(tr("Files you open show up here")))
                     } else if self.in_trash() {
@@ -1898,6 +1920,8 @@ impl SkiApp {
         if searching || self.in_recent() {
             let (icon, text) = if searching {
                 (icons::SEARCH, trf("Results for “{}”", &[&self.search_query.trim()]))
+            } else if self.in_bookmarks() {
+                (icons::HEART, tr("Bookmarks").to_owned())
             } else {
                 (icons::RECENT, tr("Recent").to_owned())
             };
@@ -2131,7 +2155,8 @@ impl SkiApp {
                 }
                 for (idx, place) in places {
                     let here = match place.kind {
-                        PlaceKind::Recent => self.in_recent(),
+                        PlaceKind::Recent => self.in_recent() && !self.in_bookmarks(),
+                        PlaceKind::Bookmarks => self.in_bookmarks(),
                         PlaceKind::Folder => place.drive.as_ref().is_none_or(|d| d.mounted) && self.current_path == place.path,
                     };
                     // Removable drives keep room for the eject button, so the name does not run under it
@@ -2937,6 +2962,20 @@ impl SkiApp {
         Place::save_pins(&self.pins);
     }
 
+    fn toggle_bookmark(&mut self, path: PathBuf) {
+        if let Some(idx) = self.bookmarks.iter().position(|p| *p == path) {
+            self.bookmarks.remove(idx);
+            self.set_toast(tr("Removed from bookmarks"));
+        } else {
+            self.bookmarks.push(path);
+            self.set_toast(tr("Added to bookmarks"));
+        }
+        Place::save_bookmarks(&self.bookmarks);
+        if self.in_bookmarks() {
+            self.reload_items();
+        }
+    }
+
     fn open_properties(&mut self, path: &Path) {
         match Properties::load(path) {
             Some(props) => {
@@ -3166,6 +3205,8 @@ impl SkiApp {
             MenuAction::Restore(paths) => self.restore_paths(paths),
             MenuAction::EmptyTrash => self.request_empty_trash(),
             MenuAction::Pin(path) | MenuAction::Unpin(path) => self.toggle_pin(path),
+            MenuAction::Bookmark(path) | MenuAction::Unbookmark(path) => self.toggle_bookmark(path),
+            MenuAction::Submenu(_) => {}
             MenuAction::NewFile => self.open_create_dialog(false),
             MenuAction::NewFolder => self.open_create_dialog(true),
             MenuAction::Refresh => self.refresh(),
@@ -3226,6 +3267,8 @@ impl SkiApp {
                     | MenuAction::Properties(_)
                     | MenuAction::Pin(_)
                     | MenuAction::Unpin(_)
+                    | MenuAction::Bookmark(_)
+                    | MenuAction::Unbookmark(_)
                     | MenuAction::SelectAll
                     | MenuAction::InvertSelection
                     | MenuAction::SelectPattern
@@ -3240,67 +3283,120 @@ impl SkiApp {
         }
     }
 
-    fn menu_entries(&self, target: &MenuTarget) -> Vec<Vec<(&'static str, &'static str, MenuAction)>> {
+    /// Drops the entries a picking dialog does not allow, also inside submenus; emptied submenus go too.
+    fn retain_allowed(&self, entries: &mut Vec<MenuEntry>) {
+        for (_, _, action) in entries.iter_mut() {
+            if let MenuAction::Submenu(sub) = action {
+                self.retain_allowed(sub);
+            }
+        }
+        entries.retain(|(_, _, action)| match action {
+            MenuAction::Submenu(sub) => !sub.is_empty(),
+            _ => self.allows(action),
+        });
+    }
+
+    fn menu_entries(&self, target: &MenuTarget) -> Vec<Vec<MenuEntry>> {
         let mut groups = self.menu_entries_all(target);
         for group in &mut groups {
-            group.retain(|(_, _, action)| self.allows(action));
+            self.retain_allowed(group);
         }
         groups
     }
 
-    fn menu_entries_all(&self, target: &MenuTarget) -> Vec<Vec<(&'static str, &'static str, MenuAction)>> {
-        let pin_entry = |path: &PathBuf| {
+    fn menu_entries_all(&self, target: &MenuTarget) -> Vec<Vec<MenuEntry>> {
+        // Folders that already sit in the sidebar cannot be pinned again
+        let pin_entry = |path: &PathBuf| -> Option<MenuEntry> {
             if self.pins.contains(path) {
-                (icons::PIN_OFF, tr("Unpin from sidebar"), MenuAction::Unpin(path.clone()))
+                Some((icons::PIN_OFF, tr("Unpin from sidebar"), MenuAction::Unpin(path.clone())))
+            } else if self.places.iter().any(|p| p.path == *path) {
+                None
             } else {
-                (icons::PIN, tr("Pin to sidebar"), MenuAction::Pin(path.clone()))
+                Some((icons::PIN, tr("Pin to sidebar"), MenuAction::Pin(path.clone())))
+            }
+        };
+        let bookmark_entry = |path: &PathBuf| -> MenuEntry {
+            if self.bookmarks.contains(path) {
+                (icons::HEART, tr("Remove from bookmarks"), MenuAction::Unbookmark(path.clone()))
+            } else {
+                (icons::HEART_OUTLINE, tr("Add to bookmarks"), MenuAction::Bookmark(path.clone()))
             }
         };
         let icon_entry = |path: &PathBuf| (icons::IMAGE, tr("Custom icon…"), MenuAction::SetIcon(path.clone()));
+        // Several entries fold into a submenu; a lone one stays where it is
+        let fold = |icon: &'static str, label: &'static str, entries: Vec<MenuEntry>| -> Vec<MenuEntry> {
+            match entries.len() {
+                0 | 1 => entries,
+                _ => vec![(icon, label, MenuAction::Submenu(entries))],
+            }
+        };
         let (in_trash, mixed) = (self.in_trash(), self.is_mixed_listing());
-        // Clipboard / transfer / archive entries shared by every selection
-        let file_groups = |paths: Vec<PathBuf>, archives: bool| {
+        // Clipboard / transfer / archive entries shared by every selection; `keep` leaves out
+        // everything that would move or remove the items themselves
+        let file_groups = |paths: Vec<PathBuf>, archives: bool, keep: bool| {
+            let mut clipboard = vec![(icons::COPY, tr("Copy"), MenuAction::Copy(paths.clone()))];
             let mut manage = Vec::new();
-            match paths.as_slice() {
-                [one] => manage.push((icons::RENAME, tr("Rename"), MenuAction::Rename(one.clone()))),
-                many => manage.push((icons::RENAME, tr("Rename…"), MenuAction::RenameMany(many.to_vec()))),
+            let mut transfer = vec![(icons::FOLDER_COPY, tr("Copy to…"), MenuAction::CopyTo(paths.clone()))];
+            if !keep {
+                clipboard.push((icons::CUT, tr("Cut"), MenuAction::Cut(paths.clone())));
+                transfer.push((icons::FOLDER_MOVE, tr("Move to…"), MenuAction::MoveTo(paths.clone())));
+                match paths.as_slice() {
+                    [one] => manage.push((icons::RENAME, tr("Rename"), MenuAction::Rename(one.clone()))),
+                    many => manage.push((icons::RENAME, tr("Rename…"), MenuAction::RenameMany(many.to_vec()))),
+                }
+                manage.push((icons::TRASH, tr("Move to trash"), MenuAction::Trash(paths.clone())));
             }
-            manage.push((icons::DUPLICATE, tr("Duplicate"), MenuAction::Duplicate(paths.clone())));
-            manage.push((icons::LINK, tr("Create link"), MenuAction::MakeLink(paths.clone())));
-            manage.push((icons::TRASH, tr("Move to trash"), MenuAction::Trash(paths.clone())));
-            let mut groups = vec![
-                vec![
-                    (icons::COPY, tr("Copy"), MenuAction::Copy(paths.clone())),
-                    (icons::CUT, tr("Cut"), MenuAction::Cut(paths.clone())),
-                ],
-                vec![
-                    (icons::FOLDER_COPY, tr("Copy to…"), MenuAction::CopyTo(paths.clone())),
-                    (icons::FOLDER_MOVE, tr("Move to…"), MenuAction::MoveTo(paths.clone())),
-                ],
-                manage,
+            let mut more = vec![
+                (icons::DUPLICATE, tr("Duplicate"), MenuAction::Duplicate(paths.clone())),
+                (icons::LINK, tr("Create link"), MenuAction::MakeLink(paths.clone())),
+                (icons::COMPRESS, tr("Compress…"), MenuAction::Compress(paths.clone())),
             ];
-            let mut pack = vec![(icons::COMPRESS, tr("Compress…"), MenuAction::Compress(paths.clone()))];
             if archives {
-                pack.push((icons::EXTRACT, tr("Extract here"), MenuAction::ExtractHere(paths.clone())));
-                pack.push((icons::EXTRACT, tr("Extract to…"), MenuAction::ExtractTo(paths)));
+                more.push((icons::EXTRACT, tr("Extract here"), MenuAction::ExtractHere(paths.clone())));
+                more.push((icons::EXTRACT, tr("Extract to…"), MenuAction::ExtractTo(paths)));
             }
-            groups.push(pack);
-            groups
+            manage.extend(transfer);
+            manage.extend(fold(icons::MORE, tr("More actions"), more));
+            vec![clipboard, manage]
         };
         // Results and Recent items live in many folders: offer a way to the one that holds them
-        let open_group = |item: &FileItem, with: bool| {
+        let open_group = |item: &FileItem, with: bool, show_parent: bool| {
             let mut group = vec![(icons::OPEN, tr("Open"), MenuAction::Open(item.clone()))];
             if item.is_dir {
-                group.push((icons::NEW_TAB, tr("Open in new tab"), MenuAction::OpenInNewTab(item.path.clone())));
-                group.push((icons::NEW_WINDOW, tr("Open in new window"), MenuAction::OpenInNewWindow(item.path.clone())));
+                group.extend(fold(icons::NEW_TAB, tr("Open in"), vec![
+                    (icons::NEW_TAB, tr("New tab"), MenuAction::OpenInNewTab(item.path.clone())),
+                    (icons::NEW_WINDOW, tr("New window"), MenuAction::OpenInNewWindow(item.path.clone())),
+                    (icons::TERMINAL, tr("Terminal"), MenuAction::OpenTerminal(item.path.clone())),
+                ]));
             }
             if with {
                 group.push((icons::APPS, tr("Open with…"), MenuAction::OpenWith(item.path.clone())));
             }
-            if mixed && let Some(parent) = item.path.parent() {
+            if (mixed || show_parent) && let Some(parent) = item.path.parent() {
                 group.push((icons::FOLDER, tr("Show in folder"), MenuAction::OpenPath(parent.to_path_buf())));
             }
             group
+        };
+        // The menu of one file or folder. `keep` is for sidebar places, which must not be moved or removed from here.
+        let single_groups = |item: &FileItem, show_parent: bool, keep: bool| {
+            let mut groups = vec![open_group(item, !item.is_dir, show_parent)];
+            let mut mark = vec![bookmark_entry(&item.path)];
+            if item.is_dir {
+                let customize: Vec<MenuEntry> = pin_entry(&item.path).into_iter().chain([icon_entry(&item.path)]).collect();
+                mark.extend(fold(icons::PIN, tr("Customize"), customize));
+            } else {
+                mark.extend(pin_entry(&item.path));
+                if crate::thumbs::is_image(&item.path) {
+                    mark.push((icons::IMAGE, tr("Use as folder icon"), MenuAction::UseAsIcon(item.path.clone())));
+                }
+            }
+            groups.push(mark);
+            groups.extend(file_groups(vec![item.path.clone()], !item.is_dir && ops::is_archive(&item.path), keep));
+            groups.push(vec![
+                (icons::COPY, tr("Copy path"), MenuAction::CopyPath(item.path.clone())),
+                (icons::INFO, tr("Properties"), MenuAction::Properties(item.path.clone())),
+            ]);
+            groups
         };
         match target {
             MenuTarget::Item(item) if in_trash => {
@@ -3317,34 +3413,11 @@ impl SkiApp {
                 let group = self.menu_group(item);
                 let paths: Vec<PathBuf> = group.iter().map(|i| i.path.clone()).collect();
                 let archives = group.iter().any(|i| !i.is_dir && ops::is_archive(&i.path));
-                let mut groups = file_groups(paths, archives);
+                let mut groups = file_groups(paths, archives, false);
                 groups.push(vec![(icons::INFO, tr("Properties"), MenuAction::Properties(item.path.clone()))]);
                 groups
             }
-            MenuTarget::Item(item) if item.is_dir => {
-                let mut groups = vec![
-                    open_group(item, false),
-                    vec![pin_entry(&item.path), icon_entry(&item.path), (icons::TERMINAL, tr("Open in terminal"), MenuAction::OpenTerminal(item.path.clone()))],
-                ];
-                groups.extend(file_groups(vec![item.path.clone()], false));
-                groups.push(vec![
-                    (icons::COPY, tr("Copy path"), MenuAction::CopyPath(item.path.clone())),
-                    (icons::INFO, tr("Properties"), MenuAction::Properties(item.path.clone())),
-                ]);
-                groups
-            }
-            MenuTarget::Item(item) => {
-                let mut groups = vec![open_group(item, true), vec![pin_entry(&item.path)]];
-                if crate::thumbs::is_image(&item.path) {
-                    groups.push(vec![(icons::IMAGE, tr("Use as folder icon"), MenuAction::UseAsIcon(item.path.clone()))]);
-                }
-                groups.extend(file_groups(vec![item.path.clone()], ops::is_archive(&item.path)));
-                groups.push(vec![
-                    (icons::COPY, tr("Copy path"), MenuAction::CopyPath(item.path.clone())),
-                    (icons::INFO, tr("Properties"), MenuAction::Properties(item.path.clone())),
-                ]);
-                groups
-            }
+            MenuTarget::Item(item) => single_groups(item, false, false),
             MenuTarget::Folder if in_trash => vec![
                 vec![(icons::DELETE_FOREVER, tr("Empty trash"), MenuAction::EmptyTrash)],
                 vec![(icons::SELECT_ALL, tr("Select all"), MenuAction::SelectAll)],
@@ -3357,17 +3430,25 @@ impl SkiApp {
                 ],
                 self.history_entries(),
                 {
-                    let mut edit = vec![
+                    let mut edit = Vec::new();
+                    if self.clipboard.is_some() {
+                        edit.push((icons::PASTE, tr("Paste"), MenuAction::Paste));
+                    }
+                    edit.extend(fold(icons::SELECT_ALL, tr("Select"), vec![
                         (icons::SELECT_ALL, tr("Select all"), MenuAction::SelectAll),
                         (icons::SELECT_INVERSE, tr("Invert selection"), MenuAction::InvertSelection),
                         (icons::SELECT_PATTERN, tr("Select matching…"), MenuAction::SelectPattern),
-                    ];
-                    if self.clipboard.is_some() {
-                        edit.insert(0, (icons::PASTE, tr("Paste"), MenuAction::Paste));
-                    }
+                    ]));
                     edit
                 },
-                vec![pin_entry(&self.current_path), icon_entry(&self.current_path), (icons::TERMINAL, tr("Open in terminal"), MenuAction::OpenTerminal(self.current_path.clone()))],
+                {
+                    let here = &self.current_path;
+                    let customize: Vec<MenuEntry> = pin_entry(here).into_iter().chain([icon_entry(here)]).collect();
+                    let mut mark = vec![bookmark_entry(here)];
+                    mark.extend(fold(icons::PIN, tr("Customize"), customize));
+                    mark.push((icons::TERMINAL, tr("Open in terminal"), MenuAction::OpenTerminal(here.clone())));
+                    mark
+                },
                 vec![(icons::REFRESH, tr("Refresh"), MenuAction::Refresh)],
                 vec![
                     (icons::COPY, tr("Copy path"), MenuAction::CopyPath(self.current_path.clone())),
@@ -3387,14 +3468,10 @@ impl SkiApp {
                 vec![(icons::OPEN, tr("Open"), MenuAction::OpenPath(path.clone()))],
                 vec![(icons::DELETE_FOREVER, tr("Empty trash"), MenuAction::EmptyTrash)],
             ],
-            MenuTarget::Place(path) => vec![
-                vec![
-                    (icons::OPEN, tr("Open"), MenuAction::OpenPath(path.clone())),
-                    (icons::NEW_TAB, tr("Open in new tab"), MenuAction::OpenInNewTab(path.clone())),
-                    (icons::NEW_WINDOW, tr("Open in new window"), MenuAction::OpenInNewWindow(path.clone())),
-                ],
-                vec![pin_entry(path)],
-            ],
+            MenuTarget::Place(path) => match FileItem::from_path(path) {
+                Some(item) => single_groups(&item, false, true),
+                None => vec![vec![(icons::OPEN, tr("Open"), MenuAction::OpenPath(path.clone()))]],
+            },
             MenuTarget::Drive(drive, name, mount) => {
                 let (dev, name) = (drive.dev.clone(), name.clone());
                 if !drive.mounted {
@@ -3415,29 +3492,15 @@ impl SkiApp {
                     ]
                 }
             }
-            MenuTarget::Pin(path) => vec![
-                match FileItem::from_path(path).filter(|i| !i.is_dir) {
-                    Some(file) => {
-                        let mut open = vec![(icons::OPEN, tr("Open"), MenuAction::Open(file))];
-                        if let Some(parent) = path.parent() {
-                            open.push((icons::FOLDER, tr("Show in folder"), MenuAction::OpenPath(parent.to_path_buf())));
-                        }
-                        open
-                    }
-                    None => vec![
-                        (icons::OPEN, tr("Open"), MenuAction::OpenPath(path.clone())),
-                        (icons::NEW_TAB, tr("Open in new tab"), MenuAction::OpenInNewTab(path.clone())),
-                        (icons::NEW_WINDOW, tr("Open in new window"), MenuAction::OpenInNewWindow(path.clone())),
-                    ],
-                },
-                if path.is_dir() { vec![(icons::PIN_OFF, tr("Unpin from sidebar"), MenuAction::Unpin(path.clone())), icon_entry(path)] } else { vec![(icons::PIN_OFF, tr("Unpin from sidebar"), MenuAction::Unpin(path.clone()))] },
-                vec![(icons::INFO, tr("Properties"), MenuAction::Properties(path.clone()))],
-            ],
+            MenuTarget::Pin(path) => match FileItem::from_path(path) {
+                Some(item) => single_groups(&item, true, false),
+                None => vec![vec![(icons::PIN_OFF, tr("Unpin from sidebar"), MenuAction::Unpin(path.clone()))]],
+            },
         }
     }
 
     /// Undo and redo entries of the menus: only those that have something to do.
-    fn history_entries(&self) -> Vec<(&'static str, &'static str, MenuAction)> {
+    fn history_entries(&self) -> Vec<MenuEntry> {
         let mut entries = Vec::new();
         if self.history.undo_label().is_some() {
             entries.push((icons::UNDO, tr("Undo"), MenuAction::Undo));
@@ -3518,6 +3581,8 @@ impl SkiApp {
             groups.iter().map(|g| g.iter().map(|(_, _, action)| self.menu_hint(action)).collect()).collect();
         let mut chosen = None;
         let mut item_ids = Vec::new();
+        // What the pointer rests on: a submenu entry (with its row), another entry, or nothing yet
+        let mut sub_hover: Option<Option<(usize, usize, egui::Rect)>> = None;
         let area = egui::Area::new(egui::Id::unique("context_menu"))
             .order(egui::Order::Foreground)
             .fixed_pos(origin + egui::vec2(0.0, (1.0 - t) * -8.0))
@@ -3537,12 +3602,24 @@ impl SkiApp {
                                 material::divider(ui, &self.theme);
                             }
                             for (idx, (icon, label, action)) in group.iter().enumerate() {
+                                if matches!(action, MenuAction::Submenu(_)) {
+                                    let open = self.menu_sub == Some((g, idx));
+                                    let resp = material::menu_submenu_item(ui, ("menu", g, idx), icon, label, open, &self.theme);
+                                    item_ids.push(resp.id);
+                                    if interactive && (resp.hovered() || resp.clicked()) {
+                                        sub_hover = Some(Some((g, idx, resp.rect)));
+                                    }
+                                    continue;
+                                }
                                 let shown = match action {
                                     MenuAction::Open(item) if !item.is_dir => open_label.as_deref().unwrap_or(label),
                                     _ => label,
                                 };
                                 let resp = menu_item(ui, ("menu", g, idx), icon, shown, hints[g][idx].as_deref(), &self.theme);
                                 item_ids.push(resp.id);
+                                if resp.hovered() && interactive && sub_hover.is_none() {
+                                    sub_hover = Some(None);
+                                }
                                 if resp.clicked() && interactive {
                                     chosen = Some(action.clone());
                                 }
@@ -3552,6 +3629,62 @@ impl SkiApp {
             });
 
         let rect = area.response.rect;
+
+        // The pointer resting on a submenu entry opens its flyout; moving to another entry closes it,
+        // unless the pointer is already inside the flyout
+        let pointer = ctx.input(|i| i.pointer.hover_pos());
+        let in_flyout = pointer.is_some_and(|p| self.menu_sub_rect.is_some_and(|r| r.expand(2.0).contains(p)));
+        let mut sub_anchor = None;
+        if !interactive {
+            self.menu_sub = None;
+        } else {
+            match sub_hover {
+                Some(Some((g, idx, row))) => {
+                    self.menu_sub = Some((g, idx));
+                    sub_anchor = Some(row);
+                }
+                Some(None) if !in_flyout => self.menu_sub = None,
+                _ => {}
+            }
+        }
+        let mut flyout_rect = None;
+        if let Some((g, idx)) = self.menu_sub
+            && let Some((_, _, MenuAction::Submenu(entries))) = groups.get(g).and_then(|grp| grp.get(idx))
+        {
+            // The row to line up with: the hovered one now, or where the flyout sat before
+            let row_top = sub_anchor.map(|r| r.top()).or_else(|| self.menu_sub_rect.map(|r| r.top() + 8.0));
+            if let Some(row_top) = row_top {
+                let screen = ctx.content_rect();
+                let height = entries.len() as f32 * material::ENTRY_HEIGHT + (entries.len() as f32 - 1.0) * 2.0 + 16.0;
+                let right_x = rect.right() + 2.0;
+                let x = if right_x + MENU_WIDTH <= screen.right() - 8.0 { right_x } else { (rect.left() - 2.0 - MENU_WIDTH).max(8.0) };
+                let y = (row_top - 8.0).min(screen.bottom() - height - 8.0).max(8.0);
+                let hints: Vec<Option<String>> = entries.iter().map(|(_, _, a)| self.menu_hint(a)).collect();
+                let fly = egui::Area::new(egui::Id::unique("context_submenu").with(g).with(idx))
+                    .order(egui::Order::Foreground)
+                    .fixed_pos(egui::pos2(x, y))
+                    .show(ctx, |ui| {
+                        egui::Frame::new()
+                            .fill(self.theme.mantle)
+                            .corner_radius(egui::CornerRadius::same(material::radius_container()))
+                            .shadow(ctx.global_style().visuals.window_shadow)
+                            .inner_margin(egui::Margin::same(8))
+                            .show(ui, |ui| {
+                                ui.set_width(MENU_WIDTH - 16.0);
+                                ui.spacing_mut().item_spacing.y = 2.0;
+                                for (i, (icon, label, action)) in entries.iter().enumerate() {
+                                    let resp = material::menu_item(ui, ("submenu", g, idx, i), icon, label, hints[i].as_deref(), &self.theme);
+                                    if resp.clicked() {
+                                        chosen = Some(action.clone());
+                                    }
+                                }
+                            });
+                    });
+                flyout_rect = Some(fly.response.rect);
+            }
+        }
+        self.menu_sub_rect = flyout_rect;
+
         if interactive {
             // Keyboard: the first arrow press lands on the first (or last) entry, Home and End jump
             ctx.memory_mut(|m| m.set_modal_layer(area.response.layer_id));
@@ -3580,9 +3713,14 @@ impl SkiApp {
             }
         }
         // The modal layer swallows presses on the header button, so a press there just closes the menu
-        let outside_press = interactive && ctx.input(|i| i.pointer.any_pressed() && i.pointer.interact_pos().is_some_and(|p| !rect.contains(p)));
+        let outside_press = interactive
+            && ctx.input(|i| {
+                i.pointer.any_pressed() && i.pointer.interact_pos().is_some_and(|p| !rect.contains(p) && !flyout_rect.is_some_and(|f| f.contains(p)))
+            });
         if chosen.is_some() || outside_press {
             self.menu = None;
+            self.menu_sub = None;
+            self.menu_sub_rect = None;
         }
         if let Some(action) = chosen {
             self.menu_click_consumed = true;
@@ -3873,6 +4011,10 @@ impl SkiApp {
         if let Some(idx) = self.pins.iter().position(|p| p.as_path() == old) {
             self.pins[idx] = target.to_path_buf();
             Place::save_pins(&self.pins);
+        }
+        if let Some(idx) = self.bookmarks.iter().position(|p| p.as_path() == old) {
+            self.bookmarks[idx] = target.to_path_buf();
+            Place::save_bookmarks(&self.bookmarks);
         }
         if let Some(icon) = self.folder_icons.remove(old) {
             self.folder_icons.insert(target.to_path_buf(), icon);
@@ -4521,9 +4663,15 @@ impl SkiApp {
         let mut perm_action = perms::PermAction::default();
         let mut change_icon = false;
         let mut reset_icon = false;
+        let mut toggle_bookmark_path: Option<PathBuf> = None;
         let mut close = false;
 
-        close |= material::dialog_header(ui, tr("Properties"), None, &theme, "dlg_close");
+        let bookmarked = self.bookmarks.contains(&item.path);
+        let (closed, heart) = material::dialog_header_with_heart(ui, tr("Properties"), None, &theme, "dlg_close", Some(bookmarked));
+        close |= closed;
+        if heart {
+            toggle_bookmark_path = Some(item.path.clone());
+        }
         if !ctx.egui_wants_keyboard_input() {
             ctx.input(|i| {
                 if i.key_pressed(egui::Key::ArrowRight) {
@@ -4646,6 +4794,9 @@ impl SkiApp {
         if let Some(text) = copied {
             ctx.copy_text(text);
             self.set_toast(tr("Copied to clipboard"));
+        }
+        if let Some(path) = toggle_bookmark_path {
+            self.toggle_bookmark(path);
         }
         if reset_icon {
             self.apply_folder_icon(&folder, None);

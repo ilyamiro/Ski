@@ -4,6 +4,13 @@ use crate::ui::icons;
 
 /// Stand-in location of the Recent view, which lists files from many folders.
 pub const RECENT_PATH: &str = "ski:recent";
+/// Stand-in location of the Bookmarks view, which lists the hearted files and folders.
+pub const BOOKMARKS_PATH: &str = "ski:bookmarks";
+
+/// Whether `path` names a view that lists items from many folders instead of a folder.
+pub fn is_virtual(path: &std::path::Path) -> bool {
+    path.as_os_str() == RECENT_PATH || path.as_os_str() == BOOKMARKS_PATH
+}
 
 /// What a sidebar destination opens.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -11,6 +18,8 @@ pub enum PlaceKind {
     Folder,
     /// Files and folders used lately, from every folder.
     Recent,
+    /// Files and folders the user marked with a heart.
+    Bookmarks,
 }
 
 /// Sidebar sections, separated by dividers.
@@ -39,20 +48,21 @@ impl Place {
 
     /// Pinned folders and files, saved in `~/.config/ski/pins.json`.
     pub fn load_pins() -> Vec<PathBuf> {
-        pins_file()
-            .and_then(|f| std::fs::read_to_string(f).ok())
-            .and_then(|s| serde_json::from_str::<Vec<PathBuf>>(&s).ok())
-            .map(|pins| pins.into_iter().filter(|p| p.exists()).collect())
-            .unwrap_or_default()
+        load_paths("pins.json")
     }
 
     pub fn save_pins(pins: &[PathBuf]) {
-        let Some(file) = pins_file() else { return };
-        if let Some(dir) = file.parent() {
-            let _ = std::fs::create_dir_all(dir);
-        }
-        if let Ok(json) = serde_json::to_string_pretty(pins) {
-            let _ = std::fs::write(file, json);
+        save_paths("pins.json", pins);
+    }
+
+    /// Bookmarked files and folders, saved in `$XDG_STATE_HOME/ski/bookmarks.json`.
+    pub fn load_bookmarks() -> Vec<PathBuf> {
+        bookmarks_file().map(|f| load_paths_from(&f)).unwrap_or_default()
+    }
+
+    pub fn save_bookmarks(bookmarks: &[PathBuf]) {
+        if let Some(file) = bookmarks_file() {
+            save_paths_to(&file, bookmarks);
         }
     }
 
@@ -66,6 +76,10 @@ impl Place {
         places.push(Place {
             kind: PlaceKind::Recent,
             ..Place::new("Recent", PathBuf::from(RECENT_PATH), icons::RECENT, Main)
+        });
+        places.push(Place {
+            kind: PlaceKind::Bookmarks,
+            ..Place::new("Bookmarks", PathBuf::from(BOOKMARKS_PATH), icons::HEART, Main)
         });
         if let Some(trash) = super::trash::files_dir() {
             // Created on demand, so the destination always exists
@@ -102,8 +116,36 @@ impl Place {
     }
 }
 
-fn pins_file() -> Option<PathBuf> {
-    dirs::config_dir().map(|d| d.join("ski").join("pins.json"))
+/// Bookmarks are state rather than settings; platforms without a state directory use the data one.
+fn bookmarks_file() -> Option<PathBuf> {
+    dirs::state_dir().or_else(dirs::data_dir).map(|d| d.join("ski").join("bookmarks.json"))
+}
+
+fn load_paths(name: &str) -> Vec<PathBuf> {
+    config_file(name).map(|f| load_paths_from(&f)).unwrap_or_default()
+}
+
+fn load_paths_from(file: &std::path::Path) -> Vec<PathBuf> {
+    Some(file)
+        .and_then(|f| std::fs::read_to_string(f).ok())
+        .and_then(|s| serde_json::from_str::<Vec<PathBuf>>(&s).ok())
+        .map(|paths| paths.into_iter().filter(|p| p.exists()).collect())
+        .unwrap_or_default()
+}
+
+fn save_paths(name: &str, paths: &[PathBuf]) {
+    if let Some(file) = config_file(name) {
+        save_paths_to(&file, paths);
+    }
+}
+
+fn save_paths_to(file: &std::path::Path, paths: &[PathBuf]) {
+    if let Some(dir) = file.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    if let Ok(json) = serde_json::to_string_pretty(paths) {
+        let _ = std::fs::write(file, json);
+    }
 }
 
 /// Custom folder icons: folder path -> image path, saved in `~/.config/ski/folder_icons.json`.
