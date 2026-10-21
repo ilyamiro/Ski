@@ -21,6 +21,7 @@ let
     fontconfig
     gnutar
     p7zip
+    ffmpeg-headless
   ];
 in
 pkgs.rustPlatform.buildRustPackage {

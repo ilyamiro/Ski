@@ -499,7 +499,7 @@ impl SkiApp {
         self.current_path = path;
         if !self.in_recent() {
             self.settings.last_dir = Some(self.current_path.clone());
-            if self.settings.remember_view_per_folder
+            if self.settings.remember_view_per_folder && self.chooser.is_none()
                 && let Some(&saved_mode) = self.settings.folder_views.get(&self.current_path) {
                     self.view_mode = saved_mode;
                 }

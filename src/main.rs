@@ -99,6 +99,8 @@ fn main() -> eframe::Result {
                     x11_parent::attach(cc, handle);
                 }
                 let parent = spec.parent.as_deref().and_then(|handle| wayland_parent::attach(cc, handle));
+                // A dialog opens as a list with sortable column headers, whatever the file manager last used
+                app.view_mode = app::ViewMode::List;
                 let mut chooser = chooser::Chooser::new(spec);
                 chooser.parent = parent;
                 chooser
