@@ -1601,6 +1601,11 @@ impl eframe::App for SkiApp {
         self.poll_drives(&ctx);
         self.drop_zones.clear();
         self.sync_settings(&ctx);
+        let shown_px = match self.view_mode {
+            ViewMode::Grid => self.settings.grid_size.picture_size(),
+            ViewMode::List => 32.0,
+        };
+        self.thumbs.want_pixels(shown_px * ctx.pixels_per_point());
         self.thumbs.poll(&ctx);
 
         let found = self.search.poll();

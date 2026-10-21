@@ -1,6 +1,11 @@
 //! Background preview loader. Every previewable file in the current folder is queued as soon as
 //! the folder opens: images, videos, SVGs, the first page of PDFs and the embedded preview of office
 //! documents. Decoded pictures are uploaded as textures on the UI thread.
+//!
+//! Finished previews are also kept on disk (see `cache`), so reopening a folder, in this window or in
+//! the next file dialog, never runs ffmpeg or a decoder again. Previews come in a few resolutions
+//! that follow the icon size: zooming in re-renders at the next tier, once, and keeps the old
+//! picture on screen until the sharper one arrives.
 use std::collections::{HashMap, HashSet};
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -9,10 +14,11 @@ use std::sync::{mpsc, Arc, Mutex};
 
 use eframe::egui;
 
-/// Square image previews.
-const THUMB_SIZE: u32 = 128;
-/// Document pages keep their aspect ratio and need more pixels to stay readable.
-const PAGE_SIZE: u32 = 256;
+/// Preview resolutions, by the longest side in pixels.
+const TIERS: [u32; 3] = [128, 256, 512];
+/// Document pages and video frames keep their aspect ratio and need more pixels than a square
+/// crop to stay readable, so they never render below this.
+const PAGE_MIN: u32 = 256;
 const WORKERS: usize = 4;
 /// PDFs and archives larger than this are not worth rendering for a tiny preview.
 /// ffmpeg gets this long on one frame before it is killed.
@@ -22,22 +28,34 @@ const MAX_DOC_BYTES: u64 = 64 * 1024 * 1024;
 struct Job {
     path: PathBuf,
     generation: u64,
+    tier: u32,
 }
 
 enum Outcome {
-    Ready(egui::ColorImage),
+    Ready(egui::ColorImage, u32),
     Cancelled,
     Failed,
 }
 
 pub struct Thumbnails {
-    textures: HashMap<PathBuf, egui::TextureHandle>,
+    /// Each texture with the tier it was rendered at.
+    textures: HashMap<PathBuf, (egui::TextureHandle, u32)>,
     queued: HashSet<PathBuf>,
+    /// Resolution wanted for new and upgraded previews.
+    tier: u32,
+    /// Files of the open folder, and extra pictures such as folder icons, for re-queuing at a new tier.
+    current: Vec<PathBuf>,
+    extras: HashSet<PathBuf>,
     /// Files that have no preview; not retried until the app restarts.
     failed: HashSet<PathBuf>,
     job_tx: mpsc::Sender<Job>,
     result_rx: mpsc::Receiver<(PathBuf, Outcome)>,
     generation: Arc<AtomicU64>,
+}
+
+/// Smallest tier that is at least `px` physical pixels, or the largest one.
+fn tier_for(px: f32) -> u32 {
+    TIERS.into_iter().find(|&t| t as f32 >= px).unwrap_or(TIERS[TIERS.len() - 1])
 }
 
 fn extension(path: &Path) -> Option<String> {
@@ -136,16 +154,21 @@ impl Thumbnails {
                     continue;
                 }
                 // A malformed document must not take the worker down with it
-                let decoded = std::panic::catch_unwind(|| decode_thumbnail(&job.path)).ok().flatten();
-                let outcome = decoded.map_or(Outcome::Failed, Outcome::Ready);
+                let decoded = std::panic::catch_unwind(|| cached_thumbnail(&job.path, job.tier)).ok().flatten();
+                let outcome = decoded.map_or(Outcome::Failed, |img| Outcome::Ready(to_color_image(&img), job.tier));
                 let _ = result_tx.send((job.path, outcome));
                 ctx.request_repaint();
             });
         }
 
+        cache::trim_in_background();
+
         Self {
             textures: HashMap::new(),
             queued: HashSet::new(),
+            tier: TIERS[0],
+            current: Vec::new(),
+            extras: HashSet::new(),
             failed: HashSet::new(),
             job_tx,
             result_rx,
@@ -154,8 +177,9 @@ impl Thumbnails {
     }
 
     fn enqueue(&mut self, path: &Path, generation: u64) {
-        if has_preview(path) && !self.textures.contains_key(path) && !self.failed.contains(path) && self.queued.insert(path.to_path_buf()) {
-            let _ = self.job_tx.send(Job { path: path.to_path_buf(), generation });
+        let sharp_enough = self.textures.get(path).is_some_and(|(_, tier)| *tier >= self.tier);
+        if has_preview(path) && !sharp_enough && !self.failed.contains(path) && self.queued.insert(path.to_path_buf()) {
+            let _ = self.job_tx.send(Job { path: path.to_path_buf(), generation, tier: self.tier });
         }
     }
 
@@ -163,25 +187,53 @@ impl Thumbnails {
     pub fn preload<'a>(&mut self, paths: impl Iterator<Item = &'a Path>) {
         let generation = self.generation.fetch_add(1, Ordering::Relaxed) + 1;
         // Anything that was queued but not finished was dropped by the workers
-        self.queued.retain(|p| self.textures.contains_key(p));
-        for path in paths {
-            self.enqueue(path, generation);
+        self.queued.clear();
+        self.current = paths.map(Path::to_path_buf).collect();
+        self.extras.clear();
+        for path in std::mem::take(&mut self.current) {
+            self.enqueue(&path, generation);
+            self.current.push(path);
         }
     }
 
     /// Queue one extra image (e.g. a custom folder icon) without cancelling the folder's own work.
     pub fn ensure(&mut self, path: &Path) {
         let generation = self.generation.load(Ordering::Relaxed);
+        self.extras.insert(path.to_path_buf());
         self.enqueue(path, generation);
+    }
+
+    /// Tell the loader how many physical pixels the largest preview is drawn at. Crossing into a
+    /// bigger tier re-renders what is already loaded; going smaller keeps the sharper pictures.
+    pub fn want_pixels(&mut self, px: f32) {
+        let tier = tier_for(px);
+        if tier <= self.tier {
+            self.tier = tier;
+            return;
+        }
+        self.tier = tier;
+        let generation = self.generation.fetch_add(1, Ordering::Relaxed) + 1;
+        self.queued.clear();
+        let paths: Vec<PathBuf> = self.current.iter().chain(self.extras.iter()).cloned().collect();
+        for path in paths {
+            self.enqueue(&path, generation);
+        }
     }
 
     /// Upload finished thumbnails; call once per frame.
     pub fn poll(&mut self, ctx: &egui::Context) {
         while let Ok((path, outcome)) = self.result_rx.try_recv() {
             match outcome {
-                Outcome::Ready(img) => {
+                Outcome::Ready(img, tier) => {
+                    if tier >= self.tier {
+                        self.queued.remove(&path);
+                    }
+                    // A slow low-resolution job can finish after its upgrade did
+                    if self.textures.get(&path).is_some_and(|(_, have)| *have >= tier) {
+                        continue;
+                    }
                     let tex = ctx.load_texture(path.to_string_lossy(), img, egui::TextureOptions::LINEAR);
-                    self.textures.insert(path, tex);
+                    self.textures.insert(path, (tex, tier));
                 }
                 Outcome::Cancelled => {
                     self.queued.remove(&path);
@@ -195,7 +247,7 @@ impl Thumbnails {
     }
 
     pub fn get(&self, path: &Path) -> Option<&egui::TextureHandle> {
-        self.textures.get(path)
+        self.textures.get(path).map(|(tex, _)| tex)
     }
 }
 
@@ -204,48 +256,92 @@ fn to_color_image(img: &image::DynamicImage) -> egui::ColorImage {
     egui::ColorImage::from_rgba_unmultiplied([rgba.width() as usize, rgba.height() as usize], rgba.as_raw())
 }
 
+/// The preview from the disk cache, or rendered now and cached for next time. Files that have no
+/// preview are remembered too, so a folder of covers-less tracks does not spawn ffmpeg per file on
+/// every visit.
+fn cached_thumbnail(path: &Path, tier: u32) -> Option<image::DynamicImage> {
+    let Some(key) = cache::key(path) else { return render_thumbnail(path, tier) };
+    if let Some(hit) = cache::read(&key, tier) {
+        return Some(hit);
+    }
+    if cache::known_missing(&key) {
+        return None;
+    }
+    let rendered = render_thumbnail(path, tier);
+    match &rendered {
+        Some(img) => cache::write(&key, tier, img),
+        None => cache::mark_missing(&key),
+    }
+    rendered
+}
+
+#[cfg(test)]
 fn decode_thumbnail(path: &Path) -> Option<egui::ColorImage> {
+    render_thumbnail(path, TIERS[0]).map(|img| to_color_image(&img))
+}
+
+/// A preview with its longest side at most `tier` pixels, or `PAGE_MIN` where the shape is kept.
+fn render_thumbnail(path: &Path, tier: u32) -> Option<image::DynamicImage> {
+    let page_size = tier.max(PAGE_MIN);
     if is_svg(path) {
-        return crate::fs::apps::load_icon_image(path, THUMB_SIZE);
+        return render_svg(path, tier);
     }
     if is_page(path) {
         let page = if extension(path).as_deref() == Some("pdf") {
             if std::fs::metadata(path).ok()?.len() > MAX_DOC_BYTES {
                 return None;
             }
-            render_pdf(path)?
+            render_pdf(path, page_size)?
         } else {
             book_or_document_cover(path)?
         };
-        return Some(to_color_image(&page.thumbnail(PAGE_SIZE, PAGE_SIZE)));
+        return Some(page.thumbnail(page_size, page_size));
     }
     if is_audio(path) {
-        return Some(to_color_image(&audio_cover(path)?));
+        return Some(square(ffmpeg_picture(path, tier)?, tier));
     }
     if is_video(path) {
         if extension(path).as_deref() == Some("ts") && !is_transport_stream(path) {
             return None;
         }
-        let frame = video_frame(path)?;
-        return Some(to_color_image(&film_strip(frame)));
+        let frame = video_frame(path, page_size)?;
+        return Some(film_strip(frame));
     }
     let img = if is_ffmpeg_still(path) {
-        ffmpeg_picture(path, PAGE_SIZE)?
+        ffmpeg_picture(path, page_size)?
     } else if is_raw(path) {
         raw_preview(path)?
     } else {
         image::ImageReader::open(path).ok()?.with_guessed_format().ok()?.decode().ok()?
     };
+    Some(square(img, tier))
+}
+
+/// Center crop to a square of at most `side` pixels.
+fn square(img: image::DynamicImage, side: u32) -> image::DynamicImage {
     let (w, h) = (img.width(), img.height());
-    let side = w.min(h);
-    let cropped = img.crop_imm((w - side) / 2, (h - side) / 2, side, side);
-    Some(to_color_image(&cropped.thumbnail(THUMB_SIZE, THUMB_SIZE)))
+    let edge = w.min(h);
+    img.crop_imm((w - edge) / 2, (h - edge) / 2, edge, edge).thumbnail(side, side)
+}
+
+fn render_svg(path: &Path, px: u32) -> Option<image::DynamicImage> {
+    let data = std::fs::read(path).ok()?;
+    let tree = resvg::usvg::Tree::from_data(&data, &resvg::usvg::Options::default()).ok()?;
+    let size = tree.size();
+    let scale = px as f32 / size.width().max(size.height());
+    let mut pixmap = resvg::tiny_skia::Pixmap::new((size.width() * scale).ceil().max(1.0) as u32, (size.height() * scale).ceil().max(1.0) as u32)?;
+    resvg::render(&tree, resvg::tiny_skia::Transform::from_scale(scale, scale), &mut pixmap.as_mut());
+    let rgba: Vec<u8> = pixmap.pixels().iter().flat_map(|p| {
+        let c = p.demultiply();
+        [c.red(), c.green(), c.blue(), c.alpha()]
+    }).collect();
+    image::RgbaImage::from_raw(pixmap.width(), pixmap.height(), rgba).map(image::DynamicImage::ImageRgba8)
 }
 
 /// A frame from near the start of a video, grabbed with ffmpeg. Skips the first second to avoid
 /// black intros, and falls back to the very first frame for clips shorter than that.
-fn video_frame(path: &Path) -> Option<image::DynamicImage> {
-    ["1", "0"].into_iter().find_map(|seek| ffmpeg_frame(path, seek))
+fn video_frame(path: &Path, size: u32) -> Option<image::DynamicImage> {
+    ["1", "0"].into_iter().find_map(|seek| ffmpeg_frame(path, seek, size))
 }
 
 /// One decoded frame at `seek` seconds. Seeks on the input without decoding up to the exact
@@ -253,9 +349,8 @@ fn video_frame(path: &Path) -> Option<image::DynamicImage> {
 /// single-threaded because several workers already decode side by side, and writes an
 /// uncompressed BMP so no time goes into PNG compression. Pixel aspect ratio is applied, so
 /// anamorphic clips keep their shape; rotation metadata is applied by ffmpeg itself.
-fn ffmpeg_frame(path: &Path, seek: &str) -> Option<image::DynamicImage> {
+fn ffmpeg_frame(path: &Path, seek: &str, size: u32) -> Option<image::DynamicImage> {
     use std::process::Command;
-    let size = PAGE_SIZE;
     let filter = format!("scale=iw*sar:ih,scale={size}:{size}:force_original_aspect_ratio=decrease,setsar=1");
     let mut command = Command::new("ffmpeg");
     command
@@ -265,13 +360,10 @@ fn ffmpeg_frame(path: &Path, seek: &str) -> Option<image::DynamicImage> {
     image::load_from_memory(&run_with_timeout(command)?).ok()
 }
 
-/// The picture attached to an audio file. Most tracks have none, and every worker spends its time
-/// on the whole folder, so ffmpeg is held to the cheap path: it probes only the start of the file
-/// (tags sit there), never seeks or decodes audio, maps just the first video stream (the attached
-/// picture), and scales it down itself so a multi-megapixel cover never travels through the pipe.
-fn audio_cover(path: &Path) -> Option<image::DynamicImage> {
-    ffmpeg_picture(path, THUMB_SIZE)
-}
+// An audio file's attached cover is read with `ffmpeg_picture`. Most tracks have none, and every
+// worker spends its time on the whole folder, so ffmpeg is held to the cheap path: it probes only
+// the start of the file (tags sit there), never seeks or decodes audio, maps just the first video
+// stream, and scales it down itself so a multi-megapixel cover never travels through the pipe.
 
 /// The first picture stream of a file, scaled to fit `size`: an audio file's attached cover or a
 /// still image in a format only ffmpeg reads.
@@ -357,7 +449,7 @@ fn film_strip(frame: image::DynamicImage) -> image::DynamicImage {
 }
 
 /// First page of a PDF, rendered on the CPU.
-fn render_pdf(path: &Path) -> Option<image::DynamicImage> {
+fn render_pdf(path: &Path, size: u32) -> Option<image::DynamicImage> {
     use hayro::hayro_interpret::InterpreterSettings;
     use hayro::hayro_syntax::Pdf;
     use hayro::vello_cpu::color::palette::css::WHITE;
@@ -366,7 +458,7 @@ fn render_pdf(path: &Path) -> Option<image::DynamicImage> {
     let pdf = Pdf::new(std::fs::read(path).ok()?).ok()?;
     let page = pdf.pages().first()?;
     let (width, height) = page.render_dimensions();
-    let scale = PAGE_SIZE as f32 / width.max(height).max(1.0);
+    let scale = size as f32 / width.max(height).max(1.0);
     let pixmap = hayro::render(
         page,
         &RenderCache::new(),
@@ -600,6 +692,137 @@ fn mobi_cover(path: &Path) -> Option<image::DynamicImage> {
     image::load_from_memory(&record(&mut file, index, 16 * 1024 * 1024)?).ok()
 }
 
+/// On-disk preview cache under `$XDG_CACHE_HOME/ski/thumbs`. An entry is named by a hash of the
+/// file's path, size and modification time, so editing a file makes its old entry unreachable
+/// instead of stale. Everything is best effort: any I/O error just means a cache miss.
+mod cache {
+    use std::io::Read;
+    use std::os::unix::ffi::OsStrExt;
+    use std::path::{Path, PathBuf};
+    use std::sync::OnceLock;
+    use std::time::{Duration, SystemTime};
+
+    /// Bump when the way previews are drawn changes, which orphans every older entry.
+    const VERSION: u8 = 1;
+    /// The least recently used entries go once the cache passes this size.
+    const MAX_BYTES: u64 = 768 * 1024 * 1024;
+    /// A file with no preview is tried again after this long, in case ffmpeg was installed meanwhile.
+    const MISSING_TTL: Duration = Duration::from_secs(24 * 60 * 60);
+
+    pub struct Key(u64);
+
+    fn root() -> Option<&'static Path> {
+        static ROOT: OnceLock<Option<PathBuf>> = OnceLock::new();
+        ROOT.get_or_init(|| dirs::cache_dir().map(|d| d.join("ski").join("thumbs").join(format!("v{VERSION}")))).as_deref()
+    }
+
+    pub fn key(path: &Path) -> Option<Key> {
+        let meta = std::fs::metadata(path).ok()?;
+        let modified = meta.modified().ok()?.duration_since(SystemTime::UNIX_EPOCH).ok()?;
+        // FNV-1a: unlike `DefaultHasher`, the value is the same in every build and process
+        let mut hash = 0xcbf29ce484222325u64;
+        let mut feed = |bytes: &[u8]| {
+            for b in bytes {
+                hash = (hash ^ *b as u64).wrapping_mul(0x100000001b3);
+            }
+        };
+        feed(path.as_os_str().as_bytes());
+        feed(&meta.len().to_le_bytes());
+        feed(&modified.as_nanos().to_le_bytes());
+        Some(Key(hash))
+    }
+
+    fn entry(key: &Key, bucket: &str, ext: &str) -> Option<PathBuf> {
+        let name = format!("{:016x}", key.0);
+        Some(root()?.join(bucket).join(&name[..2]).join(format!("{name}.{ext}")))
+    }
+
+    pub fn read(key: &Key, tier: u32) -> Option<image::DynamicImage> {
+        let file = entry(key, &tier.to_string(), "png")?;
+        let mut bytes = Vec::new();
+        std::fs::File::open(&file).ok()?.read_to_end(&mut bytes).ok()?;
+        let img = image::load_from_memory_with_format(&bytes, image::ImageFormat::Png).ok();
+        match img {
+            // Marks the entry as recently used for the trimmer
+            Some(_) => {
+                let _ = std::fs::File::options().write(true).open(&file).and_then(|f| f.set_modified(SystemTime::now()));
+            }
+            // A truncated write from a crash; let it be rendered again
+            None => {
+                let _ = std::fs::remove_file(&file);
+            }
+        }
+        img
+    }
+
+    pub fn write(key: &Key, tier: u32, img: &image::DynamicImage) {
+        let Some(file) = entry(key, &tier.to_string(), "png") else { return };
+        let mut png = std::io::Cursor::new(Vec::new());
+        let encoder = image::codecs::png::PngEncoder::new_with_quality(&mut png, image::codecs::png::CompressionType::Fast, image::codecs::png::FilterType::Adaptive);
+        if img.write_with_encoder(encoder).is_ok() {
+            store(&file, png.get_ref());
+        }
+    }
+
+    pub fn known_missing(key: &Key) -> bool {
+        let Some(marker) = entry(key, "none", "none") else { return false };
+        std::fs::metadata(marker).and_then(|m| m.modified()).is_ok_and(|t| t.elapsed().is_ok_and(|age| age < MISSING_TTL))
+    }
+
+    pub fn mark_missing(key: &Key) {
+        if let Some(marker) = entry(key, "none", "none") {
+            store(&marker, &[]);
+        }
+    }
+
+    /// Written under a temporary name first, so a reader never sees half a file.
+    fn store(file: &Path, bytes: &[u8]) {
+        let Some(dir) = file.parent() else { return };
+        if std::fs::create_dir_all(dir).is_err() {
+            return;
+        }
+        let tmp = file.with_extension(format!("tmp{}", std::process::id()));
+        if std::fs::write(&tmp, bytes).is_err() || std::fs::rename(&tmp, file).is_err() {
+            let _ = std::fs::remove_file(&tmp);
+        }
+    }
+
+    /// Deletes the least recently used entries when the cache is over its limit.
+    pub fn trim_in_background() {
+        std::thread::spawn(|| {
+            let Some(root) = root() else { return };
+            let mut entries = Vec::new();
+            let mut total = 0u64;
+            let mut stack = vec![root.to_path_buf()];
+            while let Some(dir) = stack.pop() {
+                let Ok(read) = std::fs::read_dir(&dir) else { continue };
+                for item in read.flatten() {
+                    let Ok(meta) = item.metadata() else { continue };
+                    if meta.is_dir() {
+                        stack.push(item.path());
+                    } else {
+                        total += meta.len();
+                        entries.push((meta.modified().unwrap_or(SystemTime::UNIX_EPOCH), meta.len(), item.path()));
+                    }
+                }
+            }
+            if total <= MAX_BYTES {
+                return;
+            }
+            entries.sort();
+            // Down to 80% so the next few writes do not trigger another sweep
+            for (_, len, path) in entries {
+                if total <= MAX_BYTES / 5 * 4 {
+                    break;
+                }
+                if std::fs::remove_file(path).is_ok() {
+                    total -= len;
+                }
+            }
+        });
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -613,7 +836,7 @@ mod tests {
         let file = dir.join("sample.pdf");
         std::fs::write(&file, PDF).unwrap();
         let img = decode_thumbnail(&file).expect("pdf preview");
-        assert_eq!(img.size[1], PAGE_SIZE as usize);
+        assert_eq!(img.size[1], PAGE_MIN as usize);
         assert!(img.size[0] < img.size[1]);
         assert!(img.pixels.iter().any(|p| p.b() > 200 && p.r() < 50), "blue rectangle missing");
     }
@@ -632,7 +855,7 @@ mod tests {
         }
         let img = decode_thumbnail(&file).expect("video preview");
         // Keeps the clip's 16:9 shape instead of a square crop, with sprocket bands on both sides
-        assert_eq!(img.size[0], PAGE_SIZE as usize);
+        assert_eq!(img.size[0], PAGE_MIN as usize);
         assert!(img.size[1] < img.size[0]);
         assert!(img.pixels.iter().any(|p| p.r() > 200 && p.g() < 60), "frame missing");
         assert!(img.pixels.iter().any(|p| p.r() > 220 && p.g() > 220 && p.b() > 220), "sprocket holes missing");
@@ -657,6 +880,37 @@ mod tests {
 
     fn is_red(img: &egui::ColorImage) -> bool {
         img.pixels.iter().any(|p| p.r() > 200 && p.g() < 50 && p.b() < 50)
+    }
+
+    #[test]
+    fn previews_are_cached_per_tier_and_follow_the_file() {
+        let dir = std::env::temp_dir().join("ski-thumb-cache-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join(format!("pic-{}.png", std::process::id()));
+        std::fs::write(&file, png([255, 0, 0])).unwrap();
+        let key = cache::key(&file).unwrap();
+        assert!(cache::read(&key, 128).is_none());
+        let first = cached_thumbnail(&file, 128).expect("preview");
+        let hit = cache::read(&key, 128).expect("written to the cache");
+        assert_eq!(first.to_rgba8().into_raw(), hit.to_rgba8().into_raw());
+        assert!(cache::read(&key, 256).is_none(), "tiers are cached separately");
+        // Changing the file changes its key, so the old entry is never served
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(&file, png([0, 0, 255])).unwrap();
+        assert!(cache::read(&cache::key(&file).unwrap(), 128).is_none());
+        let bare = dir.join(format!("bare-{}.mp3", std::process::id()));
+        std::fs::write(&bare, b"not audio").unwrap();
+        assert!(cached_thumbnail(&bare, 128).is_none());
+        assert!(cache::known_missing(&cache::key(&bare).unwrap()));
+    }
+
+    #[test]
+    fn tier_follows_the_drawn_size() {
+        assert_eq!(tier_for(32.0), 128);
+        assert_eq!(tier_for(129.0), 256);
+        assert_eq!(tier_for(256.0), 256);
+        assert_eq!(tier_for(300.0), 512);
+        assert_eq!(tier_for(5000.0), 512);
     }
 
     #[test]
