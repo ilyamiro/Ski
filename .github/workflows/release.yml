@@ -1,0 +1,45 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    # The oldest runner image, so the binary runs on any distribution with a glibc at least as old
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Check the tag matches Cargo.toml
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          version=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')
+          test "v$version" = "${GITHUB_REF_NAME}" || { echo "tag ${GITHUB_REF_NAME} but Cargo.toml says $version"; exit 1; }
+
+      - run: cargo build --release --locked
+
+      - run: cargo install --locked cargo-deb cargo-generate-rpm
+
+      - name: Package
+        run: |
+          version=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')
+          strip target/release/ski
+          packaging/stage.sh target/stage
+          mkdir -p dist
+          tar -C target/stage -czf "dist/ski-${version}-x86_64-linux.tar.gz" usr
+          cargo deb --no-build --no-strip -o "dist/ski_${version}_amd64.deb"
+          cargo generate-rpm -o "dist/ski-${version}-1.x86_64.rpm"
+          (cd dist && sha256sum * > SHA256SUMS)
+
+      - uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/v')
+        with:
+          files: dist/*
+          generate_release_notes: true

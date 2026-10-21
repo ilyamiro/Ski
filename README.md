@@ -10,6 +10,21 @@ A small, fast, keyboard-friendly file manager for Linux, written in Rust. Flat M
 
 ## Install
 
+### Prebuilt packages
+
+Every [release](https://github.com/ilyamiro/Ski/releases/latest) has x86_64 Linux builds. They need no Rust or Nix, only the graphics libraries listed under Cargo below (the `.deb` and `.rpm` pull them in for you).
+
+```sh
+# Debian, Ubuntu
+sudo apt install ./ski_*_amd64.deb
+# Fedora, openSUSE
+sudo dnf install ./ski-*.x86_64.rpm
+# Any other distribution (Arch included): unpack into /usr
+sudo tar -xzf ski-*-x86_64-linux.tar.gz -C /
+```
+
+Each package installs the desktop entry, the icon, and the portal and D-Bus files, so Ski shows up in your launcher and can be made the system file dialog. `SHA256SUMS` lists the checksums.
+
 ### Docker or Podman
 
 ```sh
