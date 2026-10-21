@@ -206,7 +206,9 @@ Settings, the context menu, the operations list and every dialog work without a 
 
 ![Appearance settings](docs/screenshots/settings-appearance.png)
 
-The default theme follows your [Serpantinum](https://github.com/ilyamiro) colors if you use them. Midnight, Nord, Gruvbox and Light are built in.
+The default theme follows your [Serpantinum](https://github.com/ilyamiro) colors if you use them. Midnight, Nord, Gruvbox, Light, Catppuccin (Mocha and Latte), Dracula, Tokyo Night, Rosé Pine, One Dark, Everforest and Solarized (dark and light) are built in.
+
+**Open as administrator** is in the main menu and in the folder context menus. It asks for your password through polkit (`pkexec`) and opens a second Ski, running as root, on that folder, so you can browse and edit system files. It reads your settings but never writes them. You can give it a shortcut under Settings → Keybindings.
 
 ![Themes](docs/screenshots/themes.png)
 

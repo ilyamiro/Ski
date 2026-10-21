@@ -63,9 +63,13 @@ impl SkiApp {
         let ctx = ui.ctx().clone();
         let theme = self.theme;
         let close = material::dialog_header(ui, tr("Settings"), None, &theme, "set_close");
-        ui.add_space(4.0);
+        // A rule under the header, so the title stays apart from what it heads
+        ui.add_space(6.0);
+        let (rule, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 1.0), egui::Sense::hover());
+        ui.painter().rect_filled(rule, 0, theme.surface1);
+        ui.add_space(10.0);
 
-        let max_height = (ctx.content_rect().height() - 160.0).clamp(320.0, 540.0);
+        let max_height = (ctx.content_rect().height() - 140.0).clamp(340.0, 620.0);
 
         // Ctrl+PageUp / Ctrl+PageDown (or Ctrl+Tab) switch category from anywhere in the dialog
         if !self.capturing_key {
@@ -90,8 +94,14 @@ impl SkiApp {
             // The dialog keeps one height for every category
             ui.set_min_height(max_height);
             // Left pane: categories
-            ui.vertical(|ui| {
-                ui.set_width(168.0);
+            // The categories sit on a panel of their own, tinted like the cards on the right
+            egui::Frame::new()
+                .fill(theme.surface0)
+                .corner_radius(CornerRadius::same(material::radius_container()))
+                .inner_margin(egui::Margin::same(6))
+                .show(ui, |ui| ui.vertical(|ui| {
+                ui.set_width(156.0);
+                ui.set_min_height(max_height - 12.0);
                 ui.spacing_mut().item_spacing = egui::vec2(0.0, 2.0);
 
                 let categories: [(usize, &str, &str); CATEGORY_COUNT as usize] = [
@@ -146,13 +156,13 @@ impl SkiApp {
                     *tab = next;
                     ctx.data_mut(|d| d.insert_temp(focus_id, next));
                 }
-            });
+            }));
 
             // Right pane: the settings of the chosen category
             ui.vertical(|ui| {
                 ui.set_width(ui.available_width());
                 let enter_t = material::animate_enter(ui.ctx(), ui.make_persistent_id(("set_tab_enter", *tab)), material::ANIM_FAST);
-                ui.set_opacity(enter_t);
+                ui.set_opacity(ui.opacity() * enter_t);
                 egui::ScrollArea::vertical()
                     .max_height(max_height)
                     .auto_shrink([false, false])
@@ -285,8 +295,9 @@ impl SkiApp {
         material::section_label(ui, tr("Theme"), &theme);
         // The cards share the row evenly, so the last one never wraps onto a line of its own
         let gap = 8.0;
-        let count = PRESETS.len() + 1;
-        let card_w = ((ui.available_width() - gap * (count - 1) as f32) / count as f32).floor().clamp(80.0, 120.0);
+        // Five to a row keeps the rows balanced however many themes there are
+        let per_row = 5usize;
+        let card_w = ((ui.available_width() - gap * (per_row - 1) as f32) / per_row as f32).floor().clamp(80.0, 140.0);
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing = egui::vec2(gap, gap);
             let mut choices: Vec<(&str, &str, SerpantinumTheme)> = vec![("system", tr("System"), self.system_theme)];
@@ -545,16 +556,36 @@ impl SkiApp {
                 self.settings.density = densities[i];
                 self.persist_settings();
             }
-            // Title like the rows above, the chips under it start at the label edge
+            // Title like the rows above; the chips under it share the full width of the card
             let (head, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), material::ENTRY_HEIGHT), egui::Sense::hover());
             material::paint_icon(ui.painter(), head.left_center() + egui::vec2(material::INSET_ICON + 2.0, 0.0), icons::VIEW_COLUMN, material::ICON_MD, theme.subtext0);
             material::paint_label(ui, head.left() + material::INSET_LABEL + 2.0, head.center().y, tr("Columns"), material::FONT_BODY, theme.text, head.width() - material::INSET_LABEL - 12.0);
-            egui::Frame::new().inner_margin(egui::Margin { left: (material::INSET_LABEL + 2.0) as i8, right: 8, top: 0, bottom: 0 }).show(ui, |ui| {
-                ui.set_width(ui.available_width());
-                ui.horizontal_wrapped(|ui| {
-                    for col in Column::ALL {
+            let gap = 8.0;
+            let avail = ui.available_width() - 16.0;
+            let widths: Vec<f32> = Column::ALL.iter().map(|c| material::chip_natural_width(ui, None, c.label(), &theme)).collect();
+            // Greedy rows, then each row stretched to the same total width
+            let mut rows: Vec<Vec<usize>> = vec![Vec::new()];
+            let mut used = 0.0;
+            for (i, w) in widths.iter().enumerate() {
+                let need = if rows.last().is_some_and(|r| r.is_empty()) { *w } else { used + gap + w };
+                if need > avail && !rows.last().is_some_and(|r| r.is_empty()) {
+                    rows.push(Vec::new());
+                    used = *w;
+                } else {
+                    used = need;
+                }
+                rows.last_mut().unwrap().push(i);
+            }
+            for row in rows {
+                let natural: f32 = row.iter().map(|i| widths[*i]).sum();
+                let grow = ((avail - gap * (row.len() - 1) as f32) / natural).max(1.0);
+                ui.horizontal(|ui| {
+                    ui.add_space(8.0);
+                    ui.spacing_mut().item_spacing.x = gap;
+                    for i in row {
+                        let col = Column::ALL[i];
                         let on = self.columns.contains(&col);
-                        if chip(ui, ("fv_col", col.label()), None, col.label(), &theme, on).clicked() {
+                        if material::chip_width(ui, ("fv_col", col.label()), None, col.label(), &theme, on, Some(widths[i] * grow)).clicked() {
                             self.columns = Column::ALL
                                 .into_iter()
                                 .filter(|c| (*c == col) != self.columns.contains(c))
@@ -564,7 +595,7 @@ impl SkiApp {
                         }
                     }
                 });
-            });
+            }
             ui.add_space(4.0);
         });
 

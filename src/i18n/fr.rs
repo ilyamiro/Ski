@@ -502,4 +502,10 @@ pub const CATALOG: &[(&str, &str)] = &[
     ("Open in", "Ouvrir dans"),
     ("Customize", "Personnaliser"),
     ("More actions", "Plus d’actions"),
+    ("Open as administrator", "Ouvrir en tant qu’administrateur"),
+    ("Administrator", "Administrateur"),
+    ("Ski already runs as administrator", "Ski s’exécute déjà en tant qu’administrateur"),
+    ("Running as administrator. Changes to settings are not saved.", "Exécution en tant qu’administrateur. Les modifications des réglages ne sont pas enregistrées."),
+    ("pkexec was not found. Install polkit to use administrator mode", "pkexec est introuvable. Installez polkit pour utiliser le mode administrateur"),
+    ("Could not get administrator rights. Is a polkit agent running?", "Impossible d’obtenir les droits d’administrateur. Un agent polkit est-il en cours d’exécution ?"),
 ];

@@ -63,6 +63,12 @@ enum MenuTarget {
 
 type MenuEntry = (&'static str, &'static str, MenuAction);
 
+/// "Open as administrator" for a real folder, unless Ski already is one or cannot elevate.
+fn admin_entry(path: &Path) -> Option<MenuEntry> {
+    (path.is_dir() && !trash::is_trash_folder(path) && crate::fs::admin::available())
+        .then(|| (icons::SHIELD, tr("Open as administrator"), MenuAction::OpenAsAdmin(path.to_path_buf())))
+}
+
 struct ContextMenu {
     pos: egui::Pos2,
     target: MenuTarget,
@@ -115,6 +121,7 @@ enum MenuAction {
     Duplicate(Vec<PathBuf>),
     MakeLink(Vec<PathBuf>),
     OpenTerminal(PathBuf),
+    OpenAsAdmin(PathBuf),
     InvertSelection,
     SelectPattern,
     Mount(String, String),
@@ -329,6 +336,8 @@ pub struct SkiApp {
     folder_icons: HashMap<PathBuf, PathBuf>,
     open_overrides: HashMap<PathBuf, String>,
     pub(crate) app_icons: HashMap<String, Option<egui::TextureHandle>>,
+    /// Failure report of the administrator Ski being started, if it has one to give
+    admin_launch: Option<std::sync::mpsc::Receiver<std::io::Error>>,
 
     // Persisted preferences, and what the next frame has to re-apply to egui
     pub(crate) settings: Settings,
@@ -450,6 +459,7 @@ impl SkiApp {
             folder_icons: load_folder_icons(),
             open_overrides: apps::load_overrides(),
             app_icons: HashMap::new(),
+            admin_launch: None,
             saved_settings: settings.clone(),
             settings,
             system_theme: SerpantinumTheme::load(),
@@ -1397,6 +1407,11 @@ impl SkiApp {
             self.open_terminal(&here);
             handled = true;
         }
+        if !self.picking() && self.is_act_pressed(ctx, crate::keymap::Action::OpenAsAdmin) {
+            let here = self.current_path.clone();
+            self.open_as_admin(&here);
+            handled = true;
+        }
         if self.is_act_pressed(ctx, crate::keymap::Action::InvertSelection) {
             self.invert_selection();
             handled = true;
@@ -1562,6 +1577,16 @@ impl eframe::App for SkiApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         self.resume_search(&ctx);
+        if let Some(rx) = &self.admin_launch {
+            match rx.try_recv() {
+                Ok(err) => {
+                    self.admin_launch = None;
+                    self.set_toast(err.to_string());
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => self.admin_launch = None,
+                Err(std::sync::mpsc::TryRecvError::Empty) => ctx.request_repaint_after(std::time::Duration::from_millis(300)),
+            }
+        }
         if let Some(dir) = self.pending_open.take() {
             self.dialog = None;
             self.navigate_to(dir);
@@ -1812,7 +1837,7 @@ impl SkiApp {
                     ViewMode::List => icons::VIEW_LIST,
                     ViewMode::Grid => icons::GRID_VIEW,
                 };
-                let view = icon_button(ui, "btn_view_options", view_icon, &self.theme, true, tr("View options"));
+                let view = material::filled_icon_button(ui, "btn_view_options", view_icon, &self.theme, material::CONTROL_HEIGHT, tr("View options"), None);
                 self.settings_button_rect = view.rect;
                 let filter_dot_t = material::animate(ui.ctx(), egui::Id::unique("view_filter_dot"), self.type_filter != TypeFilter::All);
                 if filter_dot_t > 0.01 {
@@ -2665,7 +2690,7 @@ impl SkiApp {
                     ui.set_opacity(t);
                     egui::Frame::new()
                         .fill(theme.surface1)
-                        .corner_radius(egui::CornerRadius::same(255))
+                        .corner_radius(egui::CornerRadius::same(material::radius_md()))
                         .shadow(ctx.global_style().visuals.popup_shadow)
                         .inner_margin(egui::Margin::symmetric(14, 6))
                         .show(ui, |ui| {
@@ -3219,6 +3244,7 @@ impl SkiApp {
             MenuAction::Duplicate(paths) => self.duplicate(paths),
             MenuAction::MakeLink(paths) => self.make_links(paths),
             MenuAction::OpenTerminal(path) => self.open_terminal(&path),
+            MenuAction::OpenAsAdmin(path) => self.open_as_admin(&path),
             MenuAction::InvertSelection => self.invert_selection(),
             MenuAction::SelectPattern => self.open_select_pattern(),
             MenuAction::Mount(dev, name) => self.mount_drive(ctx, dev, name, true),
@@ -3367,7 +3393,7 @@ impl SkiApp {
                     (icons::NEW_TAB, tr("New tab"), MenuAction::OpenInNewTab(item.path.clone())),
                     (icons::NEW_WINDOW, tr("New window"), MenuAction::OpenInNewWindow(item.path.clone())),
                     (icons::TERMINAL, tr("Terminal"), MenuAction::OpenTerminal(item.path.clone())),
-                ]));
+                ].into_iter().chain(admin_entry(&item.path)).collect()));
             }
             if with {
                 group.push((icons::APPS, tr("Open with…"), MenuAction::OpenWith(item.path.clone())));
@@ -3447,6 +3473,7 @@ impl SkiApp {
                     let mut mark = vec![bookmark_entry(here)];
                     mark.extend(fold(icons::PIN, tr("Customize"), customize));
                     mark.push((icons::TERMINAL, tr("Open in terminal"), MenuAction::OpenTerminal(here.clone())));
+                    mark.extend(admin_entry(here));
                     mark
                 },
                 vec![(icons::REFRESH, tr("Refresh"), MenuAction::Refresh)],
@@ -3462,7 +3489,11 @@ impl SkiApp {
                     (icons::REFRESH, tr("Refresh"), MenuAction::Refresh),
                     (icons::SETTINGS, tr("Settings"), MenuAction::OpenSettings),
                 ],
-                vec![(icons::KEYBOARD, tr("Keyboard shortcuts"), MenuAction::Shortcuts)],
+                {
+                    let mut tools = vec![(icons::KEYBOARD, tr("Keyboard shortcuts"), MenuAction::Shortcuts)];
+                    tools.extend(admin_entry(&self.current_path));
+                    tools
+                },
             ],
             MenuTarget::TrashPlace(path) => vec![
                 vec![(icons::OPEN, tr("Open"), MenuAction::OpenPath(path.clone()))],
@@ -3529,6 +3560,7 @@ impl SkiApp {
             MenuAction::Duplicate(_) => A::Duplicate,
             MenuAction::MakeLink(_) => A::MakeLink,
             MenuAction::OpenTerminal(_) => A::OpenTerminal,
+            MenuAction::OpenAsAdmin(_) => A::OpenAsAdmin,
             MenuAction::InvertSelection => A::InvertSelection,
             MenuAction::SelectPattern => A::SelectPattern,
             MenuAction::Undo => A::Undo,
@@ -3785,7 +3817,7 @@ impl SkiApp {
             });
 
         let preferred = match &dialog {
-            Dialog::Settings { .. } => 720.0,
+            Dialog::Settings { .. } => 860.0,
             Dialog::OpenWith { .. } => 480.0,
             Dialog::BatchRename { .. } => 560.0,
             Dialog::Confirm { .. } | Dialog::Alert { .. } => 400.0,

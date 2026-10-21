@@ -11,6 +11,7 @@ pub mod batch_rename;
 pub mod engine;
 pub mod history;
 pub mod terminal;
+pub mod admin;
 pub mod glob;
 pub mod templates;
 pub mod drives;

@@ -64,7 +64,7 @@ fn main() -> eframe::Result {
     };
 
     let mut viewport = egui::ViewportBuilder::default()
-        .with_title(chooser.as_ref().and_then(|c| c.title.clone()).unwrap_or_else(|| "Ski".to_owned()))
+        .with_title(chooser.as_ref().and_then(|c| c.title.clone()).unwrap_or_else(|| if fs::admin::is_admin() { format!("Ski ({})", i18n::tr("Administrator")) } else { "Ski".to_owned() }))
         .with_inner_size([1080.0, 720.0])
         .with_min_inner_size([360.0, 420.0]);
     if let Some(spec) = &chooser {
@@ -91,6 +91,9 @@ fn main() -> eframe::Result {
             cc.egui_ctx.set_zoom_factor(settings.scale);
 
             let mut app = SkiApp::new(initial_path, theme, settings, &cc.egui_ctx);
+            if fs::admin::is_admin() {
+                app.set_toast(i18n::tr("Running as administrator. Changes to settings are not saved."));
+            }
             if let Some(path) = select {
                 app.select_path(&path);
             }

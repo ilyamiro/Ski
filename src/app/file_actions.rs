@@ -65,6 +65,22 @@ impl SkiApp {
         }
     }
 
+    /// Another Ski on `dir` that runs as root, after the password prompt of polkit.
+    pub(super) fn open_as_admin(&mut self, dir: &Path) {
+        if self.chooser.is_some() {
+            return;
+        }
+        if crate::fs::admin::is_admin() {
+            self.set_toast(tr("Ski already runs as administrator"));
+            return;
+        }
+        let dir = if dir.is_dir() { dir.to_path_buf() } else { dir.parent().map(Path::to_path_buf).unwrap_or_else(|| self.current_path.clone()) };
+        match crate::fs::admin::open_folder(&dir) {
+            Ok(rx) => self.admin_launch = Some(rx),
+            Err(err) => self.set_toast(err.to_string()),
+        }
+    }
+
     pub(super) fn invert_selection(&mut self) {
         let all: BTreeSet<usize> = (0..self.items.len()).collect();
         self.selection = all.difference(&self.selection).copied().collect();

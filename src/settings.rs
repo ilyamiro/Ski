@@ -228,7 +228,7 @@ impl Default for Settings {
 }
 
 fn file() -> Option<PathBuf> {
-    dirs::config_dir().map(|d| d.join("ski").join("settings.json"))
+    crate::fs::admin::config_override().or_else(dirs::config_dir).map(|d| d.join("ski").join("settings.json"))
 }
 
 impl Settings {
@@ -240,6 +240,10 @@ impl Settings {
     }
 
     pub fn save(&self) {
+        // As administrator the settings belong to someone else's home
+        if crate::fs::admin::is_admin() {
+            return;
+        }
         let Some(file) = file() else { return };
         if let Some(dir) = file.parent() {
             let _ = std::fs::create_dir_all(dir);

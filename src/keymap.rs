@@ -49,6 +49,7 @@ pub enum Action {
     Duplicate,
     MakeLink,
     OpenTerminal,
+    OpenAsAdmin,
     InvertSelection,
     SelectPattern,
     SelectNone,
@@ -57,7 +58,7 @@ pub enum Action {
 }
 
 impl Action {
-    pub const ALL: [Action; 47] = [
+    pub const ALL: [Action; 48] = [
         Action::MoveDown, Action::MoveUp, Action::Open, Action::ParentFolder, Action::Back, Action::Forward,
         Action::First, Action::Last, Action::Filter, Action::EditPath, Action::ToggleHidden, Action::ZoomIn, Action::ZoomOut, Action::ListView,
         Action::GridView, Action::PinFolder, Action::Properties, Action::Copy, Action::Cut, Action::Paste,
@@ -65,7 +66,7 @@ impl Action {
         Action::Settings, Action::ShowShortcuts, Action::Rename, Action::Trash, Action::DeleteForever,
         Action::NewFile, Action::GoHome, Action::Quit,
         Action::NewTab, Action::CloseTab, Action::NextTab, Action::PrevTab,
-        Action::Undo, Action::Redo, Action::Duplicate, Action::MakeLink, Action::OpenTerminal,
+        Action::Undo, Action::Redo, Action::Duplicate, Action::MakeLink, Action::OpenTerminal, Action::OpenAsAdmin,
         Action::InvertSelection, Action::SelectPattern, Action::SelectNone, Action::ContextMenu,
         Action::ShowJobs,
     ];
@@ -86,7 +87,7 @@ impl Action {
             Action::NewFile => "new_file", Action::GoHome => "go_home", Action::Quit => "quit",
             Action::NewTab => "new_tab", Action::CloseTab => "close_tab", Action::NextTab => "next_tab", Action::PrevTab => "prev_tab",
             Action::Undo => "undo", Action::Redo => "redo",
-            Action::Duplicate => "duplicate", Action::MakeLink => "make_link", Action::OpenTerminal => "open_terminal",
+            Action::Duplicate => "duplicate", Action::MakeLink => "make_link", Action::OpenTerminal => "open_terminal", Action::OpenAsAdmin => "open_as_admin",
             Action::InvertSelection => "invert_selection", Action::SelectPattern => "select_pattern",
             Action::SelectNone => "select_none", Action::ContextMenu => "context_menu",
             Action::ShowJobs => "show_jobs",
@@ -109,7 +110,7 @@ impl Action {
             Action::NewFile => tr("New file"), Action::GoHome => tr("Home folder"), Action::Quit => tr("Close window"),
             Action::NewTab => tr("New tab"), Action::CloseTab => tr("Close tab"), Action::NextTab => tr("Next tab"), Action::PrevTab => tr("Previous tab"),
             Action::Undo => tr("Undo"), Action::Redo => tr("Redo"),
-            Action::Duplicate => tr("Duplicate"), Action::MakeLink => tr("Create link"), Action::OpenTerminal => tr("Open in terminal"),
+            Action::Duplicate => tr("Duplicate"), Action::MakeLink => tr("Create link"), Action::OpenTerminal => tr("Open in terminal"), Action::OpenAsAdmin => tr("Open as administrator"),
             Action::InvertSelection => tr("Invert selection"), Action::SelectPattern => tr("Select matching…"),
             Action::SelectNone => tr("Deselect all"), Action::ContextMenu => tr("Open context menu"),
             Action::ShowJobs => tr("Show file operations"),
@@ -146,7 +147,7 @@ impl Action {
             Action::NewTab => &["Ctrl+T"], Action::CloseTab => &["Ctrl+W"],
             Action::NextTab => &["Ctrl+Tab", "Ctrl+PageDown"], Action::PrevTab => &["Ctrl+Shift+Tab", "Ctrl+PageUp"],
             Action::Undo => &["Ctrl+Z"], Action::Redo => &["Ctrl+Shift+Z", "Ctrl+Y"],
-            Action::Duplicate => &["Ctrl+Shift+D"], Action::MakeLink => &["Ctrl+Shift+M"], Action::OpenTerminal => &["F4"],
+            Action::Duplicate => &["Ctrl+Shift+D"], Action::MakeLink => &["Ctrl+Shift+M"], Action::OpenTerminal => &["F4"], Action::OpenAsAdmin => &[],
             Action::InvertSelection => &["Ctrl+Shift+I"], Action::SelectPattern => &["Ctrl+S"],
             Action::SelectNone => &["Ctrl+Shift+A"], Action::ContextMenu => &["Menu", "Shift+F10"],
             Action::ShowJobs => &["Ctrl+J"],

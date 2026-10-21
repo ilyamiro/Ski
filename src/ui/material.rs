@@ -37,11 +37,13 @@ fn radius(base: u8) -> u8 {
     (base as f32 * f32::from_bits(RADIUS_SCALE.load(Ordering::Relaxed))).round() as u8
 }
 
-pub fn radius_sm() -> u8 { radius(8) }          // Small elements, previews, thumbnails
-pub fn radius_md() -> u8 { radius(12) }         // Rows, cards, list items
-pub fn radius_lg() -> u8 { radius(18) }         // Tiles, input fields, large controls
-pub fn radius_container() -> u8 { radius(22) } // Menus, popups, sub-panels, scroll boxes
-pub fn radius_window() -> u8 { radius(26) }     // Dialogs and modal frames
+// One radius for everything the eye reads as a surface or a control; only the tiniest parts
+// (keycaps, thumbnails) and the outermost frame differ, by a little
+pub fn radius_sm() -> u8 { radius(6) }          // Small elements, previews, thumbnails
+pub fn radius_md() -> u8 { radius(10) }         // Rows, cards, buttons, chips, input fields
+pub fn radius_lg() -> u8 { radius(10) }         // Tiles and large controls
+pub fn radius_container() -> u8 { radius(10) }  // Menus, popups, sub-panels, scroll boxes
+pub fn radius_window() -> u8 { radius(12) }     // Dialogs and modal frames
 
 /// Shared Font Sizes
 pub const FONT_SECTION: f32 = 12.0;
@@ -428,8 +430,13 @@ pub fn on_color(theme: &SerpantinumTheme, bg: Color32) -> Color32 {
     if luma > 150.0 { theme.crust.gamma_multiply(1.0) } else { Color32::WHITE }
 }
 
-/// Fully rounded corners for a control of this height.
+/// The corners of a control: the shared radius, or less when the control is too small for it.
 pub fn pill(rect: Rect) -> CornerRadius {
+    CornerRadius::same(radius_md().min((rect.height() / 2.0).round().min(255.0) as u8))
+}
+
+/// Fully rounded ends, for bars and tracks that are meant to look like capsules.
+pub fn full(rect: Rect) -> CornerRadius {
     CornerRadius::same((rect.height() / 2.0).round().min(255.0) as u8)
 }
 
@@ -572,9 +579,29 @@ pub fn chip(
     theme: &SerpantinumTheme,
     selected: bool,
 ) -> egui::Response {
+    chip_width(ui, id_source, icon, label, theme, selected, None)
+}
+
+/// Natural width of a `chip`.
+pub fn chip_natural_width(ui: &egui::Ui, icon: Option<&str>, label: &str, theme: &SerpantinumTheme) -> f32 {
+    let galley = ui.painter().layout_no_wrap(label.to_owned(), egui::FontId::proportional(FONT_CHIP), theme.text);
+    galley.size().x + 24.0 + if icon.is_some() { 22.0 } else { 0.0 }
+}
+
+/// `chip` with a chosen width; the label stays centered when it is wider than the label.
+pub fn chip_width(
+    ui: &mut egui::Ui,
+    id_source: impl std::hash::Hash + std::fmt::Debug,
+    icon: Option<&str>,
+    label: &str,
+    theme: &SerpantinumTheme,
+    selected: bool,
+    width: Option<f32>,
+) -> egui::Response {
     let galley = ui.painter().layout_no_wrap(label.to_owned(), egui::FontId::proportional(FONT_CHIP), theme.text);
     let icon_w = if icon.is_some() { 22.0 } else { 0.0 };
-    let width = galley.size().x + 24.0 + icon_w;
+    let content_w = galley.size().x + icon_w;
+    let width = width.unwrap_or(content_w + 24.0);
 
     let (rect, response) = ui.allocate_exact_size(Vec2::new(width, CHIP_HEIGHT), egui::Sense::click());
     let id = ui.make_persistent_id(id_source);
@@ -592,7 +619,7 @@ pub fn chip(
     paint_fill(ui.painter(), r, pill(r), lerp_color(idle, active, sel_t), &fx);
 
     let color = lerp_color(lerp_color(theme.subtext0, theme.text, fx.hover), theme.mauve, sel_t);
-    let mut x = rect.left() + 12.0;
+    let mut x = rect.center().x - content_w / 2.0;
     if let Some(ic) = icon {
         paint_icon(ui.painter(), Pos2::new(x + 7.0, rect.center().y), ic, ICON_SM, color);
         x += 22.0;
@@ -697,11 +724,32 @@ pub fn segmented_in(
     theme: &SerpantinumTheme,
     focus_rect: Option<Rect>,
 ) -> Option<usize> {
+    segmented_sized(ui, id_source, options, selected, theme, focus_rect, None)
+}
+
+/// `segmented_in` that stretches its cells to fill `fill` points of width, when they need less.
+pub fn segmented_sized(
+    ui: &mut egui::Ui,
+    id_source: impl std::hash::Hash + std::fmt::Debug,
+    options: &[&str],
+    selected: usize,
+    theme: &SerpantinumTheme,
+    focus_rect: Option<Rect>,
+    fill: Option<f32>,
+) -> Option<usize> {
     let font = egui::FontId::proportional(FONT_CHIP);
-    let widths: Vec<f32> = options
+    let mut widths: Vec<f32> = options
         .iter()
         .map(|o| (ui.painter().layout_no_wrap((*o).to_owned(), font.clone(), theme.text).size().x + 28.0).max(52.0))
         .collect();
+    if let Some(fill) = fill {
+        let natural: f32 = widths.iter().sum();
+        let room = fill - 8.0;
+        if natural < room {
+            let grow = room / natural;
+            widths.iter_mut().for_each(|w| *w *= grow);
+        }
+    }
     let total: f32 = widths.iter().sum();
     let (rect, _) = ui.allocate_exact_size(Vec2::new(total + 8.0, CHIP_HEIGHT + 8.0), egui::Sense::hover());
     let id = ui.make_persistent_id(id_source);
@@ -837,9 +885,12 @@ fn nav_item_sense(
     let sel_t = animate(ui.ctx(), id.with("sel"), selected);
     let r = scaled(rect, fx.scale);
 
-    paint_fill(ui.painter(), r, pill(r), selectable_bg(theme, &fx, sel_t), &fx);
+    // Calm states: a step up in surface on hover, another step when chosen; no accent color
+    let hover = theme.with_alpha(theme.surface1, (fx.hover * 255.0).round() as u8);
+    let chosen = lerp_color(theme.surface2, lerp_color(theme.surface2, theme.text, 0.06), fx.press);
+    paint_fill(ui.painter(), r, pill(r), lerp_color(lerp_color(hover, theme.surface2, fx.press), chosen, sel_t), &fx);
 
-    let color = lerp_color(lerp_color(theme.subtext0, theme.text, fx.hover), theme.mauve, sel_t);
+    let color = lerp_color(theme.subtext0, theme.text, fx.hover.max(sel_t));
     paint_icon(ui.painter(), Pos2::new(rect.left() + INSET_ICON, rect.center().y), icon, ICON_MD, color);
     paint_label(ui, rect.left() + INSET_LABEL, rect.center().y, label, FONT_BODY, color, rect.width() - INSET_LABEL - 14.0 - trailing);
     response
@@ -1640,9 +1691,11 @@ pub fn choice_row(
     let seg_rect = if inline {
         Rect::from_min_size(Pos2::new(rect.right() - seg_w - 8.0, rect.center().y - seg_h / 2.0), Vec2::new(seg_w, seg_h))
     } else {
-        Rect::from_min_size(Pos2::new(rect.left() + INSET_LABEL + 2.0, rect.top() + SETTING_HEIGHT - 4.0), Vec2::new(seg_w, seg_h))
+        // Too wide to share the row: take the whole width of the card under the label
+        Rect::from_min_size(Pos2::new(rect.left() + 8.0, rect.top() + SETTING_HEIGHT - 4.0), Vec2::new(width - 16.0, seg_h))
     };
-    ui.scope_builder(egui::UiBuilder::new().max_rect(seg_rect), |ui| segmented_in(ui, id, options, selected, theme, Some(rect))).inner
+    let fill = (!inline).then_some(seg_rect.width());
+    ui.scope_builder(egui::UiBuilder::new().max_rect(seg_rect), |ui| segmented_sized(ui, id, options, selected, theme, Some(rect), fill)).inner
 }
 
 /// Smoothly expands and collapses a vertical block of widgets when `open` toggles.
@@ -1683,7 +1736,7 @@ pub fn collapsible(
     }
     let mut child = ui.new_child(builder);
     child.set_clip_rect(clip_rect);
-    child.set_opacity(if prev_h.is_some() { t } else { t * t });
+    child.set_opacity(child.opacity() * if prev_h.is_some() { t } else { t * t });
     add_contents(&mut child);
 
     let natural_h = (child.min_rect().bottom() - child_max.top()).max(0.0);
@@ -1933,13 +1986,13 @@ pub fn progress_bar(ui: &mut egui::Ui, id_source: impl std::hash::Hash + std::fm
     let id = ui.make_persistent_id(id_source);
     let (rect, _) = ui.allocate_exact_size(Vec2::new(width, HEIGHT), egui::Sense::hover());
     let track = snap(ui.painter(), rect);
-    ui.painter().rect_filled(track, pill(track), theme.surface2);
+    ui.painter().rect_filled(track, full(track), theme.surface2);
     match fraction {
         Some(f) => {
             let f = animate_value(ui.ctx(), id, f.clamp(0.0, 1.0), ANIM);
             if f > 0.001 {
                 let fill = Rect::from_min_size(rect.min, Vec2::new((rect.width() * f).max(HEIGHT), HEIGHT));
-                ui.painter().rect_filled(fill, pill(fill), color);
+                ui.painter().rect_filled(fill, full(fill), color);
             }
         }
         None => {
@@ -1949,7 +2002,7 @@ pub fn progress_bar(ui: &mut egui::Ui, id_source: impl std::hash::Hash + std::fm
             let x = lerp(rect.left() - segment, rect.right(), phase);
             let fill = Rect::from_min_size(Pos2::new(x, rect.top()), Vec2::new(segment, HEIGHT));
             let clipped = ui.painter().with_clip_rect(rect);
-            clipped.rect_filled(fill, pill(fill), color);
+            clipped.rect_filled(fill, full(fill), color);
             ui.ctx().request_repaint();
         }
     }
