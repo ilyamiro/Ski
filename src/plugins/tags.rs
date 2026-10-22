@@ -106,6 +106,10 @@ impl Registry {
     }
 
     fn save(&self) {
+        // As administrator the data folder belongs to someone else's home, as for the settings
+        if crate::fs::admin::is_admin() {
+            return;
+        }
         let Some(file) = Self::file() else { return };
         if let Some(dir) = file.parent() {
             let _ = std::fs::create_dir_all(dir);
