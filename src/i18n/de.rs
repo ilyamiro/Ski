@@ -598,4 +598,5 @@ pub const CATALOG: &[(&str, &str)] = &[
     ("Couldn't create the action: {}", "Aktion konnte nicht erstellt werden: {}"),
     ("Restore last tabs", "Letzte Tabs wiederherstellen"),
     ("Reopen closed tab", "Geschlossenen Tab wieder öffnen"),
+    ("Only items deleted directly can be restored. Restore the folder this is in instead.", "Nur direkt gelöschte Elemente lassen sich wiederherstellen. Stelle stattdessen den Ordner wieder her, in dem es liegt."),
 ];

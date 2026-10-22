@@ -29,6 +29,11 @@ pub fn is_trash_folder(path: &Path) -> bool {
     files_dir().is_some_and(|files| files.canonicalize().unwrap_or(files) == path)
 }
 
+/// Whether `path` sits directly in the trash folder, where its record is.
+pub fn is_top_level(path: &Path) -> bool {
+    files_dir().is_some_and(|files| path.parent().is_some_and(|parent| parent == files || files.canonicalize().is_ok_and(|f| f == parent)))
+}
+
 pub fn is_empty() -> bool {
     files_dir().and_then(|f| std::fs::read_dir(f).ok()).is_none_or(|mut rd| rd.next().is_none())
 }
@@ -63,6 +68,9 @@ fn trash_in(root: &Path, path: &Path) -> io::Result<PathBuf> {
 
 /// Put a trashed item back where it came from (next to it under a new name if that is taken).
 pub fn restore(trashed: &Path) -> io::Result<PathBuf> {
+    if trashed.parent().and_then(Path::file_name).is_none_or(|n| n != "files") {
+        return Err(io::Error::other(tr("The trash has no record of where this came from")));
+    }
     let root = trashed.parent().and_then(Path::parent).ok_or_else(|| io::Error::other("not in the trash"))?;
     let record = record_of(root, trashed);
     let text = std::fs::read_to_string(&record).map_err(|_| io::Error::other(tr("The trash has no record of where this came from")))?;
@@ -189,6 +197,11 @@ mod tests {
         assert_eq!(back, work.join("sub"));
         assert!(work.join("sub/in.txt").exists());
         assert!(!root.join("info").join(format!("{}.trashinfo", t1.file_name().unwrap().to_string_lossy())).exists());
+
+        // Something inside a trashed folder has no record of its own and can't be restored alone
+        let again = trash_in(&root, &work.join("sub")).unwrap();
+        assert!(restore(&again.join("in.txt")).is_err());
+        assert!(again.join("in.txt").exists());
 
         assert_eq!(decode(&encode(Path::new("/a b/ü%x"))), std::ffi::OsString::from("/a b/ü%x"));
         std::fs::remove_dir_all(&base).unwrap();

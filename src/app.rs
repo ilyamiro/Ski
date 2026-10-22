@@ -83,6 +83,8 @@ struct ContextMenu {
 
 #[derive(Clone)]
 enum MenuAction {
+    /// A greyed-out entry; the text says why it can't be used.
+    Unavailable(&'static str),
     Open(FileItem),
     OpenPath(PathBuf),
     OpenInNewTab(PathBuf),
@@ -3412,6 +3414,7 @@ impl SkiApp {
             return;
         }
         match action {
+            MenuAction::Unavailable(_) => {}
             MenuAction::Open(item) => self.open_item(item),
             MenuAction::OpenPath(path) => self.navigate_to(path),
             MenuAction::OpenInNewTab(path) => self.new_tab(path),
@@ -3671,9 +3674,15 @@ impl SkiApp {
         match target {
             MenuTarget::Item(item) if in_trash => {
                 let paths: Vec<PathBuf> = self.menu_group(item).into_iter().map(|i| i.path).collect();
+                // The trash keeps a record only for what was deleted directly; search results can be inside those
+                let restore = if paths.iter().all(|p| trash::is_top_level(p)) {
+                    MenuAction::Restore(paths.clone())
+                } else {
+                    MenuAction::Unavailable(tr("Only items deleted directly can be restored. Restore the folder this is in instead."))
+                };
                 vec![
                     vec![
-                        (icons::RESTORE, tr("Restore"), MenuAction::Restore(paths.clone())),
+                        (icons::RESTORE, tr("Restore"), restore),
                         (icons::DELETE_FOREVER, tr("Delete permanently"), MenuAction::DeleteForever(paths)),
                     ],
                     vec![(icons::INFO, tr("Properties"), MenuAction::Properties(item.path.clone()))],
@@ -3897,6 +3906,11 @@ impl SkiApp {
                                     MenuAction::Open(item) if !item.is_dir => open_label.as_deref().unwrap_or(label),
                                     _ => label,
                                 };
+                                if let MenuAction::Unavailable(reason) = action {
+                                    let resp = ui.add_enabled_ui(false, |ui| menu_item(ui, ("menu", g, idx), icon, shown, None, &self.theme)).inner;
+                                    resp.on_disabled_hover_text(*reason);
+                                    continue;
+                                }
                                 let resp = menu_item(ui, ("menu", g, idx), icon, shown, hints[g][idx].as_deref(), &self.theme);
                                 item_ids.push(resp.id);
                                 if resp.hovered() && interactive && sub_hover.is_none() {
