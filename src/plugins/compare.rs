@@ -112,9 +112,11 @@ struct Node {
     link: Option<PathBuf>,
 }
 
-fn read_nodes(dir: &Path) -> BTreeMap<OsString, Node> {
+/// A folder that can't be read fails the comparison: treating it as empty would show everything on
+/// the other side as missing here, or two unreadable folders as identical.
+fn read_nodes(dir: &Path) -> io::Result<BTreeMap<OsString, Node>> {
     let mut nodes = BTreeMap::new();
-    let Ok(entries) = std::fs::read_dir(dir) else { return nodes };
+    let entries = std::fs::read_dir(dir).map_err(|e| io::Error::new(e.kind(), format!("{}: {e}", dir.display())))?;
     for entry in entries.flatten() {
         let (Ok(kind), Ok(meta)) = (entry.file_type(), entry.metadata()) else { continue };
         let node = if kind.is_symlink() {
@@ -129,7 +131,7 @@ fn read_nodes(dir: &Path) -> BTreeMap<OsString, Node> {
         };
         nodes.insert(entry.file_name(), node);
     }
-    nodes
+    Ok(nodes)
 }
 
 fn close(a: Option<SystemTime>, b: Option<SystemTime>) -> bool {
@@ -195,7 +197,7 @@ struct Walk<'a> {
 fn walk_pair(w: &mut Walk, left: &Path, right: &Path, rel: &Path) -> io::Result<()> {
     w.progress.checkpoint()?;
     w.progress.current(&rel.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| left.display().to_string()));
-    let (ln, rn) = (read_nodes(left), read_nodes(right));
+    let (ln, rn) = (read_nodes(left)?, read_nodes(right)?);
     let names: std::collections::BTreeSet<&OsString> = ln.keys().chain(rn.keys()).collect();
     for name in names {
         let path = rel.join(name);
