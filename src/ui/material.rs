@@ -8,7 +8,7 @@ use eframe::egui::{
 };
 use super::theme::SerpantinumTheme;
 use crate::i18n::tr;
-use crate::fs::file_item::{specific_icon, FileItem, FileType, Tint};
+use crate::fs::file_item::{office_kind, specific_icon, FileItem, FileType, Office, Tint};
 use crate::fs::scanner::{SortBy, SortOrder};
 use crate::ui::icons;
 
@@ -480,6 +480,68 @@ pub(crate) fn paint_fill(painter: &egui::Painter, rect: Rect, radius: CornerRadi
 
 pub fn paint_icon(painter: &egui::Painter, center: Pos2, icon: &str, size: f32, color: Color32) {
     painter.text(center, Align2::CENTER_CENTER, icon, icons::font(size), color);
+}
+
+/// The type icon of a file; office documents are drawn as a page, everything else is a glyph.
+fn paint_item_icon(painter: &egui::Painter, item: &FileItem, theme: &SerpantinumTheme, center: Pos2, size: f32, (glyph, color): (&str, Color32), fade: f32) {
+    let Some(kind) = office_kind(&item.name).filter(|_| !item.is_dir) else {
+        return paint_icon(painter, center, glyph, size, color.gamma_multiply(fade));
+    };
+    let (accent, letter) = match kind {
+        Office::Document => (theme.blue, "W"),
+        Office::Spreadsheet => (theme.green, "X"),
+        Office::Presentation => (theme.peach, "P"),
+    };
+    let h = size * 1.05;
+    let w = h * 0.76;
+    let page = Rect::from_center_size(center, Vec2::new(w, h));
+    let fold = w * 0.28;
+    let paper = Color32::from_rgb(244, 245, 247).gamma_multiply(fade);
+    let edge = egui::Stroke::new(1.0, Color32::from_rgb(190, 194, 202).gamma_multiply(fade));
+    let outline = vec![
+        page.left_top(),
+        Pos2::new(page.right() - fold, page.top()),
+        Pos2::new(page.right(), page.top() + fold),
+        page.right_bottom(),
+        page.left_bottom(),
+    ];
+    painter.add(egui::Shape::convex_polygon(outline, paper, edge));
+    let dog_ear = vec![Pos2::new(page.right() - fold, page.top()), Pos2::new(page.right() - fold, page.top() + fold), Pos2::new(page.right(), page.top() + fold)];
+    painter.add(egui::Shape::convex_polygon(dog_ear, Color32::from_rgb(214, 217, 224).gamma_multiply(fade), edge));
+
+    let ink = accent.gamma_multiply(0.55 * fade);
+    let pad = w * 0.16;
+    let left = page.left() + pad;
+    let right = page.right() - pad;
+    let line = egui::Stroke::new((size * 0.045).max(1.0), ink);
+    match kind {
+        Office::Document => {
+            for i in 0..4 {
+                let y = page.top() + h * (0.42 + 0.11 * i as f32);
+                painter.line_segment([Pos2::new(left, y), Pos2::new(if i == 3 { left + (right - left) * 0.55 } else { right }, y)], line);
+            }
+        }
+        Office::Spreadsheet => {
+            let grid = Rect::from_min_max(Pos2::new(left, page.top() + h * 0.4), Pos2::new(right, page.top() + h * 0.84));
+            painter.rect_stroke(grid, 0.0, line, egui::StrokeKind::Inside);
+            for i in 1..3 {
+                let y = grid.top() + grid.height() * i as f32 / 3.0;
+                painter.line_segment([Pos2::new(grid.left(), y), Pos2::new(grid.right(), y)], line);
+            }
+            let x = grid.center().x;
+            painter.line_segment([Pos2::new(x, grid.top()), Pos2::new(x, grid.bottom())], line);
+        }
+        Office::Presentation => {
+            let slide = Rect::from_min_max(Pos2::new(left, page.top() + h * 0.4), Pos2::new(right, page.top() + h * 0.74));
+            painter.rect_filled(slide, 1.0, accent.gamma_multiply(0.3 * fade));
+            painter.rect_stroke(slide, 1.0, line, egui::StrokeKind::Inside);
+            painter.line_segment([Pos2::new(left, page.top() + h * 0.84), Pos2::new(left + (right - left) * 0.6, page.top() + h * 0.84)], line);
+        }
+    }
+
+    let badge = Rect::from_center_size(Pos2::new(page.left() + w * 0.34, page.top() + h * 0.2), Vec2::splat(h * 0.34));
+    painter.rect_filled(badge, CornerRadius::same((badge.width() * 0.22) as u8), accent.gamma_multiply(fade));
+    painter.text(badge.center(), Align2::CENTER_CENTER, letter, egui::FontId::proportional(badge.width() * 0.72), Color32::WHITE.gamma_multiply(fade));
 }
 
 /// Single-line text truncated with an ellipsis at `max_width`.
@@ -1210,7 +1272,7 @@ pub fn file_row(
     let icon_center = Pos2::new(r.left() + 28.0, r.center().y);
     if thumb_t < 0.99 {
         let (glyph, color) = item_icon_animated(item, theme, sel_t);
-        paint_icon(ui.painter(), icon_center, glyph, 24.0, color.gamma_multiply(fade * (1.0 - thumb_t)));
+        paint_item_icon(ui.painter(), item, theme, icon_center, 24.0, (glyph, color), fade * (1.0 - thumb_t));
     }
     if let Some(tex) = thumb {
         ui.scope(|ui| {
@@ -1419,13 +1481,7 @@ pub fn file_tile(
     let scaled_picture = scaled(picture, fx.scale);
     if thumb_t < 0.99 {
         let (glyph, color) = item_icon_animated(item, theme, sel_t);
-        paint_icon(
-            ui.painter(),
-            picture.center(),
-            glyph,
-            icon_sz * fx.scale,
-            color.gamma_multiply(fade * (1.0 - thumb_t)),
-        );
+        paint_item_icon(ui.painter(), item, theme, picture.center(), icon_sz * fx.scale, (glyph, color), fade * (1.0 - thumb_t));
     }
     if let Some(tex) = thumb {
         ui.scope(|ui| {

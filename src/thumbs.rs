@@ -1,6 +1,5 @@
 //! Background preview loader. Every previewable file in the current folder is queued as soon as
-//! the folder opens: images, videos, SVGs, the first page of PDFs and the embedded preview of office
-//! documents. Decoded pictures are uploaded as textures on the UI thread.
+//! the folder opens: images, videos, SVGs, the first page of PDFs and the covers of e-books and comics. Decoded pictures are uploaded as textures on the UI thread.
 //!
 //! Finished previews are also kept on disk (see `cache`), so reopening a folder, in this window or in
 //! the next file dialog, never runs ffmpeg or a decoder again. Previews come in a few resolutions
@@ -119,10 +118,7 @@ fn is_svg(path: &Path) -> bool {
 fn is_page(path: &Path) -> bool {
     matches!(
         extension(path).as_deref(),
-        Some(
-            "pdf" | "odt" | "ods" | "odp" | "odg" | "ott" | "ots" | "otp" | "docx" | "docm" | "dotx" | "xlsx" | "xlsm" | "pptx" | "pptm" | "ppsx"
-                | "potx" | "vsdx" | "epub" | "kra" | "ora" | "pages" | "numbers" | "key"
-        )
+        Some("pdf" | "epub" | "kra" | "ora")
     ) || is_comic(path)
         || is_fb2(path)
         || is_mobi(path)
@@ -473,7 +469,7 @@ fn render_pdf(path: &Path, size: u32) -> Option<image::DynamicImage> {
     Some(image::DynamicImage::ImageRgba8(buf))
 }
 
-/// The cover of an e-book, comic or office document, whichever way its format stores one.
+/// The cover of an e-book or comic, whichever way its format stores one.
 fn book_or_document_cover(path: &Path) -> Option<image::DynamicImage> {
     if is_fb2(path) {
         return fb2_cover(path);
@@ -493,16 +489,14 @@ fn is_page_picture(name: &str) -> bool {
     !name.contains("__macosx") && [".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"].iter().any(|e| name.ends_with(e))
 }
 
-/// Office documents, EPUBs and drawing programs carry a ready-made picture of their first page or cover.
+/// EPUBs and drawing programs carry a ready-made picture of their first page or cover.
 fn embedded_preview(path: &Path) -> Option<image::DynamicImage> {
     let mut archive = zip::ZipArchive::new(std::io::BufReader::new(std::fs::File::open(path).ok()?)).ok()?;
     let names: Vec<String> = archive.file_names().filter_map(Result::ok).map(|n| n.into_owned()).collect();
     let pick = |wanted: &dyn Fn(&str) -> bool| names.iter().find(|n| wanted(&n.to_ascii_lowercase())).cloned();
     let entry = match extension(path).as_deref() {
         Some("epub") => epub_cover_entry(&mut archive, &names)?,
-        Some("docx" | "docm" | "dotx" | "xlsx" | "xlsm" | "pptx" | "pptm" | "ppsx" | "potx" | "vsdx") => pick(&|n| n.starts_with("docprops/thumbnail."))?,
         Some("kra") => pick(&|n| n == "preview.png" || n == "mergedimage.png")?,
-        Some("pages" | "numbers" | "key") => pick(&|n| n.starts_with("quicklook/thumbnail."))?,
         _ => pick(&|n| n == "thumbnails/thumbnail.png")?,
     };
     read_zip_image(&mut archive, &entry)

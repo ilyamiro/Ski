@@ -54,6 +54,25 @@ pub enum Tint {
     Muted,
 }
 
+/// Word processor, spreadsheet and presentation files are drawn as a little document with the
+/// letter of the program that opens them.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Office {
+    Document,
+    Spreadsheet,
+    Presentation,
+}
+
+pub fn office_kind(name: &str) -> Option<Office> {
+    let lower = name.to_ascii_lowercase();
+    Some(match lower.rsplit_once('.')?.1 {
+        "doc" | "docx" | "docm" | "dot" | "dotx" | "odt" | "ott" | "rtf" => Office::Document,
+        "xls" | "xlsx" | "xlsm" | "xlsb" | "ods" | "ots" => Office::Spreadsheet,
+        "ppt" | "pptx" | "pptm" | "pps" | "ppsx" | "potx" | "odp" | "otp" => Office::Presentation,
+        _ => return None,
+    })
+}
+
 /// A glyph and tint of its own for the file kinds people recognise at a glance.
 /// Returns `None` for kinds that only have the generic per-category icon.
 pub fn specific_icon(name: &str) -> Option<(&'static str, Tint)> {
