@@ -115,7 +115,7 @@ fn list_zip(path: &Path, cap: usize) -> io::Result<Listing> {
             break;
         }
         let file = zip.by_index_raw(i).map_err(io::Error::other)?;
-        listing.entries.push(ArchiveEntry { path: sanitize(&file.name().map(|n| n.into_owned()).unwrap_or_default()), is_dir: file.is_dir(), size: file.size(), encrypted: file.encrypted() });
+        listing.entries.push(ArchiveEntry { path: sanitize(&file.name().map(|n| n.replace('\\', "/")).unwrap_or_default()), is_dir: file.is_dir(), size: file.size(), encrypted: file.encrypted() });
     }
     Ok(listing)
 }
