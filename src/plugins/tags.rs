@@ -546,15 +546,20 @@ impl Plugin for Tags {
             FileOpEvent::Moved(pairs) => {
                 for (from, to) in pairs {
                     dirty |= self.registry.rename(from, to);
-                    if let Some(entry) = self.cache.remove(from) {
-                        self.cache.insert(to.clone(), entry);
+                    // A moved folder takes everything cached below it along
+                    let moved: Vec<PathBuf> = self.cache.keys().filter(|p| p.starts_with(from)).cloned().collect();
+                    for old in moved {
+                        if let Some(entry) = self.cache.remove(&old) {
+                            let new = to.join(old.strip_prefix(from).unwrap_or(Path::new("")));
+                            self.cache.insert(new, entry);
+                        }
                     }
                 }
             }
             FileOpEvent::Removed(paths) => {
                 for path in paths {
                     dirty |= self.registry.remove_tree(path);
-                    self.cache.remove(path);
+                    self.cache.retain(|p, _| !p.starts_with(path));
                 }
             }
         }
