@@ -664,4 +664,11 @@ pub const CATALOG: &[(&str, &str)] = &[
     ("Move down", "Nach unten"),
     ("Copies and moves to the same disk wait for each other instead of slowing each other down", "Kopieren und Verschieben auf denselben Datenträger warten aufeinander, statt sich gegenseitig auszubremsen"),
     ("Run copies to the same disk one at a time", "Kopien auf denselben Datenträger nacheinander ausführen"),
+    ("Reading the archive…", "Archiv wird gelesen …"),
+    ("Install {} to preview this kind of archive", "{} installieren, um diese Art von Archiv anzuzeigen"),
+    ("This archive can't be read: {}", "Dieses Archiv lässt sich nicht lesen: {}"),
+    ("{} unpacked", "{} entpackt"),
+    ("{} packed ({}%)", "{} gepackt ({} %)"),
+    ("first {} entries", "die ersten {} Einträge"),
+    ("stopped after {} entries (time limit)", "nach {} Einträgen angehalten (Zeitlimit)"),
 ];

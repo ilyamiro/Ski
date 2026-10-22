@@ -17,3 +17,4 @@ pub mod templates;
 pub mod drives;
 pub mod xattr;
 pub mod dirsize;
+pub mod archive_list;

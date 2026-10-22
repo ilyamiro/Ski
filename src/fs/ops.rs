@@ -121,11 +121,11 @@ impl ArchiveFormat {
     }
 }
 
-fn have(program: &str) -> bool {
+pub fn have(program: &str) -> bool {
     std::env::var_os("PATH").is_some_and(|paths| std::env::split_paths(&paths).any(|dir| dir.join(program).is_file()))
 }
 
-fn seven_zip() -> &'static str {
+pub fn seven_zip() -> &'static str {
     if have("7z") { "7z" } else { "7za" }
 }
 

@@ -1,12 +1,16 @@
 //! Quick Look: Space opens a floating preview of the selected file. Text and code are read from
 //! disk, pictures and documents reuse the thumbnail, folders list their size. Up and Down (or
 //! `j` and `k`) move to the neighbouring file without closing it; Space or Escape closes.
+use std::collections::HashSet;
 use std::io::Read;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, mpsc};
 
 use eframe::egui;
 
 use super::{Dialog, SkiApp};
+use crate::fs::archive_list::{self, Cut, Failure, Listing, Node};
 use crate::fs::file_item::{FileItem, format_bytes};
 use crate::fs::props::format_datetime;
 use crate::i18n::{tr, trf, trn};
@@ -24,12 +28,61 @@ pub enum Body {
     Text { text: String, numbers: String, lines: usize, words: usize, cut: bool },
     /// A picture or a document page, drawn from the thumbnail; the size is the original's, if known.
     Picture { dimensions: Option<(u32, u32)> },
+    /// The contents of an archive, read on a worker.
+    Archive(Box<ArchiveView>),
     Nothing,
+}
+
+enum ArchiveState {
+    Loading,
+    Ready { listing: Listing, nodes: Vec<Node> },
+    Failed(Failure),
+}
+
+pub struct ArchiveView {
+    rx: mpsc::Receiver<Result<Listing, Failure>>,
+    cancel: Arc<AtomicBool>,
+    state: ArchiveState,
+    /// Folders (by node index) that are opened.
+    expanded: HashSet<usize>,
+}
+
+impl ArchiveView {
+    fn start(path: PathBuf) -> Self {
+        let (tx, rx) = mpsc::channel();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&cancel);
+        std::thread::spawn(move || {
+            let _ = tx.send(archive_list::list(&path, &flag));
+        });
+        Self { rx, cancel, state: ArchiveState::Loading, expanded: HashSet::new() }
+    }
+
+    fn poll(&mut self) {
+        if let (ArchiveState::Loading, Ok(result)) = (&self.state, self.rx.try_recv()) {
+            self.state = match result {
+                Ok(listing) => {
+                    let nodes = archive_list::tree(&listing.entries);
+                    ArchiveState::Ready { listing, nodes }
+                }
+                Err(e) => ArchiveState::Failed(e),
+            };
+        }
+    }
+}
+
+impl Drop for ArchiveView {
+    fn drop(&mut self) {
+        // Stepping to another file stops the listing of this one
+        self.cancel.store(true, Ordering::Relaxed);
+    }
 }
 
 impl Preview {
     pub fn load(item: &FileItem) -> Self {
-        let body = if crate::thumbs::is_image(&item.path) || crate::thumbs::has_preview(&item.path) {
+        let body = if !item.is_dir && crate::fs::ops::is_archive(&item.path) {
+            Body::Archive(Box::new(ArchiveView::start(item.path.clone())))
+        } else if crate::thumbs::is_image(&item.path) || crate::thumbs::has_preview(&item.path) {
             Body::Picture { dimensions: image::image_dimensions(&item.path).ok() }
         } else {
             read_text(&item.path).unwrap_or(Body::Nothing)
@@ -112,7 +165,7 @@ impl SkiApp {
 
         let height = (ctx.content_rect().height() - 220.0).clamp(160.0, 520.0);
         let mut copy = None;
-        match &preview.body {
+        match &mut preview.body {
             Body::Text { text, numbers, lines, words, cut } => {
                 egui::Frame::new().fill(theme.surface0).corner_radius(egui::CornerRadius::same(material::radius_container())).inner_margin(egui::Margin::same(10)).show(ui, |ui| {
                     ui.set_width(ui.available_width());
@@ -120,8 +173,8 @@ impl SkiApp {
                         ui.horizontal_top(|ui| {
                             ui.spacing_mut().item_spacing.x = 12.0;
                             let mono = egui::FontId::monospace(12.5);
-                            ui.add(egui::Label::new(egui::RichText::new(numbers).font(mono.clone()).color(theme.subtext0)).wrap_mode(egui::TextWrapMode::Extend));
-                            ui.add(egui::Label::new(egui::RichText::new(text).font(mono).color(theme.text)).wrap_mode(egui::TextWrapMode::Extend).selectable(true));
+                            ui.add(egui::Label::new(egui::RichText::new(&*numbers).font(mono.clone()).color(theme.subtext0)).wrap_mode(egui::TextWrapMode::Extend));
+                            ui.add(egui::Label::new(egui::RichText::new(&*text).font(mono).color(theme.text)).wrap_mode(egui::TextWrapMode::Extend).selectable(true));
                         });
                     });
                 });
@@ -154,6 +207,76 @@ impl SkiApp {
                         material::paint_icon(ui.painter(), rect.center(), item.file_type.icon(), 48.0, theme.subtext0);
                         ctx.request_repaint_after(std::time::Duration::from_millis(100));
                     }
+                }
+            }
+            Body::Archive(view) => {
+                view.poll();
+                let mut toggle = None;
+                match &view.state {
+                    ArchiveState::Loading => {
+                        ui.label(egui::RichText::new(tr("Reading the archive…")).size(material::FONT_BODY).color(theme.subtext1));
+                        ctx.request_repaint_after(std::time::Duration::from_millis(60));
+                    }
+                    ArchiveState::Failed(failure) => {
+                        let text = match failure {
+                            Failure::NoTool(tool) => trf("Install {} to preview this kind of archive", &[tool]),
+                            Failure::Other(e) => trf("This archive can't be read: {}", &[e]),
+                        };
+                        ui.label(egui::RichText::new(text).size(material::FONT_BODY).color(theme.subtext1));
+                    }
+                    ArchiveState::Ready { listing, nodes } => {
+                        let files = listing.entries.iter().filter(|e| !e.is_dir).count();
+                        let mut line = format!("{} · {}", trn(files, "{} file", "{} files"), trf("{} unpacked", &[&format_bytes(listing.unpacked)]));
+                        if listing.unpacked > 0 && listing.packed > 0 {
+                            line.push_str(&format!(" · {}", trf("{} packed ({}%)", &[&format_bytes(listing.packed), &(listing.packed * 100 / listing.unpacked)])));
+                        }
+                        match listing.cut {
+                            Some(Cut::Entries) => line.push_str(&format!(" · {}", trf("first {} entries", &[&listing.entries.len()]))),
+                            Some(Cut::Time) => line.push_str(&format!(" · {}", trf("stopped after {} entries (time limit)", &[&listing.entries.len()]))),
+                            None => {}
+                        }
+                        ui.label(egui::RichText::new(line).size(material::FONT_CAPTION).color(theme.subtext1));
+                        ui.add_space(4.0);
+                        // Rows of the tree that are in view: the children of closed folders are skipped
+                        let mut visible = Vec::new();
+                        let mut i = 0;
+                        while i < nodes.len() {
+                            visible.push(i);
+                            i = if nodes[i].is_dir && !view.expanded.contains(&i) { nodes[i].end } else { i + 1 };
+                        }
+                        egui::Frame::new().fill(theme.surface0).corner_radius(egui::CornerRadius::same(material::radius_container())).inner_margin(egui::Margin::same(6)).show(ui, |ui| {
+                            egui::ScrollArea::vertical().id_salt("ql_archive").max_height(height).auto_shrink([false, true]).show_rows(ui, 26.0, visible.len(), |ui, range| {
+                                ui.spacing_mut().item_spacing.y = 0.0;
+                                for &index in &visible[range] {
+                                    let node = &nodes[index];
+                                    let (rect, response) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 26.0), egui::Sense::click());
+                                    let x = rect.left() + 6.0 + node.depth as f32 * 16.0;
+                                    let y = rect.center().y;
+                                    let open = view.expanded.contains(&index);
+                                    if node.is_dir {
+                                        material::paint_icon(ui.painter(), egui::pos2(x + 7.0, y), if open { icons::CHEVRON_DOWN } else { icons::CHEVRON_RIGHT }, material::ICON_XS, theme.subtext1);
+                                        if response.clicked() {
+                                            toggle = Some(index);
+                                        }
+                                    }
+                                    material::paint_icon(ui.painter(), egui::pos2(x + 28.0, y), if node.is_dir { icons::FOLDER } else { icons::FILE }, material::ICON_SM, if node.is_dir { theme.blue } else { theme.subtext0 });
+                                    let size = if node.is_dir { format!("{} · {}", trn(node.files, "{} file", "{} files"), format_bytes(node.size)) } else { format_bytes(node.size) };
+                                    let size_w = 150.0;
+                                    let name_x = x + 44.0;
+                                    material::paint_label(ui, name_x, y, &node.name, material::FONT_BODY, theme.text, (rect.right() - size_w - name_x - 24.0).max(40.0));
+                                    material::paint_label(ui, rect.right() - size_w, y, &size, material::FONT_CAPTION, theme.subtext1, size_w - 8.0);
+                                    if node.encrypted {
+                                        material::paint_icon(ui.painter(), egui::pos2(rect.right() - size_w - 12.0, y), icons::LOCK, material::ICON_XS, theme.yellow);
+                                    }
+                                }
+                            });
+                        });
+                    }
+                }
+                if let Some(index) = toggle
+                    && !view.expanded.remove(&index)
+                {
+                    view.expanded.insert(index);
                 }
             }
             Body::Nothing => {
@@ -202,5 +325,29 @@ mod tests {
         assert!(cut);
         assert_eq!(numbers.lines().count(), MAX_LINES);
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn archives_are_listed_on_a_worker() {
+        let dir = std::env::temp_dir().join(format!("ski-ql-archive-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("src/inner")).unwrap();
+        std::fs::write(dir.join("src/inner/a.txt"), "hello").unwrap();
+        let zip = dir.join("pack.zip");
+        crate::fs::ops::compress(&[dir.join("src")], &zip, crate::fs::ops::ArchiveFormat::Zip).unwrap();
+        let item = FileItem::from_path(&zip).unwrap();
+        let Body::Archive(mut view) = Preview::load(&item).body else { panic!("not an archive preview") };
+        for _ in 0..200 {
+            view.poll();
+            if !matches!(view.state, ArchiveState::Loading) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let ArchiveState::Ready { listing, nodes } = &view.state else { panic!("not listed") };
+        assert_eq!(listing.unpacked, 5);
+        assert_eq!(nodes[0].name, "src");
+        assert_eq!(nodes[0].files, 1);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
