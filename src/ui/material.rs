@@ -570,6 +570,43 @@ pub fn filled_icon_button(
     if tooltip.is_empty() { response } else { response.on_hover_text(tooltip) }
 }
 
+/// Two joined round buttons: a main one that acts at once and a narrower arrow for a menu. Returns both responses.
+pub fn split_icon_button(
+    ui: &mut egui::Ui,
+    id_source: impl std::hash::Hash + std::fmt::Debug + Copy,
+    icon: &str,
+    arrow: &str,
+    theme: &SerpantinumTheme,
+    tooltip: &str,
+    arrow_tooltip: &str,
+) -> (egui::Response, egui::Response) {
+    let size = CONTROL_HEIGHT;
+    let arrow_w = 24.0;
+    let prev_gap = std::mem::replace(&mut ui.spacing_mut().item_spacing.x, 2.0);
+    let half = |ui: &mut egui::Ui, id: (_, u8), glyph: &str, w: f32, left: bool, tip: &str| {
+        let (rect, response) = ui.allocate_exact_size(Vec2::new(w, size), egui::Sense::click());
+        let id = ui.make_persistent_id(id);
+        let fx = fx(ui, id, &response, true, &FxSpec::CLICK);
+        let r = scaled(rect, fx.scale);
+        let round = (r.height() / 2.0) as u8;
+        let small = radius_sm();
+        let corners = if left {
+            CornerRadius { nw: round, sw: round, ne: small, se: small }
+        } else {
+            CornerRadius { nw: small, sw: small, ne: round, se: round }
+        };
+        let hovered = lerp_color(theme.surface2, theme.text, fx.press * 0.08);
+        paint_fill(ui.painter(), r, corners, lerp_color(theme.surface1, hovered, fx.hover.max(fx.press)), &fx);
+        let color = lerp_color(theme.subtext1, theme.text, fx.hover.max(fx.press));
+        paint_icon(ui.painter(), rect.center(), glyph, (size * 0.5).round(), color);
+        if tip.is_empty() { response } else { response.on_hover_text(tip) }
+    };
+    let main = half(ui, (id_source, 0), icon, size, true, tooltip);
+    let more = half(ui, (id_source, 1), arrow, arrow_w, false, arrow_tooltip);
+    ui.spacing_mut().item_spacing.x = prev_gap;
+    (main, more)
+}
+
 /// Pill shaped choice / toggle chip. Selected state is a tonal fill, never an outline.
 pub fn chip(
     ui: &mut egui::Ui,
@@ -1352,11 +1389,9 @@ pub fn file_tile(
     grid_size: crate::settings::GridSize,
     max_name_lines: usize,
 ) -> egui::Response {
-    let (target_w, target_h) = grid_size.cell_size();
-    let cell_w = animate_value(ui.ctx(), egui::Id::unique("grid_cell_w"), target_w, ANIM);
-    let cell_h = animate_value(ui.ctx(), egui::Id::unique("grid_cell_h"), target_h, ANIM);
-    let pic_sz = animate_value(ui.ctx(), egui::Id::unique("grid_pic_sz"), grid_size.picture_size(), ANIM);
-    let icon_sz = animate_value(ui.ctx(), egui::Id::unique("grid_icon_sz"), grid_size.icon_size(), ANIM);
+    let (cell_w, cell_h) = grid_size.cell_size();
+    let pic_sz = grid_size.picture_size();
+    let icon_sz = grid_size.icon_size();
 
     let (rect, response) = ui.allocate_exact_size(Vec2::new(cell_w, cell_h), egui::Sense::click());
     let id = ui.make_persistent_id(("tile", &item.path));

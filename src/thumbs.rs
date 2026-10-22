@@ -24,6 +24,8 @@ const WORKERS: usize = 4;
 /// ffmpeg gets this long on one frame before it is killed.
 const VIDEO_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 const MAX_DOC_BYTES: u64 = 64 * 1024 * 1024;
+/// A PDF is read whole to find its first page, so the limit is generous but not unbounded.
+const MAX_PDF_BYTES: u64 = 1024 * 1024 * 1024;
 
 struct Job {
     path: PathBuf,
@@ -288,7 +290,7 @@ fn render_thumbnail(path: &Path, tier: u32) -> Option<image::DynamicImage> {
     }
     if is_page(path) {
         let page = if extension(path).as_deref() == Some("pdf") {
-            if std::fs::metadata(path).ok()?.len() > MAX_DOC_BYTES {
+            if std::fs::metadata(path).ok()?.len() > MAX_PDF_BYTES {
                 return None;
             }
             render_pdf(path, page_size)?
@@ -703,7 +705,7 @@ mod cache {
     use std::time::{Duration, SystemTime};
 
     /// Bump when the way previews are drawn changes, which orphans every older entry.
-    const VERSION: u8 = 1;
+    const VERSION: u8 = 2;
     /// The least recently used entries go once the cache passes this size.
     const MAX_BYTES: u64 = 768 * 1024 * 1024;
     /// A file with no preview is tried again after this long, in case ffmpeg was installed meanwhile.

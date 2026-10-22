@@ -3346,6 +3346,7 @@ checksum = "33f4fe9184a62d842c9ef383018f3306d8ba224fd9d836f56d7288308847c256"
 name = "ski"
 version = "0.1.1"
 dependencies = [
+ "arboard",
  "base64",
  "blocking",
  "dirs",
@@ -3363,6 +3364,7 @@ dependencies = [
  "wayland-backend",
  "wayland-client",
  "wayland-protocols",
+ "wl-clipboard-rs",
  "x11-dl",
  "zbus",
  "zip",

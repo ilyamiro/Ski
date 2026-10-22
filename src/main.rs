@@ -1,5 +1,6 @@
 mod app;
 mod chooser;
+mod clipboard;
 mod fs;
 mod i18n;
 mod instance;

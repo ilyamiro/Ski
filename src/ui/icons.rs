@@ -39,6 +39,7 @@ pub const CLOSE: &str = "\u{f0156}";
 pub const CHECK: &str = "\u{f012c}";
 pub const CHEVRON_LEFT: &str = "\u{f0141}";
 pub const CHEVRON_RIGHT: &str = "\u{f0142}";
+pub const CHEVRON_DOWN: &str = "\u{f0140}";
 pub const ADD: &str = "\u{f0415}";
 pub const REMOVE: &str = "\u{f0374}";
 pub const MORE: &str = "\u{f01d8}";

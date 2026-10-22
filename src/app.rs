@@ -760,7 +760,10 @@ impl SkiApp {
             .map(|p| p.to_string_lossy().into_owned())
             .collect::<Vec<_>>()
             .join("\n");
-        ctx.copy_text(text);
+        // Other applications paste the files themselves; only where that is impossible, their paths
+        if !crate::clipboard::set_files(&paths, cut) {
+            ctx.copy_text(text);
+        }
         let what = Self::describe_count(&paths);
         let message = if cut { trf("Cut {}", &[&what]) } else { trf("Copied {}", &[&what]) };
         self.clipboard = Some((paths, cut));
@@ -768,7 +771,9 @@ impl SkiApp {
     }
 
     fn paste(&mut self) {
-        let Some((paths, cut)) = self.clipboard.clone() else {
+        // Files copied in another application count too, and win when they are newer than ours
+        let external = crate::clipboard::get_files().filter(|(paths, _)| paths.iter().all(|p| p.exists()));
+        let Some((paths, cut)) = external.or_else(|| self.clipboard.clone()) else {
             self.set_toast(tr("Nothing to paste"));
             return;
         };
@@ -1713,15 +1718,11 @@ impl eframe::App for SkiApp {
                     };
                     material::empty_state(ui, &self.theme, icon, title, hint);
                 } else {
-                    let enter_id = ui.make_persistent_id(("view_enter", &self.current_path, self.view_mode as u8));
-                    let enter_t = material::animate_enter(ui.ctx(), enter_id, material::ANIM_FAST);
-                    ui.scope(|ui| {
-                        ui.set_opacity(enter_t);
-                        match self.view_mode {
-                            ViewMode::List => self.render_list_view(ui),
-                            ViewMode::Grid => self.render_grid_view(ui),
-                        }
-                    });
+                    // No fade between the views: switching is instant
+                    match self.view_mode {
+                        ViewMode::List => self.render_list_view(ui),
+                        ViewMode::Grid => self.render_grid_view(ui),
+                    }
                 }
             });
         self.render_selection_pill(&ctx, central.response.rect);
@@ -1839,18 +1840,27 @@ impl SkiApp {
                 if !show_view {
                     return;
                 }
+                // Like Nautilus: the button switches the view at once and shows the one it switches to;
+                // the small arrow beside it opens the rest of the view options.
                 let view_icon = match self.view_mode {
-                    ViewMode::List => icons::VIEW_LIST,
-                    ViewMode::Grid => icons::GRID_VIEW,
+                    ViewMode::List => icons::GRID_VIEW,
+                    ViewMode::Grid => icons::VIEW_LIST,
                 };
-                let view = material::filled_icon_button(ui, "btn_view_options", view_icon, &self.theme, material::CONTROL_HEIGHT, tr("View options"), None);
-                self.settings_button_rect = view.rect;
+                let switch_tip = match self.view_mode {
+                    ViewMode::List => tr("Grid view"),
+                    ViewMode::Grid => tr("List view"),
+                };
+                let (switch, more) = material::split_icon_button(ui, "btn_view_switch", view_icon, icons::CHEVRON_DOWN, &self.theme, switch_tip, tr("View options"));
+                self.settings_button_rect = switch.rect.union(more.rect);
                 let filter_dot_t = material::animate(ui.ctx(), egui::Id::unique("view_filter_dot"), self.type_filter != TypeFilter::All);
                 if filter_dot_t > 0.01 {
-                    let dot = egui::pos2(view.rect.right() - 8.0, view.rect.top() + 8.0);
+                    let dot = egui::pos2(more.rect.right() - 6.0, more.rect.top() + 7.0);
                     ui.painter().circle_filled(dot, 4.0 * filter_dot_t, self.theme.mauve.gamma_multiply(filter_dot_t));
                 }
-                if view.clicked() {
+                if switch.clicked() {
+                    self.view_mode = if self.view_mode == ViewMode::List { ViewMode::Grid } else { ViewMode::List };
+                }
+                if more.clicked() {
                     self.show_settings = !self.show_settings;
                 }
             },
@@ -2411,9 +2421,8 @@ impl SkiApp {
     fn render_grid_view(&mut self, ui: &mut egui::Ui) {
         let mut opened: Option<FileItem> = None;
         let should_scroll = std::mem::take(&mut self.scroll_to_selected);
-        let (target_w, target_h) = self.settings.grid_size.cell_size();
-        let cell_w = material::animate_value(ui.ctx(), egui::Id::unique("grid_cell_w"), target_w, material::ANIM);
-        let cell_h = material::animate_value(ui.ctx(), egui::Id::unique("grid_cell_h"), target_h, material::ANIM);
+        // Cells follow the setting at once: animating them would reflow every tile on every frame
+        let (cell_w, cell_h) = self.settings.grid_size.cell_size();
         let cell = egui::vec2(cell_w, cell_h);
         let grid_size = self.settings.grid_size;
         let grid_lines = self.settings.grid_name_lines as usize;

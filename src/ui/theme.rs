@@ -109,7 +109,34 @@ impl SerpantinumTheme {
             theme.blue = accent;
         }
         theme.border_radius = BASE_RADIUS * settings.corner_scale;
+        theme.ensure_readable();
         theme
+    }
+
+    /// Nudges text and accent colors that are too faint on this palette's backgrounds toward the
+    /// strongest end (white on dark palettes, black on light ones). Colors that already read well
+    /// are left as the palette defines them.
+    fn ensure_readable(&mut self) {
+        let all = [self.base, self.mantle, self.crust, self.surface0, self.surface1, self.surface2];
+        // Secondary text and accents sit on the panels and rows, not on the lightest hover fill
+        let main = [self.base, self.mantle, self.surface0, self.surface1];
+        let toward = if self.light { Color32::BLACK } else { Color32::WHITE };
+        let fix = |color: Color32, min: f32, backgrounds: &[Color32]| {
+            let mut out = color;
+            for step in 1..=20 {
+                if backgrounds.iter().all(|bg| contrast(out, *bg) >= min) {
+                    break;
+                }
+                out = super::material::lerp_color(color, toward, step as f32 * 0.05);
+            }
+            out
+        };
+        self.text = fix(self.text, 5.5, &all);
+        self.subtext0 = fix(self.subtext0, 4.5, &main);
+        self.subtext1 = fix(self.subtext1, 3.5, &main);
+        for accent in [&mut self.mauve, &mut self.blue, &mut self.peach, &mut self.green, &mut self.red, &mut self.yellow] {
+            *accent = fix(*accent, 3.5, &main);
+        }
     }
 
     pub fn load() -> Self {
@@ -193,6 +220,20 @@ impl SerpantinumTheme {
     }
 }
 
+fn luminance(color: Color32) -> f32 {
+    let channel = |v: u8| {
+        let v = v as f32 / 255.0;
+        if v <= 0.03928 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) }
+    };
+    0.2126 * channel(color.r()) + 0.7152 * channel(color.g()) + 0.0722 * channel(color.b())
+}
+
+/// WCAG contrast ratio of two opaque colors, 1 (identical) to 21.
+fn contrast(a: Color32, b: Color32) -> f32 {
+    let (hi, lo) = (luminance(a).max(luminance(b)), luminance(a).min(luminance(b)));
+    (hi + 0.05) / (lo + 0.05)
+}
+
 pub fn parse_hex(hex: &str) -> Option<Color32> {
     let clean = hex.trim().trim_start_matches('#');
     if clean.len() == 6 {
@@ -259,4 +300,23 @@ pub fn apply(ctx: &egui::Context, theme: &SerpantinumTheme) {
             }
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_preset_is_readable() {
+        for (id, ..) in PRESETS {
+            let settings = crate::settings::Settings { theme: id.to_owned(), ..Default::default() };
+            let t = SerpantinumTheme::from_settings(&settings);
+            for bg in [t.base, t.mantle, t.surface0, t.surface1] {
+                assert!(contrast(t.text, bg) >= 5.5, "{id} text");
+                assert!(contrast(t.subtext1, bg) >= 3.5, "{id} subtext1");
+                assert!(contrast(t.mauve, bg) >= 3.5, "{id} accent");
+            }
+            assert!(contrast(t.text, t.surface2) >= 5.5, "{id} text on surface2");
+        }
+    }
 }
