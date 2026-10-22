@@ -537,7 +537,8 @@ pub fn candidates_for(path: &Path) -> Vec<PathBuf> {
         })
         .map(|e| e.path())
         .collect();
-    found.sort();
+    // The file's own checksum file comes before the shared lists, which may hold only a bare hash
+    found.sort_by_key(|p| (!p.file_name().is_some_and(|n| n.to_string_lossy().to_ascii_lowercase().starts_with(&own)), p.clone()));
     found
 }
 
