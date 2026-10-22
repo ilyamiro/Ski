@@ -599,4 +599,7 @@ pub const CATALOG: &[(&str, &str)] = &[
     ("Restore last tabs", "Restaurar las últimas pestañas"),
     ("Reopen closed tab", "Reabrir pestaña cerrada"),
     ("Only items deleted directly can be restored. Restore the folder this is in instead.", "Solo se pueden restaurar los elementos eliminados directamente. Restaura en su lugar la carpeta que lo contiene."),
+    ("Touchpad", "Panel táctil"),
+    ("Swipe sideways with two fingers over the files to go back or forward", "Desliza de lado con dos dedos sobre los archivos para ir atrás o adelante"),
+    ("Swipe to go back and forward", "Deslizar para ir atrás y adelante"),
 ];

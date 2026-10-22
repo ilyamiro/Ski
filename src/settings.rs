@@ -54,6 +54,8 @@ pub struct Settings {
     pub type_to_filter: bool,
     /// Typing a name selects the matching file of the folder (unless `type_to_filter` takes the keys).
     pub type_ahead: bool,
+    /// A sideways two-finger swipe over the listing goes back or forward.
+    pub swipe_navigation: bool,
     /// Switches of the bundled plugins by id; a plugin not listed keeps its default.
     pub plugins: std::collections::BTreeMap<String, bool>,
     /// Where searches look, and whether they match case or look inside files.
@@ -236,6 +238,7 @@ impl Default for Settings {
             confirm_delete: true,
             type_to_filter: false,
             type_ahead: true,
+            swipe_navigation: false,
             plugins: Default::default(),
             search_scope: Default::default(),
             search_case: false,

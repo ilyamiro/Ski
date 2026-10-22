@@ -709,6 +709,15 @@ impl SkiApp {
             }
         });
 
+        material::section_label(ui, tr("Touchpad"), &theme);
+        group_card(ui, &theme, |ui| {
+            let desc = Some(tr("Swipe sideways with two fingers over the files to go back or forward"));
+            if switch_row_with(ui, "beh_swipe_navigation", icons::ARROW_BACK, tr("Swipe to go back and forward"), desc, &theme, self.settings.swipe_navigation).clicked() {
+                self.settings.swipe_navigation = !self.settings.swipe_navigation;
+                self.persist_settings();
+            }
+        });
+
         material::section_label(ui, tr("Terminal"), &theme);
         group_card(ui, &theme, |ui| {
             let found = crate::fs::terminal::detect(&self.settings.terminal);

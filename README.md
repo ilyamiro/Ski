@@ -140,6 +140,7 @@ ski ~/Downloads  # open a specific folder
 | Open a folder in a tab | Middle-click it, or `Ctrl+T` for a new tab. Settings → General → Open Ski in → Restore last tabs brings back the tabs of the last session. |
 | Eject a drive | Hover it in the sidebar and click the eject button |
 | Switch list and grid | `Ctrl+1` and `Ctrl+2` |
+| Go back and forward on a touchpad | Swipe sideways with two fingers over the files (off by default: Settings → Behavior → Touchpad) |
 | Settings | `Ctrl+,` |
 | See all shortcuts | `?` |
 

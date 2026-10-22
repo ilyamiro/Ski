@@ -14,7 +14,9 @@ mod jobs_ui;
 mod perms;
 mod plugin_ui;
 mod quick_look;
+mod swipe;
 mod tabs;
+use swipe::{Swipe, SwipeDetector};
 use tabs::TabSlot;
 
 use crate::fs::{
@@ -396,6 +398,7 @@ pub struct SkiApp {
     scroll_to_selected: bool,
     // Accumulated Ctrl+scroll / pinch zoom, in log units
     zoom_accum: f32,
+    swipe: SwipeDetector,
 
     drag_select: Option<DragSelect>,
     last_rubberband: Option<egui::Rect>,
@@ -514,6 +517,7 @@ impl SkiApp {
             status_toast: None,
             scroll_to_selected: false,
             zoom_accum: 0.0,
+            swipe: SwipeDetector::default(),
             drag_select: None,
             last_rubberband: None,
             capturing_key: false,
@@ -1836,6 +1840,16 @@ impl eframe::App for SkiApp {
                         let delta = if self.zoom_accum > 0.0 { 1 } else { -1 };
                         self.zoom_accum = 0.0;
                         self.zoom_icons(delta);
+                    }
+                }
+
+                if self.settings.swipe_navigation && self.chooser.is_none() {
+                    let (scroll, now) = ui.input(|i| (i.smooth_scroll_delta, i.time));
+                    let over = ui.rect_contains_pointer(ui.max_rect());
+                    match self.swipe.feed(if over { scroll } else { egui::Vec2::ZERO }, now) {
+                        Some(Swipe::Back) => self.go_back(),
+                        Some(Swipe::Forward) => self.go_forward(),
+                        None => {}
                     }
                 }
 

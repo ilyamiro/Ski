@@ -599,4 +599,7 @@ pub const CATALOG: &[(&str, &str)] = &[
     ("Restore last tabs", "Восстановить прошлые вкладки"),
     ("Reopen closed tab", "Открыть закрытую вкладку"),
     ("Only items deleted directly can be restored. Restore the folder this is in instead.", "Восстановить можно только напрямую удалённые элементы. Восстановите вместо этого папку, в которой он лежит."),
+    ("Touchpad", "Тачпад"),
+    ("Swipe sideways with two fingers over the files to go back or forward", "Проведите двумя пальцами вбок по файлам, чтобы перейти назад или вперёд"),
+    ("Swipe to go back and forward", "Смахивание назад и вперёд"),
 ];
