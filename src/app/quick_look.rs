@@ -227,8 +227,9 @@ impl SkiApp {
                     ArchiveState::Ready { listing, nodes } => {
                         let files = listing.entries.iter().filter(|e| !e.is_dir).count();
                         let mut line = format!("{} · {}", trn(files, "{} file", "{} files"), trf("{} unpacked", &[&format_bytes(listing.unpacked)]));
-                        if listing.unpacked > 0 && listing.packed > 0 {
-                            line.push_str(&format!(" · {}", trf("{} packed ({}%)", &[&format_bytes(listing.packed), &(listing.packed * 100 / listing.unpacked)])));
+                        // With the list cut short, the sizes of the entries seen say nothing about the whole archive
+                        if listing.unpacked > 0 && listing.packed > 0 && listing.cut.is_none() {
+                            line.push_str(&format!(" · {}", trf("{} packed ({}%)", &[&format_bytes(listing.packed), &(listing.packed.saturating_mul(100) / listing.unpacked)])));
                         }
                         match listing.cut {
                             Some(Cut::Entries) => line.push_str(&format!(" · {}", trf("first {} entries", &[&listing.entries.len()]))),
