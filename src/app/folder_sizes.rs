@@ -89,7 +89,7 @@ impl SkiApp {
                 self.sizes.request(&path);
             }
         }
-        if self.sizes.tick() && self.search_query.trim().is_empty() && self.sort_by == SortBy::Size {
+        if self.sizes.tick() && self.sort_by == SortBy::Size {
             self.resort_items();
         }
         if self.sizes.busy() {
