@@ -387,7 +387,9 @@ fn git(dir: &Path, args: &[&str]) -> Option<Vec<u8>> {
 }
 
 fn read_repo(dir: &Path) -> Option<Repo> {
-    let root = PathBuf::from(String::from_utf8(git(dir, &["rev-parse", "--show-toplevel"])?).ok()?.trim());
+    let top = PathBuf::from(String::from_utf8(git(dir, &["rev-parse", "--show-toplevel"])?).ok()?.trim());
+    // Git names the real folder; items below a link keep the path they were reached by
+    let root = dir.ancestors().find(|a| a.canonicalize().is_ok_and(|c| c == top)).map_or(top, Path::to_path_buf);
     let status = git(dir, &["status", "--porcelain=v1", "-z", "-b", "--untracked-files=normal"])?;
     Some(parse_status(&root, &String::from_utf8_lossy(&status)))
 }
