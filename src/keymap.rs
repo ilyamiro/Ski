@@ -55,10 +55,11 @@ pub enum Action {
     SelectNone,
     ContextMenu,
     ShowJobs,
+    QuickLook,
 }
 
 impl Action {
-    pub const ALL: [Action; 48] = [
+    pub const ALL: [Action; 49] = [
         Action::MoveDown, Action::MoveUp, Action::Open, Action::ParentFolder, Action::Back, Action::Forward,
         Action::First, Action::Last, Action::Filter, Action::EditPath, Action::ToggleHidden, Action::ZoomIn, Action::ZoomOut, Action::ListView,
         Action::GridView, Action::PinFolder, Action::Properties, Action::Copy, Action::Cut, Action::Paste,
@@ -68,7 +69,7 @@ impl Action {
         Action::NewTab, Action::CloseTab, Action::NextTab, Action::PrevTab,
         Action::Undo, Action::Redo, Action::Duplicate, Action::MakeLink, Action::OpenTerminal, Action::OpenAsAdmin,
         Action::InvertSelection, Action::SelectPattern, Action::SelectNone, Action::ContextMenu,
-        Action::ShowJobs,
+        Action::ShowJobs, Action::QuickLook,
     ];
 
     /// Stable id used as the key in settings.json.
@@ -90,7 +91,7 @@ impl Action {
             Action::Duplicate => "duplicate", Action::MakeLink => "make_link", Action::OpenTerminal => "open_terminal", Action::OpenAsAdmin => "open_as_admin",
             Action::InvertSelection => "invert_selection", Action::SelectPattern => "select_pattern",
             Action::SelectNone => "select_none", Action::ContextMenu => "context_menu",
-            Action::ShowJobs => "show_jobs",
+            Action::ShowJobs => "show_jobs", Action::QuickLook => "quick_look",
         }
     }
 
@@ -113,7 +114,7 @@ impl Action {
             Action::Duplicate => tr("Duplicate"), Action::MakeLink => tr("Create link"), Action::OpenTerminal => tr("Open in terminal"), Action::OpenAsAdmin => tr("Open as administrator"),
             Action::InvertSelection => tr("Invert selection"), Action::SelectPattern => tr("Select matching…"),
             Action::SelectNone => tr("Deselect all"), Action::ContextMenu => tr("Open context menu"),
-            Action::ShowJobs => tr("Show file operations"),
+            Action::ShowJobs => tr("Show file operations"), Action::QuickLook => tr("Quick Look"),
         }
     }
 
@@ -150,7 +151,7 @@ impl Action {
             Action::Duplicate => &["Ctrl+Shift+D"], Action::MakeLink => &["Ctrl+Shift+M"], Action::OpenTerminal => &["F4"], Action::OpenAsAdmin => &[],
             Action::InvertSelection => &["Ctrl+Shift+I"], Action::SelectPattern => &["Ctrl+S"],
             Action::SelectNone => &["Ctrl+Shift+A"], Action::ContextMenu => &["Menu", "Shift+F10"],
-            Action::ShowJobs => &["Ctrl+J"],
+            Action::ShowJobs => &["Ctrl+J"], Action::QuickLook => &["Space"],
         }
     }
 }

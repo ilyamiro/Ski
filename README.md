@@ -214,6 +214,23 @@ The default theme follows your [Serpantinum](https://github.com/ilyamiro) colors
 
 Settings are stored in `~/.config/ski/settings.json`, and the trash in `~/.local/share/Trash`.
 
+## Plugins
+
+Ski bundles a few optional features as plugins. Switch them on or off in Settings → Plugins.
+
+- **Git** marks changed (`M`), staged (`A`, `S`, `R`), deleted (`D`), conflicted (`!`) and untracked (`?`) files, marks folders that contain changes, and shows the branch and the number of changes in the corner.
+- **Checksums** adds MD5, SHA-1 and SHA-256 to Properties and says whether one of them matches a hash on the clipboard.
+- **Quick Look** previews the selected file when you press Space: text and code with line numbers, pictures and documents (not folders). Up and Down browse, Space or Esc closes.
+- **Custom actions** adds your own commands to the context menu. Put a `.json` file or an executable script in `~/.config/ski/actions/` (restart Ski to load changes):
+
+  ```json
+  { "name": "Convert to WebP", "command": "for f in \"$@\"; do cwebp \"$f\" -o \"${f%.*}.webp\"; done", "extensions": ["jpg", "png"] }
+  ```
+
+  The command runs in the open folder with the selected files as arguments, and `SKI_SELECTED_FILES` and `SKI_CURRENT_DIR` are set. Filters: `extensions`, `dirs_only`, `files_only`, `single`.
+
+Typing in a folder jumps to the file whose name starts with what you typed (Settings → Behavior → Type to jump); `/` or Ctrl+F still searches.
+
 ## Archives
 
 `.zip` and `.tar.gz` work out of the box. Other formats use system tools and only appear when those are installed:

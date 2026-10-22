@@ -11,6 +11,7 @@ mod drives_ui;
 mod file_actions;
 mod jobs_ui;
 mod perms;
+mod quick_look;
 mod tabs;
 use tabs::TabSlot;
 
@@ -31,6 +32,7 @@ use crate::fs::history::{Edit, History, UndoEntry};
 use crate::fs::templates::{self, Template};
 use crate::fs::ops::{self, ArchiveFormat};
 use crate::fs::scanner::{SortBy, SortOrder};
+use crate::plugins::{Badge, Plugins, Tone};
 use crate::settings::{Density, Settings};
 use crate::thumbs::Thumbnails;
 use crate::ui::{
@@ -127,6 +129,8 @@ enum MenuAction {
     Mount(String, String),
     Unmount(String, String, PathBuf),
     Eject(String, String, PathBuf),
+    /// An entry a plugin added: the plugin's id, the entry's id and the files it applies to.
+    Plugin(&'static str, String, Vec<PathBuf>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -205,6 +209,7 @@ pub(crate) enum Dialog {
     /// A copy or move found its target name taken and waits for the answer.
     Conflict { request: Option<ConflictRequest>, all: bool },
     SelectPattern { pattern: String, case: bool, first_frame: bool },
+    QuickLook { item: Box<FileItem>, preview: Box<quick_look::Preview> },
 }
 
 /// Rubber-band drag selection started inside the file listing.
@@ -389,6 +394,10 @@ pub struct SkiApp {
     tab_enter: Option<u64>,
     /// A parked tab with a search comes back; the search runs again.
     restart_search: bool,
+
+    pub(crate) plugins: Plugins,
+    /// What was typed to jump to a file, and when the last letter came.
+    type_ahead: (String, std::time::Instant),
 }
 
 impl SkiApp {
@@ -410,6 +419,7 @@ impl SkiApp {
             settings.view_mode
         };
 
+        let plugins = Plugins::bundled(&settings.plugins);
         let mut app = Self {
             current_path: canonical_path.clone(),
             items: Vec::new(),
@@ -493,6 +503,8 @@ impl SkiApp {
             next_tab_id: 1,
             tab_enter: None,
             restart_search: false,
+            plugins,
+            type_ahead: (String::new(), std::time::Instant::now()),
         };
 
         app.reload_items();
@@ -635,6 +647,10 @@ impl SkiApp {
             }
         }
         self.sync_selection(true);
+        if !is_virtual(&self.current_path) {
+            let here = self.current_path.clone();
+            self.plugins.directory_changed(&here);
+        }
     }
 
     /// The files and folders used lately, most recent first, or the bookmarked ones in the Bookmarks view.
@@ -1250,7 +1266,21 @@ impl SkiApp {
             }
         }
 
+        // Once a name is being typed every letter belongs to it, even those bound to vim keys
+        if self.settings.type_ahead && !self.settings.type_to_filter && self.type_ahead_active()
+            && ctx.input(|i| !i.modifiers.command && !i.modifiers.alt)
+            && let Some(text) = typed_text(ctx)
+        {
+            self.type_ahead(&text);
+            return;
+        }
+
         let mut handled = false;
+
+        if self.is_act_pressed(ctx, crate::keymap::Action::QuickLook) && self.plugins.is_enabled("quick_look") {
+            self.open_quick_look();
+            handled = true;
+        }
 
         if self.is_act_pressed(ctx, crate::keymap::Action::ShowShortcuts) {
             self.dialog = Some(Dialog::Shortcuts);
@@ -1523,30 +1553,55 @@ impl SkiApp {
         }
 
         // type_to_filter: when on, printable key with no ctrl/alt and nothing focused opens the filter field with it
-        if !handled && self.settings.type_to_filter && ctx.input(|i| !i.modifiers.command && !i.modifiers.alt) {
-            let typed = ctx.input(|i| {
-                i.events.iter().find_map(|e| {
-                    if let egui::Event::Text(text) = e {
-                        let printable: String = text.chars().filter(|c| !c.is_control()).collect();
-                        if !printable.is_empty() {
-                            Some(printable)
-                        } else {
-                            None
-                        }
-                    } else {
-                        None
-                    }
-                })
-            });
-            if let Some(text) = typed {
-                self.show_search = true;
-                self.focus_search = true;
-                self.search_query.push_str(&text);
-                self.on_query_changed(ctx);
+        if !handled && ctx.input(|i| !i.modifiers.command && !i.modifiers.alt) {
+            if self.settings.type_to_filter {
+                if let Some(text) = typed_text(ctx) {
+                    self.show_search = true;
+                    self.focus_search = true;
+                    self.search_query.push_str(&text);
+                    self.on_query_changed(ctx);
+                }
+            } else if self.settings.type_ahead
+                && let Some(text) = typed_text(ctx)
+            {
+                self.type_ahead(&text);
             }
         }
     }
+
+    /// Whether letters are still being collected to jump to a file.
+    fn type_ahead_active(&self) -> bool {
+        !self.type_ahead.0.is_empty() && self.type_ahead.1.elapsed() < TYPE_AHEAD_TIMEOUT
+    }
+
+    /// Adds `text` to what was typed and selects the first file whose name starts with all of it.
+    fn type_ahead(&mut self, text: &str) {
+        if !self.type_ahead_active() {
+            self.type_ahead.0.clear();
+        }
+        self.type_ahead.0.push_str(text);
+        self.type_ahead.1 = std::time::Instant::now();
+        let needle = self.type_ahead.0.to_lowercase();
+        if let Some(idx) = self.items.iter().position(|i| i.name.to_lowercase().starts_with(&needle)) {
+            self.click_select(idx, egui::Modifiers::NONE);
+            self.scroll_to_selected = true;
+        }
+    }
 }
+
+/// The printable text typed this frame, if any.
+fn typed_text(ctx: &egui::Context) -> Option<String> {
+    ctx.input(|i| {
+        i.events.iter().find_map(|e| {
+            let egui::Event::Text(text) = e else { return None };
+            let printable: String = text.chars().filter(|c| !c.is_control()).collect();
+            (!printable.is_empty()).then_some(printable)
+        })
+    })
+}
+
+/// A pause this long ends a word typed to jump to a file.
+const TYPE_AHEAD_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(750);
 
 /// One step of the breadcrumb path.
 struct Crumb {
@@ -1613,6 +1668,15 @@ impl eframe::App for SkiApp {
         };
         self.thumbs.want_pixels(shown_px * ctx.pixels_per_point());
         self.thumbs.poll(&ctx);
+        if self.plugins.poll() {
+            ctx.request_repaint();
+        }
+        if self.plugins.busy() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        }
+        for message in self.plugins.messages() {
+            self.set_toast(message);
+        }
 
         let found = self.search.poll();
         if !found.is_empty() && !self.search_query.trim().is_empty() {
@@ -2371,6 +2435,9 @@ impl SkiApp {
                 let thumb = thumb_for(&self.thumbs, &self.folder_icons, item, show_thumbs);
                 let resp = file_row(ui, idx, item, &self.theme, selected, is_cut, should_scroll, thumb, hint.as_deref(), &self.columns, &self.settings.column_widths, row_height);
                 item_rects.push((idx, resp.rect));
+                if let Some(badge) = self.plugins.badge(item) {
+                    paint_badge(ui, &self.theme, badge, egui::pos2(resp.rect.left() + 38.0, resp.rect.center().y + 9.0));
+                }
                 let mods = ui.input(|i| i.modifiers);
                 if resp.clicked() {
                     if self.settings.single_click_open && !mods.command && !mods.shift {
@@ -2464,6 +2531,9 @@ impl SkiApp {
                         })
                         .inner;
                     item_rects.push((idx, resp.rect));
+                    if let Some(badge) = self.plugins.badge(item) {
+                        paint_badge(ui, &self.theme, badge, egui::pos2(resp.rect.right() - 12.0, resp.rect.top() + 12.0));
+                    }
                     let mods = ui.input(|i| i.modifiers);
                     if resp.clicked() {
                         if self.settings.single_click_open && !mods.command && !mods.shift {
@@ -2722,9 +2792,16 @@ impl SkiApp {
         if t > 0.001 {
             pill("selection_pill_area", area.left_bottom() + egui::vec2(14.0, -12.0), egui::Align2::LEFT_BOTTOM, t, None, &self.pill_text);
         }
+        // Plugin status (the git branch) sits in the corner; the clipboard pill stacks above it
+        let statuses = if self.settings.show_status_bar { self.plugins.statuses() } else { Vec::new() };
+        for (i, status) in statuses.iter().enumerate() {
+            let pos = area.right_bottom() + egui::vec2(-14.0, -12.0 - 36.0 * i as f32);
+            pill("plugin_status_area", pos, egui::Align2::RIGHT_BOTTOM, 1.0, Some(status.icon), &status.text);
+        }
         if let Some((paths, cut)) = &self.clipboard {
             let (label, icon) = if *cut { (trf("{} ready to move", &[&paths.len()]), icons::CUT) } else { (trf("{} ready to copy", &[&paths.len()]), icons::COPY) };
-            pill("clipboard_pill_area", area.right_bottom() + egui::vec2(-14.0, -12.0), egui::Align2::RIGHT_BOTTOM, 1.0, Some(icon), &label);
+            let lift = 36.0 * statuses.len() as f32;
+            pill("clipboard_pill_area", area.right_bottom() + egui::vec2(-14.0, -12.0 - lift), egui::Align2::RIGHT_BOTTOM, 1.0, Some(icon), &label);
         }
     }
 
@@ -3265,6 +3342,10 @@ impl SkiApp {
             MenuAction::Mount(dev, name) => self.mount_drive(ctx, dev, name, true),
             MenuAction::Unmount(dev, name, mount) => self.unmount_drive(ctx, dev, name, mount, false),
             MenuAction::Eject(dev, name, mount) => self.unmount_drive(ctx, dev, name, mount, true),
+            MenuAction::Plugin(plugin, id, paths) => {
+                let here = self.current_path.clone();
+                self.plugins.run(plugin, &id, &paths, &here);
+            }
             MenuAction::Redo => self.redo(),
             MenuAction::OpenSettings => self.open_settings_dialog(),
             MenuAction::Shortcuts => self.dialog = Some(Dialog::Shortcuts),
@@ -3339,10 +3420,43 @@ impl SkiApp {
 
     fn menu_entries(&self, target: &MenuTarget) -> Vec<Vec<MenuEntry>> {
         let mut groups = self.menu_entries_all(target);
+        if let MenuTarget::Item(item) = target
+            && !self.in_trash()
+            && let Some(group) = self.plugin_menu_group(item)
+        {
+            // Above the closing group of path and properties
+            groups.insert(groups.len().saturating_sub(1), group);
+        }
         for group in &mut groups {
             self.retain_allowed(group);
         }
         groups
+    }
+
+    /// The entries plugins add for the files the menu acts on; entries sharing a group fold into a submenu.
+    fn plugin_menu_group(&self, item: &FileItem) -> Option<Vec<MenuEntry>> {
+        let selection = self.menu_group(item);
+        let paths: Vec<PathBuf> = selection.iter().map(|i| i.path.clone()).collect();
+        let mut entries: Vec<MenuEntry> = Vec::new();
+        let mut folded: Vec<(&'static str, &'static str, Vec<MenuEntry>)> = Vec::new();
+        for (plugin, entry) in self.plugins.menu_items(&selection) {
+            let action = MenuAction::Plugin(plugin, entry.id, paths.clone());
+            match entry.group {
+                Some(group) => match folded.iter_mut().find(|(g, ..)| *g == group) {
+                    Some((.., list)) => list.push((entry.icon, entry.label, action)),
+                    None => folded.push((group, entry.icon, vec![(entry.icon, entry.label, action)])),
+                },
+                None => entries.push((entry.icon, entry.label, action)),
+            }
+        }
+        for (group, icon, mut list) in folded {
+            if list.len() == 1 {
+                entries.push(list.remove(0));
+            } else {
+                entries.push((icon, group, MenuAction::Submenu(list)));
+            }
+        }
+        (!entries.is_empty()).then_some(entries)
     }
 
     fn menu_entries_all(&self, target: &MenuTarget) -> Vec<Vec<MenuEntry>> {
@@ -3835,6 +3949,7 @@ impl SkiApp {
             Dialog::Settings { .. } => 860.0,
             Dialog::OpenWith { .. } => 480.0,
             Dialog::BatchRename { .. } => 560.0,
+            Dialog::QuickLook { .. } => 720.0,
             Dialog::Confirm { .. } | Dialog::Alert { .. } => 400.0,
             _ => 440.0,
         };
@@ -3870,6 +3985,7 @@ impl SkiApp {
                             Dialog::Shortcuts => self.shortcuts_contents(ui),
                             Dialog::Conflict { .. } => self.conflict_dialog_contents(ui, &mut dialog),
                             Dialog::SelectPattern { .. } => self.select_pattern_contents(ui, &mut dialog),
+                            Dialog::QuickLook { .. } => self.quick_look_contents(ui, &mut dialog),
                         };
                     });
             });
@@ -4705,6 +4821,9 @@ impl SkiApp {
         } else if !item.is_dir {
             subtitle = format!("{} · {}", props.kind, item.formatted_size());
         }
+        for group in self.plugins.properties(item) {
+            groups.push((group.title, group.rows));
+        }
 
         let mut copied: Option<String> = None;
         let mut perm_action = perms::PermAction::default();
@@ -4854,6 +4973,19 @@ impl SkiApp {
         }
         close
     }
+}
+
+/// A plugin's badge: a small coloured disc with a letter, on the corner of a file's icon.
+fn paint_badge(ui: &egui::Ui, theme: &SerpantinumTheme, badge: Badge, center: egui::Pos2) {
+    let color = match badge.tone {
+        Tone::Good => theme.green,
+        Tone::Warn => theme.yellow,
+        Tone::Bad => theme.red,
+    };
+    let painter = ui.painter();
+    painter.circle_filled(center, 8.0, theme.base);
+    painter.circle_filled(center, 6.5, color);
+    painter.text(center, egui::Align2::CENTER_CENTER, badge.letter, egui::FontId::proportional(9.5), theme.base);
 }
 
 /// Thumbnail for a row: the image itself, or a folder's custom icon.
@@ -5014,6 +5146,62 @@ mod tests {
         assert_eq!(app.current_path, work.canonicalize().unwrap());
         assert!(app.can_modify_here());
 
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn typing_a_name_jumps_to_it_and_a_pause_starts_over() {
+        let base = std::env::temp_dir().join(format!("ski_typeahead_test_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        for name in ["alpha.txt", "beta.txt", "bravo.txt", "Charlie.txt"] {
+            std::fs::write(base.join(name), "x").unwrap();
+        }
+        let ctx = egui::Context::default();
+        let mut app = SkiApp::new(base.clone(), SerpantinumTheme::default(), Settings::default(), &ctx);
+        let selected = |app: &SkiApp| app.selected_index.map(|i| app.items[i].name.clone());
+
+        app.type_ahead("b");
+        assert_eq!(selected(&app).as_deref(), Some("beta.txt"));
+        app.type_ahead("r");
+        assert_eq!(selected(&app).as_deref(), Some("bravo.txt"));
+        app.type_ahead("x");
+        assert_eq!(selected(&app).as_deref(), Some("bravo.txt"), "no match keeps the selection");
+        app.type_ahead.1 -= TYPE_AHEAD_TIMEOUT;
+        assert!(!app.type_ahead_active());
+        app.type_ahead("C");
+        assert_eq!(selected(&app).as_deref(), Some("Charlie.txt"), "a pause starts a new word, case is ignored");
+        assert_eq!(app.selection.len(), 1);
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn plugin_entries_follow_their_switch() {
+        let base = std::env::temp_dir().join(format!("ski_plugin_menu_test_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        std::fs::write(base.join("a.txt"), "x").unwrap();
+        let ctx = egui::Context::default();
+        let mut app = SkiApp::new(base.clone(), SerpantinumTheme::default(), Settings::default(), &ctx);
+        assert!(app.plugins.is_enabled("quick_look") && app.plugins.is_enabled("git"));
+        app.plugins.set_enabled("git", false);
+        assert!(!app.plugins.is_enabled("git"));
+        let item = app.items[0].clone();
+        // No action definitions in the test's config folder: the menu gains nothing
+        let count = |app: &SkiApp| app.menu_entries(&MenuTarget::Item(item.clone())).len();
+        let before = count(&app);
+        app.plugins.set_enabled("actions", false);
+        assert_eq!(count(&app), before);
+        app.selected_index = Some(0);
+        app.open_quick_look();
+        assert!(matches!(app.dialog, Some(Dialog::QuickLook { .. })));
+        app.dialog = None;
+        std::fs::create_dir(base.join("0dir")).unwrap();
+        app.reload_items();
+        app.selected_index = app.items.iter().position(|i| i.is_dir);
+        assert!(app.selected_index.is_some());
+        app.open_quick_look();
+        assert!(app.dialog.is_none(), "folders are not previewed");
         std::fs::remove_dir_all(&base).unwrap();
     }
 

@@ -49,6 +49,10 @@ pub struct Settings {
     /// Folder whose files are offered as templates for new files; `None` is the desktop's own.
     pub templates_dir: Option<PathBuf>,
     pub type_to_filter: bool,
+    /// Typing a name selects the matching file of the folder (unless `type_to_filter` takes the keys).
+    pub type_ahead: bool,
+    /// Switches of the bundled plugins by id; a plugin not listed keeps its default.
+    pub plugins: std::collections::BTreeMap<String, bool>,
     /// Where searches look, and whether they match case or look inside files.
     pub search_scope: crate::fs::search::SearchScope,
     pub search_case: bool,
@@ -210,6 +214,8 @@ impl Default for Settings {
             run_in_background: true,
             confirm_delete: true,
             type_to_filter: false,
+            type_ahead: true,
+            plugins: Default::default(),
             search_scope: Default::default(),
             search_case: false,
             search_contents: false,

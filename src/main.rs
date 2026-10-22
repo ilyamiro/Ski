@@ -5,6 +5,7 @@ mod fs;
 mod i18n;
 mod instance;
 mod keymap;
+mod plugins;
 mod portal;
 mod settings;
 mod settings_ui;

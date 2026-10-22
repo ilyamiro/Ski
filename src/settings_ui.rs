@@ -14,7 +14,7 @@ use crate::ui::icons;
 use crate::ui::material::{self, button, chip, choice_row, filled_icon_button, group_card, nav_item_roving, switch_row_with, ButtonKind, Column};
 use crate::ui::theme::{self, SerpantinumTheme, ACCENTS, PRESETS};
 
-const CATEGORY_COUNT: i32 = 6;
+const CATEGORY_COUNT: i32 = 7;
 
 fn category_focus_id() -> egui::Id {
     egui::Id::unique("set_cat_focus")
@@ -111,6 +111,7 @@ impl SkiApp {
                     (3, icons::SETTINGS, tr("Behavior")),
                     (4, icons::KEYBOARD, tr("Keybindings")),
                     (5, icons::APPS, tr("Applications")),
+                    (6, icons::TEMPLATE, tr("Plugins")),
                 ];
 
                 // One Tab stop for the whole list: Up and Down walk through the categories,
@@ -175,7 +176,8 @@ impl SkiApp {
                             2 => self.files_view_tab(ui),
                             3 => self.behavior_tab(ui),
                             4 => self.keybindings_tab(ui, keybind_search, capture, conflict_warning),
-                            _ => self.applications_tab(ui, picking, defaults),
+                            5 => self.applications_tab(ui, picking, defaults),
+                            _ => self.plugins_tab(ui),
                         }
                     });
                 // Left from a row that starts at the pane's edge goes back to the category list
@@ -662,6 +664,11 @@ impl SkiApp {
                 self.settings.vim_keys = !self.settings.vim_keys;
                 self.persist_settings();
             }
+            let desc = Some(tr("Typing a name selects the matching file in the folder"));
+            if switch_row_with(ui, "beh_type_ahead", icons::TEXT_SEARCH, tr("Type to jump"), desc, &theme, self.settings.type_ahead).clicked() {
+                self.settings.type_ahead = !self.settings.type_ahead;
+                self.persist_settings();
+            }
             let desc = Some(tr("Start typing to filter, without pressing / first"));
             if switch_row_with(ui, "beh_type_to_filter", icons::SEARCH, tr("Type to filter"), desc, &theme, self.settings.type_to_filter).clicked() {
                 self.settings.type_to_filter = !self.settings.type_to_filter;
@@ -722,6 +729,40 @@ impl SkiApp {
             });
             ui.add_space(4.0);
         });
+    }
+
+    fn plugins_tab(&mut self, ui: &mut egui::Ui) {
+        let theme = self.theme;
+
+        material::section_label(ui, tr("Bundled plugins"), &theme);
+        group_card(ui, &theme, |ui| {
+            for (id, icon, name, description, on) in self.plugins.catalog() {
+                if switch_row_with(ui, ("plugin", id), icon, name, Some(description), &theme, on).clicked() {
+                    self.plugins.set_enabled(id, !on);
+                    self.settings.plugins = self.plugins.enabled_map().clone();
+                    self.persist_settings();
+                    // Badges and menu entries come from the listing, which is read again
+                    self.reload_items();
+                }
+            }
+        });
+
+        if self.plugins.is_enabled("actions") {
+            material::section_label(ui, tr("Custom actions"), &theme);
+            group_card(ui, &theme, |ui| {
+                material::hint_label_inset(ui, tr("Each .json file or executable script in the actions folder becomes an entry in the context menu. The selected files are passed as arguments and in SKI_SELECTED_FILES."), &theme, 14);
+                let dir = crate::plugins::actions::dir();
+                ui.horizontal(|ui| {
+                    if button(ui, "open_actions", Some(icons::FOLDER_OPEN), tr("Open actions folder"), &theme, ButtonKind::Tonal, dir.is_some()).clicked()
+                        && let Some(dir) = dir
+                    {
+                        let _ = std::fs::create_dir_all(&dir);
+                        self.pending_open = Some(dir);
+                    }
+                });
+                ui.add_space(4.0);
+            });
+        }
     }
 
     fn keybindings_tab(

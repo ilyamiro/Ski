@@ -86,6 +86,19 @@ pub fn get_files() -> Option<(Vec<PathBuf>, bool)> {
     if on_wayland() { get_wayland() } else { get_x11() }
 }
 
+/// Plain text on the system clipboard, if any.
+pub fn get_text() -> Option<String> {
+    if on_wayland() {
+        use wl_clipboard_rs::paste::{ClipboardType, MimeType, Seat, get_contents};
+        let (mut pipe, _) = get_contents(ClipboardType::Regular, Seat::Unspecified, MimeType::Text).ok()?;
+        let mut text = String::new();
+        pipe.read_to_string(&mut text).ok()?;
+        Some(text)
+    } else {
+        arboard::Clipboard::new().ok()?.get_text().ok()
+    }
+}
+
 fn get_wayland() -> Option<(Vec<PathBuf>, bool)> {
     use wl_clipboard_rs::paste::{ClipboardType, MimeType, Seat, get_contents};
     let read = |mime: &str| -> Option<String> {
