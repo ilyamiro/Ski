@@ -112,15 +112,18 @@ struct Candidate {
 /// skipped, and a file reached twice (hard links, overlapping roots) counts once.
 fn walk(roots: &[PathBuf], progress: &dyn Progress) -> io::Result<HashMap<u64, Vec<Candidate>>> {
     let mut by_size: HashMap<u64, Vec<Candidate>> = HashMap::new();
-    let mut stack: Vec<PathBuf> = roots.to_vec();
-    while let Some(dir) = stack.pop() {
+    // Each folder with the device of the root it was reached from: mounts inside a tree are left out
+    let mut stack: Vec<(PathBuf, Option<u64>)> = roots.iter().map(|r| (r.clone(), std::fs::metadata(r).ok().map(|m| m.dev()))).collect();
+    while let Some((dir, root_dev)) = stack.pop() {
         progress.checkpoint()?;
         progress.current(&dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| dir.display().to_string()));
         let Ok(entries) = std::fs::read_dir(&dir) else { continue };
         for entry in entries.flatten() {
             let Ok(kind) = entry.file_type() else { continue };
             if kind.is_dir() {
-                stack.push(entry.path());
+                if root_dev.is_none() || entry.metadata().ok().map(|m| m.dev()) == root_dev {
+                    stack.push((entry.path(), root_dev));
+                }
             } else if kind.is_file()
                 && let Ok(meta) = entry.metadata()
                 && meta.len() > 0
