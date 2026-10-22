@@ -496,7 +496,8 @@ impl Plugin for Tags {
             add |= response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
         });
         if !valid && !prompt.name.trim().is_empty() {
-            ui.label(egui::RichText::new(tr("Names can't contain commas")).size(material::FONT_CAPTION).color(theme.red));
+            let problem = if prompt.name.trim().chars().count() > MAX_NAME { trf("Names can't be longer than {} characters", &[&MAX_NAME]) } else { tr("Names can't contain commas").to_owned() };
+            ui.label(egui::RichText::new(problem).size(material::FONT_CAPTION).color(theme.red));
         }
         ui.add_space(4.0);
         ui.allocate_ui_with_layout(egui::vec2(ui.available_width(), 36.0), egui::Layout::right_to_left(egui::Align::Center), |ui| {
