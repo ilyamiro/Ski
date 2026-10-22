@@ -150,7 +150,8 @@ impl Plugin for Git {
         if same && self.asked.is_some_and(|t| t.elapsed() < THROTTLE) {
             return;
         }
-        if !same {
+        // Another folder of the same repository keeps its badges while the status is read again
+        if !same && !self.repo.as_ref().is_some_and(|r| dir.starts_with(&r.root)) {
             self.repo = None;
         }
         self.dir = Some(dir.to_path_buf());
