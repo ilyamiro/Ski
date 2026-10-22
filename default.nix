@@ -50,9 +50,9 @@ let
     strictDeps = true;
 
     # rustc already uses several threads per crate, and wgpu, resvg and the like are big, so
-    # one job per core can exhaust the RAM. Two jobs build slower but stay in memory.
-    # Raise it here if you have memory to spare.
-    CARGO_BUILD_JOBS = "2";
+    # one job per core can exhaust the RAM. Eight jobs is a middle ground for a 16-core, 16 GB machine;
+    # lower it if the build runs out of memory.
+    CARGO_BUILD_JOBS = "8";
     nativeBuildInputs = with pkgs; [ pkg-config makeWrapper ];
   };
 
