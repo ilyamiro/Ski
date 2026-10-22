@@ -69,7 +69,7 @@ impl SkiApp {
         ctx.request_repaint_after(REFRESH);
     }
 
-    fn request_drive_listing(&mut self, ctx: &egui::Context, now: bool) {
+    pub(super) fn request_drive_listing(&mut self, ctx: &egui::Context, now: bool) {
         let state = &mut self.drive_state;
         if state.listing || !now && state.last.elapsed() < REFRESH {
             return;

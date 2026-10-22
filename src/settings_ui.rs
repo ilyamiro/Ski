@@ -277,6 +277,11 @@ impl SkiApp {
                 self.settings.open_in_new_window = !self.settings.open_in_new_window;
                 self.persist_settings();
             }
+            let desc = Some(tr("Opens the next window instantly, at the cost of some memory while closed"));
+            if switch_row_with(ui, "run_in_background", icons::REFRESH, tr("Keep running in the background"), desc, &theme, self.settings.run_in_background).clicked() {
+                self.settings.run_in_background = !self.settings.run_in_background;
+                self.persist_settings();
+            }
         });
 
         material::section_label(ui, tr("File operations"), &theme);
@@ -1041,7 +1046,7 @@ impl SkiApp {
             }
             material::collapsible(ui, ("cat_collapse", idx), *picking == Some(idx), |ui| {
                 let default_app = defaults.get(idx).and_then(|d| d.as_deref());
-                let candidates = apps::apps_for(installed, category.mimes[0], default_app);
+                let candidates = apps::apps_for(&installed, category.mimes[0], default_app);
                 let mut chosen: Option<&AppEntry> = None;
                 for app in &candidates {
                     let probe = egui::Rect::from_min_size(ui.cursor().min, egui::vec2(ui.available_width(), 44.0));

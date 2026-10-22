@@ -496,6 +496,7 @@ impl SkiApp {
         };
 
         app.reload_items();
+        app.request_drive_listing(ctx, true);
         app
     }
 
@@ -1033,7 +1034,7 @@ impl SkiApp {
         crate::keymap::is_action_pressed(ctx, &self.settings.keybinds, act, self.settings.vim_keys)
     }
 
-    pub(crate) fn installed_apps(&self) -> &'static [AppEntry] {
+    pub(crate) fn installed_apps(&self) -> std::sync::Arc<Vec<AppEntry>> {
         apps::installed()
     }
 

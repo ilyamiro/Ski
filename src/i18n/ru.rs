@@ -71,6 +71,8 @@ pub const CATALOG: &[(&str, &str)] = &[
     ("That folder does not exist; Ski opens in Home instead", "Такой папки нет, Ski откроется в домашней папке"),
     ("Windows", "Окна"),
     ("Open folders in a new window", "Открывать папки в новом окне"),
+    ("Keep running in the background", "Работать в фоне"),
+    ("Opens the next window instantly, at the cost of some memory while closed", "Следующее окно открывается мгновенно, но в закрытом виде занимает немного памяти"),
     ("File operations", "Операции с файлами"),
     ("Ask before deleting for good or emptying the trash", "Спрашивать перед окончательным удалением и очисткой корзины"),
     ("Confirm permanent deletion", "Подтверждать удаление навсегда"),

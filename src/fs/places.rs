@@ -101,8 +101,8 @@ impl Place {
             }
         }
 
+        // Drives follow from a background listing (see `drives_ui`), as `lsblk` would hold up the first frame
         places.push(Place::new("Computer", PathBuf::from("/"), icons::STORAGE, Devices));
-        places.extend(super::drives::list());
 
         // Compare against canonical paths so symlinked folders still highlight
         for place in &mut places {

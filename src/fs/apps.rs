@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock, RwLock};
 
 #[derive(Debug, Clone)]
 pub struct AppEntry {
@@ -39,17 +39,28 @@ fn application_dirs() -> Vec<PathBuf> {
     dirs
 }
 
-/// The installed applications, scanned once. Blocks the calling thread until the scan is done.
-pub fn installed() -> &'static [AppEntry] {
-    static APPS: OnceLock<Vec<AppEntry>> = OnceLock::new();
-    APPS.get_or_init(load_apps)
+static APPS: RwLock<Option<Arc<Vec<AppEntry>>>> = RwLock::new(None);
+
+/// The installed applications as last scanned. Blocks the calling thread when there is no scan yet.
+pub fn installed() -> Arc<Vec<AppEntry>> {
+    if let Some(apps) = APPS.read().ok().and_then(|a| a.clone()) {
+        return apps;
+    }
+    rescan()
 }
 
-/// Start scanning the `.desktop` files in the background so the first use does not stall the UI.
+fn rescan() -> Arc<Vec<AppEntry>> {
+    let apps = Arc::new(load_apps());
+    if let Ok(mut slot) = APPS.write() {
+        *slot = Some(apps.clone());
+    }
+    apps
+}
+
+/// Scan the `.desktop` files in the background so the first use does not stall the UI. Each window
+/// rescans, as a resident Ski would otherwise miss the applications installed since it started.
 pub fn preload() {
-    std::thread::spawn(|| {
-        installed();
-    });
+    std::thread::spawn(rescan);
 }
 
 /// Every graphical application in the XDG data dirs. Earlier dirs win.

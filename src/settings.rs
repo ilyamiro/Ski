@@ -41,6 +41,8 @@ pub struct Settings {
     pub single_click_open: bool,
     pub vim_keys: bool,
     pub open_in_new_window: bool,
+    /// Stay running after the window closes, so the next one opens at once.
+    pub run_in_background: bool,
     pub confirm_delete: bool,
     /// Command that opens a terminal; `{}` stands for the folder. Empty finds one by itself.
     pub terminal: String,
@@ -205,6 +207,7 @@ impl Default for Settings {
             single_click_open: false,
             vim_keys: true,
             open_in_new_window: false,
+            run_in_background: true,
             confirm_delete: true,
             type_to_filter: false,
             search_scope: Default::default(),

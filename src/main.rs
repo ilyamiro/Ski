@@ -2,6 +2,7 @@ mod app;
 mod chooser;
 mod fs;
 mod i18n;
+mod instance;
 mod keymap;
 mod portal;
 mod settings;
@@ -26,6 +27,26 @@ fn main() -> eframe::Result {
         }
         return Ok(());
     }
+    if args.first().is_some_and(|a| a == "--resident") {
+        instance::serve(open_window);
+        return Ok(());
+    }
+    let request = instance::Request::current(args);
+    // A file dialog belongs to its requester, and an administrator's window to its own process.
+    // As a container's first process (the Docker image), leaving would stop the container.
+    if !request.args.iter().any(|a| a == "--chooser") && !fs::admin::is_admin() && std::process::id() != 1 {
+        if !settings::Settings::load().run_in_background {
+            instance::dismiss(&request);
+        } else if instance::hand_off(&request) {
+            return Ok(());
+        }
+    }
+    open_window(request)
+}
+
+/// Open a window for one launch and run it until it closes.
+fn open_window(mut request: instance::Request) -> eframe::Result {
+    let args = std::mem::take(&mut request.args);
     let chooser = if args.iter().any(|a| a == "--chooser") { chooser::Spec::parse(&args) } else { None };
 
     let settings = settings::Settings::load();
@@ -37,6 +58,8 @@ fn main() -> eframe::Result {
     let given = if chooser.is_some() { None } else { args.first().filter(|a| !a.starts_with("--")).cloned() };
     let initial_path = if let Some(arg) = given {
         let path = PathBuf::from(arg);
+        // Relative to where the launch was made, which a resident process does not share
+        let path = if fs::places::is_virtual(&path) { path } else { request.cwd.join(path) };
         match path.parent() {
             Some(parent) if path.exists() && !path.is_dir() => {
                 select = Some(path.clone());
@@ -48,7 +71,7 @@ fn main() -> eframe::Result {
         folder
     } else {
         match settings.start_location {
-            settings::StartLocation::Launch => env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+            settings::StartLocation::Launch => request.cwd.clone(),
             settings::StartLocation::Home => dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")),
             settings::StartLocation::LastVisited => settings
                 .last_dir
@@ -79,6 +102,8 @@ fn main() -> eframe::Result {
         viewport,
         // Honoured on X11 and Windows; Wayland leaves the position to the compositor
         centered: chooser.is_some(),
+        // Starts several times faster than wgpu, which has to bring up Vulkan first
+        renderer: eframe::Renderer::Glow,
         ..Default::default()
     };
 
@@ -108,6 +133,7 @@ fn main() -> eframe::Result {
                 chooser.parent = parent;
                 chooser
             });
+            request.shown();
             Ok(Box::new(app))
         }),
     )
