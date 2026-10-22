@@ -102,12 +102,16 @@ pub fn invalidate(path: &Path) {
     with(|b| {
         b.sizes.retain(|p, _| !(p.starts_with(path) || path.starts_with(p)));
         b.counts.retain(|p, _| !(p.starts_with(path) || path.starts_with(p)));
+        b.pending.retain(|p| !(p.starts_with(path) || path.starts_with(p)));
     });
 }
 
 /// Forget the measurement of exactly this folder, so it can be measured again.
 pub fn forget(path: &Path) {
-    with(|b| b.sizes.remove(path));
+    with(|b| {
+        b.pending.remove(path);
+        b.sizes.remove(path)
+    });
 }
 
 /// Forget everything (refresh).

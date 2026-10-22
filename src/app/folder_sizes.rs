@@ -40,6 +40,13 @@ impl SizeScheduler {
         dirsize::drop_pending();
     }
 
+    /// Stops the scans that cover `path` (a measurement made while it changes would be stale).
+    pub(super) fn discard(&mut self, path: &Path) {
+        let affected = |p: &Path| p.starts_with(path) || path.starts_with(p);
+        self.running.retain(|(p, _)| !affected(p));
+        self.queue.retain(|p| !affected(p));
+    }
+
     pub(super) fn busy(&self) -> bool {
         !self.running.is_empty() || !self.queue.is_empty() || self.counting.load(Ordering::Relaxed)
     }
@@ -93,6 +100,7 @@ impl SkiApp {
     /// "Calculate size" on folders.
     pub(super) fn calculate_sizes(&mut self, paths: &[PathBuf]) {
         for path in paths.iter().filter(|p| p.is_dir()) {
+            self.sizes.discard(path);
             dirsize::forget(path);
             self.sizes.request(path);
         }
@@ -101,6 +109,7 @@ impl SkiApp {
     /// Changes on disk below these paths make the totals above them stale.
     pub(super) fn forget_sizes(&mut self, paths: impl IntoIterator<Item = impl AsRef<Path>>) {
         for path in paths {
+            self.sizes.discard(path.as_ref());
             dirsize::invalidate(path.as_ref());
         }
     }
