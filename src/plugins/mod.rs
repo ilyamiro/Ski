@@ -252,6 +252,10 @@ impl Plugins {
     }
 
     pub fn set_enabled(&mut self, id: &str, on: bool) {
+        // A switched-off plugin leaves no dialog and no scan behind
+        if !on {
+            self.close_window(id);
+        }
         self.enabled.insert(id.to_owned(), on);
     }
 
