@@ -566,7 +566,7 @@ impl Plugin for Tags {
     fn search_paths(&self, query: &str) -> Option<Vec<PathBuf>> {
         let name = query.trim().strip_prefix("tag:").or_else(|| query.trim().strip_prefix("Tag:"))?.trim();
         // Trust the attribute over the remembered list; drop what is gone or no longer tagged
-        Some(self.registry.with_tag(name).into_iter().filter(|p| read_tags(p).map_or(true, |tags| tags.iter().any(|t| same_tag(t, name)))).collect())
+        Some(self.registry.with_tag(name).into_iter().filter(|p| read_tags(p).map_or_else(|e| e.kind() != std::io::ErrorKind::NotFound, |tags| tags.iter().any(|t| same_tag(t, name)))).collect())
     }
 
     fn properties(&mut self, item: &FileItem) -> Vec<PropertyGroup> {
