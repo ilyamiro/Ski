@@ -587,4 +587,13 @@ pub const CATALOG: &[(&str, &str)] = &[
     ("Matches {}", "Correspond à {}"),
     ("Does not match {}", "Ne correspond pas à {}"),
     ("Checksum file", "Fichier de sommes"),
+    ("\"command\" is empty", "« command » est vide"),
+    ("folders only", "dossiers seulement"),
+    ("files only", "fichiers seulement"),
+    ("one item", "un élément"),
+    ("any selection", "toute sélection"),
+    ("No actions yet. Choose New action to start from a template.", "Aucune action pour l’instant. « Nouvelle action » crée un modèle."),
+    ("These files can't be used:", "Ces fichiers sont inutilisables :"),
+    ("New action", "Nouvelle action"),
+    ("Couldn't create the action: {}", "Impossible de créer l’action : {}"),
 ];

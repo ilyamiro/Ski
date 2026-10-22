@@ -799,6 +799,7 @@ impl SkiApp {
                     }
                 });
                 ui.add_space(4.0);
+                self.plugins.settings("actions", ui, &theme);
             });
         }
     }
