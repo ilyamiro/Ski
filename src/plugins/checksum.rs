@@ -736,7 +736,10 @@ impl Plugin for Checksum {
                 return Reaction::None;
             }
         };
-        // `file.sha256` holding a bare hash is about `file`
+        // `file.sha256` holding a bare hash is about `file`; in a shared list (`SHA256SUMS`) it names nothing
+        if SHARED_LISTS.contains(&source.to_ascii_lowercase().as_str()) {
+            entries.retain(|e| e.name.is_some());
+        }
         for entry in entries.iter_mut().filter(|e| e.name.is_none()) {
             entry.name = Path::new(&source).file_stem().map(|s| s.to_string_lossy().into_owned());
         }
