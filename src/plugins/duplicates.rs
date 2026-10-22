@@ -42,6 +42,8 @@ pub struct Member {
     pub path: PathBuf,
     pub size: u64,
     pub modified: Option<SystemTime>,
+    /// Names the file has; trashing one of several frees nothing.
+    pub links: u64,
 }
 
 impl Member {
@@ -61,7 +63,8 @@ pub struct Group {
 impl Group {
     /// What removing all but one copy gives back.
     pub fn reclaimable(&self) -> u64 {
-        self.size * (self.files.len() as u64 - 1)
+        let freeing = self.files.iter().filter(|m| m.links <= 1).count() as u64;
+        self.size * (self.files.len() as u64 - 1).min(freeing)
     }
 }
 
@@ -106,6 +109,7 @@ struct Candidate {
     ino: u64,
     size: u64,
     modified: Option<SystemTime>,
+    links: u64,
 }
 
 /// Every regular file below `roots`, grouped by size. Links are not followed, empty files are
@@ -128,7 +132,7 @@ fn walk(roots: &[PathBuf], progress: &dyn Progress) -> io::Result<HashMap<u64, V
                 && let Ok(meta) = entry.metadata()
                 && meta.len() > 0
             {
-                by_size.entry(meta.len()).or_default().push(Candidate { path: entry.path(), dev: meta.dev(), ino: meta.ino(), size: meta.len(), modified: meta.modified().ok() });
+                by_size.entry(meta.len()).or_default().push(Candidate { path: entry.path(), dev: meta.dev(), ino: meta.ino(), size: meta.len(), modified: meta.modified().ok(), links: meta.nlink() });
             }
         }
     }
@@ -257,7 +261,7 @@ pub fn find(roots: &[PathBuf], progress: &dyn Progress) -> io::Result<Vec<Group>
     let mut by_hash: HashMap<(u64, String), Vec<Member>> = HashMap::new();
     for (candidate, hash) in candidates.into_iter().zip(hashes) {
         if let Some(hash) = hash {
-            by_hash.entry((candidate.size, hash)).or_default().push(Member { path: candidate.path, size: candidate.size, modified: candidate.modified });
+            by_hash.entry((candidate.size, hash)).or_default().push(Member { path: candidate.path, size: candidate.size, modified: candidate.modified, links: candidate.links });
         }
     }
     let mut groups: Vec<Group> = by_hash
@@ -712,7 +716,7 @@ mod tests {
     }
 
     fn member(path: &str, secs: u64) -> Member {
-        Member { path: PathBuf::from(path), size: 10, modified: Some(SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(secs)) }
+        Member { path: PathBuf::from(path), size: 10, modified: Some(SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(secs)), links: 1 }
     }
 
     #[test]
@@ -818,7 +822,7 @@ mod tests {
             let path = dir.join(name);
             std::fs::write(&path, text).unwrap();
             let meta = std::fs::metadata(&path).unwrap();
-            Member { path, size: meta.len(), modified: meta.modified().ok() }
+            Member { path, size: meta.len(), modified: meta.modified().ok(), links: 1 }
         };
         let (keep, copy, edited) = (make("keep", "same"), make("copy", "same"), make("edited", "same"));
         std::fs::write(&edited.path, "changed after the scan").unwrap();
