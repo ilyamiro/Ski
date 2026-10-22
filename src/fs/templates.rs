@@ -24,6 +24,13 @@ pub struct Template {
 
 impl Template {
     pub fn extension(&self) -> Option<&str> {
+        // `archive.tar.gz` ends in two parts
+        let lower = self.file_name.to_ascii_lowercase();
+        for compound in [".tar.gz", ".tar.xz", ".tar.bz2", ".tar.zst"] {
+            if lower.ends_with(compound) && self.file_name.len() > compound.len() {
+                return Some(&self.file_name[self.file_name.len() - compound.len() + 1..]);
+            }
+        }
         self.file_name.rsplit_once('.').filter(|(stem, _)| !stem.is_empty()).map(|(_, ext)| ext)
     }
 }
