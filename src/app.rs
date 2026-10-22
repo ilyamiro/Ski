@@ -1326,6 +1326,14 @@ impl SkiApp {
             handled = true;
         }
 
+        if self.is_act_pressed(ctx, crate::keymap::Action::AssignTags) && self.plugins.is_enabled("tags") && self.chooser.is_none() {
+            let paths: Vec<PathBuf> = self.selection.iter().filter_map(|&i| self.items.get(i)).filter(|i| !i.is_symlink).map(|i| i.path.clone()).collect();
+            if !paths.is_empty() {
+                self.run_plugin_entry(ctx, "tags", "new".to_owned(), paths, None);
+            }
+            handled = true;
+        }
+
         if self.is_act_pressed(ctx, crate::keymap::Action::ShowShortcuts) {
             self.dialog = Some(Dialog::Shortcuts);
             handled = true;
@@ -3268,15 +3276,19 @@ impl SkiApp {
             return;
         }
         let label = Self::describe_count(&paths);
-        let (mut trashed, mut failed) = (Vec::new(), Vec::new());
+        let (mut trashed, mut failed, mut removed) = (Vec::new(), Vec::new(), Vec::new());
         for path in &paths {
             match trash::trash(path) {
-                Ok(t) => trashed.push(t),
+                Ok(t) => {
+                    trashed.push(t);
+                    removed.push(path.clone());
+                }
                 Err(err) => failed.push(format!("{}: {err}", path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default())),
             }
         }
         self.selected_index = None;
         self.refresh_listing();
+        self.plugins.file_op_done(&crate::plugins::FileOpEvent::Removed(removed));
         if trashed.is_empty() {
             self.set_toast(trf("Could not move to trash: {}", &[&failed.join(" · ")]));
             return;
@@ -3344,6 +3356,7 @@ impl SkiApp {
     }
 
     fn delete_forever(&mut self, paths: Vec<PathBuf>) {
+        self.plugins.file_op_done(&crate::plugins::FileOpEvent::Removed(paths.clone()));
         let label = Self::describe_count(&paths);
         self.selected_index = None;
         let title = trf("Deleting {}", &[&label]);

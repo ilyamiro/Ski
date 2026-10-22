@@ -176,6 +176,7 @@ Right-click anything for a menu that shows the shortcut of each action.
 | `Ctrl+Shift+Z` / `Ctrl+Y` | Redo |
 | `Ctrl+Shift+D` | Duplicate |
 | `Ctrl+Shift+M` | Create link |
+| `Alt+T` | Add a tag to the selection (Tags plugin) |
 | `F4` | Open the folder in a terminal |
 | `Ctrl+S` | Select items matching a pattern such as `*.png` |
 | `Ctrl+Shift+I` / `Ctrl+Shift+A` | Invert selection / deselect all |
@@ -220,6 +221,7 @@ Ski bundles a few optional features as plugins. Switch them on or off in Setting
 
 - **Git** marks changed (`M`), staged (`A`, `S`, `R`), deleted (`D`), conflicted (`!`) and untracked (`?`) files, marks folders that contain changes, and shows the branch and the number of changes in the corner.
 - **Checksums** adds MD5, SHA-1 and SHA-256 to Properties and says whether one of them matches a hash on the clipboard.
+- **Tags** puts coloured labels on files. Right-click → Tags (or `Alt+T`) adds a tag; the colours show as dots on the icon, and Settings → Plugins lets you pick them. The names are stored in the extended attribute `user.xdg.tags`, the one Dolphin reads, so both managers show them; the colours are Ski's own (`~/.config/ski/tags.json`). Copies and cross-disk moves keep the tags; archives do not. The sidebar lists the tags Ski has seen, and `tag:work` in the search finds them (Ski remembers paths it tagged or saw tagged; "Find tags in this folder" rebuilds that list after other programs moved files). File systems without extended attributes (FAT, exFAT, some network shares) can't store tags, and links can't carry them.
 - **Quick Look** previews the selected file when you press Space: text and code with line numbers, pictures and documents (not folders). Up and Down browse, Space or Esc closes.
 - **Custom actions** adds your own commands to the context menu. Put a `.json` file or an executable script in `~/.config/ski/actions/` (restart Ski to load changes):
 

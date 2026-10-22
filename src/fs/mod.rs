@@ -15,3 +15,4 @@ pub mod admin;
 pub mod glob;
 pub mod templates;
 pub mod drives;
+pub mod xattr;

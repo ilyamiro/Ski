@@ -62,10 +62,6 @@ impl SkiApp {
     pub(super) fn apply_reaction(&mut self, ctx: &egui::Context, reaction: Reaction) {
         match reaction {
             Reaction::None => {}
-            Reaction::Navigate(path) => {
-                self.close_search();
-                self.navigate_to(path);
-            }
             Reaction::Search(query) => {
                 self.show_search = true;
                 self.search_query = query;
@@ -88,7 +84,7 @@ impl SkiApp {
         let theme = self.theme;
         let Some((_, title)) = self.plugins.wanted_window().filter(|(plugin, _)| plugin == id) else { return true };
         let mut close = material::dialog_header(ui, title, None, &theme, "plugin_close");
-        close |= !self.plugins.window(id, ui);
+        close |= !self.plugins.window(id, ui, &theme);
         close
     }
 

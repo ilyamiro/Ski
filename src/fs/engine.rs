@@ -431,6 +431,8 @@ fn copy_file(w: &Worker, src: &Path, dst: &Path) -> io::Result<()> {
             writer.write_all(&buffer[..n])?;
             w.add_bytes(n as u64);
         }
+        // Tags, comments and ratings live in extended attributes; set them while the copy is still writable
+        super::xattr::copy_user(src, dst);
         writer.set_permissions(meta.permissions())?;
         if let Ok(modified) = meta.modified() {
             let _ = writer.set_modified(modified);
@@ -457,6 +459,7 @@ fn copy_tree(w: &Worker, src: &Path, dst: &Path) -> io::Result<()> {
             let entry = entry?;
             copy_tree(w, &entry.path(), &dst.join(entry.file_name()))?;
         }
+        super::xattr::copy_user(src, dst);
         std::fs::set_permissions(dst, meta.permissions())
     } else {
         w.shared.set_current(&name_of(src));
@@ -696,6 +699,28 @@ mod tests {
         assert_eq!(std::fs::read_to_string(dir.join("dst/d/b.txt")).unwrap(), "b");
         let Effect::Record(entry) = outcome.effect else { panic!("no undo") };
         assert_eq!(entry.edits.len(), 2);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn copies_keep_tags_and_other_user_attributes() {
+        let dir = sandbox("xattr");
+        std::fs::create_dir_all(dir.join("src/d")).unwrap();
+        std::fs::create_dir_all(dir.join("dst")).unwrap();
+        std::fs::write(dir.join("src/a.txt"), "a").unwrap();
+        if crate::fs::xattr::set(&dir.join("src/a.txt"), "user.xdg.tags", b"work").is_err() {
+            // This file system keeps no attributes
+            std::fs::remove_dir_all(&dir).unwrap();
+            return;
+        }
+        crate::fs::xattr::set(&dir.join("src/d"), "user.xdg.tags", b"folder").unwrap();
+        let mut e = engine();
+        let pairs = vec![(dir.join("src/a.txt"), dir.join("dst/a.txt")), (dir.join("src/d"), dir.join("dst/d"))];
+        e.spawn(JobKind::Copy, "Copy".into(), String::new(), move |w| transfer(w, Op::Copy, pairs));
+        let events = wait(&mut e);
+        assert!(events.iter().any(|ev| matches!(ev, Event::Done { outcome, .. } if outcome.ok)));
+        assert_eq!(crate::fs::xattr::get(&dir.join("dst/a.txt"), "user.xdg.tags").unwrap().as_deref(), Some(&b"work"[..]));
+        assert_eq!(crate::fs::xattr::get(&dir.join("dst/d"), "user.xdg.tags").unwrap().as_deref(), Some(&b"folder"[..]));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

@@ -747,6 +747,11 @@ impl SkiApp {
             }
         });
 
+        if self.plugins.is_enabled("tags") {
+            material::section_label(ui, tr("Tags"), &theme);
+            group_card(ui, &theme, |ui| self.plugins.settings("tags", ui, &theme));
+        }
+
         if self.plugins.is_enabled("actions") {
             material::section_label(ui, tr("Custom actions"), &theme);
             group_card(ui, &theme, |ui| {

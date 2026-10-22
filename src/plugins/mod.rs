@@ -6,11 +6,13 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use crate::fs::file_item::FileItem;
+use crate::ui::theme::SerpantinumTheme;
 
 pub mod actions;
 pub mod checksum;
 pub mod git;
 pub mod quick_look;
+pub mod tags;
 
 /// How a badge or status is coloured; the interface maps it to the current theme.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -65,8 +67,6 @@ impl MenuItem {
 pub enum Reaction {
     #[default]
     None,
-    /// Go to this folder.
-    Navigate(PathBuf),
     /// Put this text in the search field and search.
     Search(String),
 }
@@ -76,7 +76,6 @@ pub struct SidebarEntry {
     pub id: String,
     pub label: String,
     pub icon: &'static str,
-    pub color: Option<[u8; 3]>,
 }
 
 /// A change Ski made to files, reported to plugins once it is done.
@@ -144,7 +143,7 @@ pub trait Plugin {
     /// The user closed the dialog (button, Escape, a click outside).
     fn close_window(&mut self) {}
     /// Draws the dialog's content; returns false when the plugin is done with it.
-    fn window(&mut self, _ui: &mut eframe::egui::Ui) -> bool {
+    fn window(&mut self, _ui: &mut eframe::egui::Ui, _theme: &SerpantinumTheme) -> bool {
         false
     }
     /// Rows of the plugin's own section in the sidebar.
@@ -165,10 +164,25 @@ pub trait Plugin {
     fn properties(&mut self, _item: &FileItem) -> Vec<PropertyGroup> {
         Vec::new()
     }
+    /// The plugin's own controls on its Settings → Plugins page.
+    fn settings(&mut self, _ui: &mut eframe::egui::Ui, _theme: &SerpantinumTheme) {}
     /// Messages for the user (a finished action, a failure), taken once.
     fn messages(&mut self) -> Vec<String> {
         Vec::new()
     }
+}
+
+/// Menu labels are `&'static str`; a text built at run time (a tag name) is leaked once and reused.
+pub fn intern(text: &str) -> &'static str {
+    use std::sync::{Mutex, OnceLock};
+    static SEEN: OnceLock<Mutex<std::collections::HashSet<&'static str>>> = OnceLock::new();
+    let mut seen = SEEN.get_or_init(Default::default).lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(&known) = seen.get(text) {
+        return known;
+    }
+    let leaked: &'static str = Box::leak(text.to_owned().into_boxed_str());
+    seen.insert(leaked);
+    leaked
 }
 
 pub struct Plugins {
@@ -185,6 +199,7 @@ impl Plugins {
                 Box::new(checksum::Checksum::default()),
                 Box::new(actions::Actions::load()),
                 Box::new(quick_look::QuickLook),
+                Box::new(tags::Tags::load()),
             ],
             enabled: enabled.clone(),
         }
@@ -260,8 +275,14 @@ impl Plugins {
     }
 
     /// Draws the dialog of `plugin`; false when it closed.
-    pub fn window(&mut self, plugin: &str, ui: &mut eframe::egui::Ui) -> bool {
-        self.active_mut().find(|p| p.id() == plugin).is_some_and(|p| p.window(ui))
+    pub fn window(&mut self, plugin: &str, ui: &mut eframe::egui::Ui, theme: &SerpantinumTheme) -> bool {
+        self.active_mut().find(|p| p.id() == plugin).is_some_and(|p| p.window(ui, theme))
+    }
+
+    pub fn settings(&mut self, plugin: &str, ui: &mut eframe::egui::Ui, theme: &SerpantinumTheme) {
+        if let Some(p) = self.active_mut().find(|p| p.id() == plugin) {
+            p.settings(ui, theme);
+        }
     }
 
     pub fn close_window(&mut self, plugin: &str) {
@@ -335,7 +356,7 @@ mod tests {
             vec![MenuItem::new("go", "Go", "").confirm("Sure?")]
         }
         fn run(&mut self, id: &str, _paths: &[PathBuf], dir: &Path) -> Reaction {
-            if id == "go" { Reaction::Navigate(dir.to_path_buf()) } else { Reaction::None }
+            if id == "go" { Reaction::Search(dir.display().to_string()) } else { Reaction::None }
         }
         fn file_op_done(&mut self, op: &FileOpEvent) {
             self.events.borrow_mut().push(op.clone());
@@ -374,7 +395,7 @@ mod tests {
         let entries = plugins.menu_items(&[item()]);
         assert_eq!(entries[0].0, "fake");
         assert_eq!(entries[0].1.confirm, Some("Sure?"));
-        assert_eq!(plugins.run("fake", "go", &[], Path::new("/tmp")), Reaction::Navigate(PathBuf::from("/tmp")));
+        assert_eq!(plugins.run("fake", "go", &[], Path::new("/tmp")), Reaction::Search("/tmp".to_owned()));
     }
 
     #[test]
@@ -383,6 +404,13 @@ mod tests {
         let op = FileOpEvent::Moved(vec![(PathBuf::from("/a"), PathBuf::from("/b"))]);
         plugins.file_op_done(&op);
         assert_eq!(*events.borrow(), vec![op]);
+    }
+
+    #[test]
+    fn interning_leaks_each_text_once() {
+        let a = intern("same text");
+        let b = intern(&String::from("same text"));
+        assert!(std::ptr::eq(a, b));
     }
 
     #[test]
