@@ -591,7 +591,8 @@ impl Plugin for Duplicates {
                     rule = Some(keep);
                 }
             }
-            for (i, root) in view.roots.iter().enumerate() {
+            // With one folder every copy is inside it: the rule would only pick the first path
+            for (i, root) in view.roots.iter().enumerate().filter(|_| view.roots.len() > 1) {
                 let name = root.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| root.display().to_string());
                 if material::button(ui, ("dup_keep_in", i), Some(icons::FOLDER), &trf("In {}", &[&name]), theme, material::ButtonKind::Tonal, true).clicked() {
                     rule = Some(Keep::InFolder(root.clone()));
