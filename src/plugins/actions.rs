@@ -17,7 +17,7 @@ use std::sync::{Arc, mpsc};
 
 use serde::Deserialize;
 
-use super::{MenuItem, Plugin};
+use super::{MenuItem, Plugin, Reaction};
 use crate::fs::file_item::FileItem;
 use crate::i18n::{tr, trf};
 use crate::ui::icons;
@@ -122,12 +122,12 @@ impl Plugin for Actions {
             .iter()
             .enumerate()
             .filter(|(_, e)| e.def.applies(selection))
-            .map(|(i, e)| MenuItem { id: i.to_string(), label: e.label, icon: icons::TERMINAL, group: Some(tr("Actions")) })
+            .map(|(i, e)| MenuItem::new(i.to_string(), e.label, icons::TERMINAL).group(tr("Actions")))
             .collect()
     }
 
-    fn run(&mut self, id: &str, paths: &[PathBuf], dir: &Path) {
-        let Some(entry) = id.parse::<usize>().ok().and_then(|i| self.entries.get(i)) else { return };
+    fn run(&mut self, id: &str, paths: &[PathBuf], dir: &Path) -> Reaction {
+        let Some(entry) = id.parse::<usize>().ok().and_then(|i| self.entries.get(i)) else { return Reaction::None };
         let mut command = match &entry.script {
             Some(script) => {
                 let mut c = Command::new(script);
@@ -157,6 +157,7 @@ impl Plugin for Actions {
             let _ = tx.send(message);
             running.fetch_sub(1, Ordering::Relaxed);
         });
+        Reaction::None
     }
 
     fn busy(&self) -> bool {

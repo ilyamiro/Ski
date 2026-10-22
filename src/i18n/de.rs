@@ -541,4 +541,6 @@ pub const CATALOG: &[(&str, &str)] = &[
     ("Type to jump", "Sprung per Tippen"),
     ("Typing a name selects the matching file in the folder", "Beim Tippen eines Namens wird die passende Datei im Ordner ausgewählt"),
     ("{} words", "{} Wort|{} Wörter"),
+    ("Are you sure?", "Sind Sie sicher?"),
+    ("Continue", "Fortfahren"),
 ];

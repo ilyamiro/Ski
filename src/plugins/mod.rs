@@ -27,12 +27,64 @@ pub struct Badge {
     pub tone: Tone,
 }
 
+/// One mark on a file: a letter badge, or a small dot in any colour (a tag has many).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mark {
+    Letter(Badge),
+    Dot([u8; 3]),
+}
+
 /// A context menu entry contributed by a plugin. Entries with the same `group` fold into a submenu.
 pub struct MenuItem {
     pub id: String,
     pub label: &'static str,
     pub icon: &'static str,
     pub group: Option<&'static str>,
+    /// When set, the app asks this question first and runs the entry only after a yes.
+    pub confirm: Option<&'static str>,
+}
+
+impl MenuItem {
+    pub fn new(id: impl Into<String>, label: &'static str, icon: &'static str) -> Self {
+        Self { id: id.into(), label, icon, group: None, confirm: None }
+    }
+
+    pub fn group(mut self, group: &'static str) -> Self {
+        self.group = Some(group);
+        self
+    }
+
+    pub fn confirm(mut self, question: &'static str) -> Self {
+        self.confirm = Some(question);
+        self
+    }
+}
+
+/// What the app does after a plugin ran an entry or handled a click.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum Reaction {
+    #[default]
+    None,
+    /// Go to this folder.
+    Navigate(PathBuf),
+    /// Put this text in the search field and search.
+    Search(String),
+}
+
+/// A row a plugin adds to the sidebar.
+pub struct SidebarEntry {
+    pub id: String,
+    pub label: String,
+    pub icon: &'static str,
+    pub color: Option<[u8; 3]>,
+}
+
+/// A change Ski made to files, reported to plugins once it is done.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FileOpEvent {
+    /// `(from, to)` for each renamed or moved path.
+    Moved(Vec<(PathBuf, PathBuf)>),
+    Removed(Vec<PathBuf>),
 }
 
 /// One line of status a plugin wants shown over the listing.
@@ -70,6 +122,10 @@ pub trait Plugin {
     fn badge(&self, _item: &FileItem) -> Option<Badge> {
         None
     }
+    /// Every mark for `item`; by default the single badge.
+    fn marks(&self, item: &FileItem) -> Vec<Mark> {
+        self.badge(item).map(Mark::Letter).into_iter().collect()
+    }
     fn status(&self) -> Option<Status> {
         None
     }
@@ -77,7 +133,34 @@ pub trait Plugin {
         Vec::new()
     }
     /// Runs the menu entry `id` on `paths`, from the folder `dir`.
-    fn run(&mut self, _id: &str, _paths: &[PathBuf], _dir: &Path) {}
+    fn run(&mut self, _id: &str, _paths: &[PathBuf], _dir: &Path) -> Reaction {
+        Reaction::None
+    }
+    /// The title of the dialog this plugin wants open right now, if any. The app draws the dialog
+    /// and calls `window` every frame until the plugin stops asking.
+    fn window_title(&self) -> Option<&'static str> {
+        None
+    }
+    /// The user closed the dialog (button, Escape, a click outside).
+    fn close_window(&mut self) {}
+    /// Draws the dialog's content; returns false when the plugin is done with it.
+    fn window(&mut self, _ui: &mut eframe::egui::Ui) -> bool {
+        false
+    }
+    /// Rows of the plugin's own section in the sidebar.
+    fn sidebar(&self) -> Vec<SidebarEntry> {
+        Vec::new()
+    }
+    fn sidebar_click(&mut self, _id: &str) -> Reaction {
+        Reaction::None
+    }
+    /// Files were renamed, moved or removed by Ski.
+    fn file_op_done(&mut self, _op: &FileOpEvent) {}
+    /// A search query the plugin understands (`tag:work`): the paths it matches, or None when the
+    /// query is not meant for it.
+    fn search_paths(&self, _query: &str) -> Option<Vec<PathBuf>> {
+        None
+    }
     /// Extra rows for the Properties dialog of `item`; called every frame while it is open.
     fn properties(&mut self, _item: &FileItem) -> Vec<PropertyGroup> {
         Vec::new()
@@ -151,8 +234,8 @@ impl Plugins {
         self.active().any(|p| p.busy())
     }
 
-    pub fn badge(&self, item: &FileItem) -> Option<Badge> {
-        self.active().find_map(|p| p.badge(item))
+    pub fn marks(&self, item: &FileItem) -> Vec<Mark> {
+        self.active().flat_map(|p| p.marks(item)).collect()
     }
 
     pub fn statuses(&self) -> Vec<Status> {
@@ -164,10 +247,49 @@ impl Plugins {
         self.active().flat_map(|p| p.menu_items(selection).into_iter().map(|item| (p.id(), item))).collect()
     }
 
-    pub fn run(&mut self, plugin: &str, id: &str, paths: &[PathBuf], dir: &Path) {
-        if let Some(p) = self.active_mut().find(|p| p.id() == plugin) {
-            p.run(id, paths, dir);
+    pub fn run(&mut self, plugin: &str, id: &str, paths: &[PathBuf], dir: &Path) -> Reaction {
+        match self.active_mut().find(|p| p.id() == plugin) {
+            Some(p) => p.run(id, paths, dir),
+            None => Reaction::None,
         }
+    }
+
+    /// The plugin that wants a dialog open, with its title.
+    pub fn wanted_window(&self) -> Option<(&'static str, &'static str)> {
+        self.active().find_map(|p| p.window_title().map(|t| (p.id(), t)))
+    }
+
+    /// Draws the dialog of `plugin`; false when it closed.
+    pub fn window(&mut self, plugin: &str, ui: &mut eframe::egui::Ui) -> bool {
+        self.active_mut().find(|p| p.id() == plugin).is_some_and(|p| p.window(ui))
+    }
+
+    pub fn close_window(&mut self, plugin: &str) {
+        if let Some(p) = self.active_mut().find(|p| p.id() == plugin) {
+            p.close_window();
+        }
+    }
+
+    pub fn sidebar(&self) -> Vec<(&'static str, SidebarEntry)> {
+        self.active().flat_map(|p| p.sidebar().into_iter().map(|e| (p.id(), e))).collect()
+    }
+
+    pub fn sidebar_click(&mut self, plugin: &str, id: &str) -> Reaction {
+        match self.active_mut().find(|p| p.id() == plugin) {
+            Some(p) => p.sidebar_click(id),
+            None => Reaction::None,
+        }
+    }
+
+    pub fn file_op_done(&mut self, op: &FileOpEvent) {
+        for plugin in self.active_mut() {
+            plugin.file_op_done(op);
+        }
+    }
+
+    /// The first plugin that understands `query` answers it.
+    pub fn search_paths(&self, query: &str) -> Option<Vec<PathBuf>> {
+        self.active().find_map(|p| p.search_paths(query))
     }
 
     pub fn properties(&mut self, item: &FileItem) -> Vec<PropertyGroup> {
@@ -182,6 +304,86 @@ impl Plugins {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A plugin that records what it is told, to test the routing.
+    struct Fake {
+        id: &'static str,
+        on: bool,
+        events: std::rc::Rc<std::cell::RefCell<Vec<FileOpEvent>>>,
+    }
+
+    impl Plugin for Fake {
+        fn id(&self) -> &'static str {
+            self.id
+        }
+        fn name(&self) -> &'static str {
+            "Fake"
+        }
+        fn description(&self) -> &'static str {
+            ""
+        }
+        fn icon(&self) -> &'static str {
+            ""
+        }
+        fn default_enabled(&self) -> bool {
+            self.on
+        }
+        fn marks(&self, _item: &FileItem) -> Vec<Mark> {
+            vec![Mark::Dot([1, 2, 3]), Mark::Dot([4, 5, 6])]
+        }
+        fn menu_items(&self, _selection: &[FileItem]) -> Vec<MenuItem> {
+            vec![MenuItem::new("go", "Go", "").confirm("Sure?")]
+        }
+        fn run(&mut self, id: &str, _paths: &[PathBuf], dir: &Path) -> Reaction {
+            if id == "go" { Reaction::Navigate(dir.to_path_buf()) } else { Reaction::None }
+        }
+        fn file_op_done(&mut self, op: &FileOpEvent) {
+            self.events.borrow_mut().push(op.clone());
+        }
+    }
+
+    fn fakes(on: bool) -> (Plugins, std::rc::Rc<std::cell::RefCell<Vec<FileOpEvent>>>) {
+        let events = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let plugins = Plugins { list: vec![Box::new(Fake { id: "fake", on, events: events.clone() })], enabled: BTreeMap::new() };
+        (plugins, events)
+    }
+
+    fn item() -> FileItem {
+        FileItem::from_path(Path::new("/")).expect("root")
+    }
+
+    #[test]
+    fn marks_come_back_in_order() {
+        let (plugins, _) = fakes(true);
+        assert_eq!(plugins.marks(&item()), vec![Mark::Dot([1, 2, 3]), Mark::Dot([4, 5, 6])]);
+    }
+
+    #[test]
+    fn a_disabled_plugin_contributes_nothing() {
+        let (mut plugins, events) = fakes(false);
+        assert!(plugins.marks(&item()).is_empty());
+        assert!(plugins.menu_items(&[item()]).is_empty());
+        plugins.file_op_done(&FileOpEvent::Removed(vec![PathBuf::from("/x")]));
+        assert!(events.borrow().is_empty());
+        assert_eq!(plugins.run("fake", "go", &[], Path::new("/")), Reaction::None);
+    }
+
+    #[test]
+    fn menu_items_carry_the_confirmation_and_run_reports_a_reaction() {
+        let (mut plugins, _) = fakes(true);
+        let entries = plugins.menu_items(&[item()]);
+        assert_eq!(entries[0].0, "fake");
+        assert_eq!(entries[0].1.confirm, Some("Sure?"));
+        assert_eq!(plugins.run("fake", "go", &[], Path::new("/tmp")), Reaction::Navigate(PathBuf::from("/tmp")));
+    }
+
+    #[test]
+    fn file_operations_reach_enabled_plugins() {
+        let (mut plugins, events) = fakes(true);
+        let op = FileOpEvent::Moved(vec![(PathBuf::from("/a"), PathBuf::from("/b"))]);
+        plugins.file_op_done(&op);
+        assert_eq!(*events.borrow(), vec![op]);
+    }
 
     #[test]
     fn switches_override_defaults() {

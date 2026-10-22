@@ -88,6 +88,7 @@ impl SkiApp {
         match outcome.effect {
             Effect::Record(entry) => {
                 undoable = outcome.ok;
+                self.report_moves(&entry);
                 self.history.record(entry);
             }
             Effect::Undone(entry) => self.history.push_redo(entry),

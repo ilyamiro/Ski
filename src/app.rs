@@ -11,6 +11,7 @@ mod drives_ui;
 mod file_actions;
 mod jobs_ui;
 mod perms;
+mod plugin_ui;
 mod quick_look;
 mod tabs;
 use tabs::TabSlot;
@@ -130,7 +131,7 @@ enum MenuAction {
     Unmount(String, String, PathBuf),
     Eject(String, String, PathBuf),
     /// An entry a plugin added: the plugin's id, the entry's id and the files it applies to.
-    Plugin(&'static str, String, Vec<PathBuf>),
+    Plugin(&'static str, String, Vec<PathBuf>, Option<&'static str>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -146,6 +147,8 @@ pub(crate) enum ConfirmAction {
     EmptyTrash,
     /// The dialog's choice replaces files that exist: each one asked about in turn, the answer sent once all agreed.
     ReplaceFile { queue: Vec<PathBuf>, answer: Vec<PathBuf> },
+    /// A plugin entry that asked "are you sure?": the plugin, the entry and its files.
+    Plugin(&'static str, String, Vec<PathBuf>),
 }
 
 /// Action offered by a toast, such as undoing a move to the trash.
@@ -209,6 +212,8 @@ pub(crate) enum Dialog {
     /// A copy or move found its target name taken and waits for the answer.
     Conflict { request: Option<ConflictRequest>, all: bool },
     SelectPattern { pattern: String, case: bool, first_frame: bool },
+    /// A dialog a plugin draws itself: the plugin's id.
+    Plugin(&'static str),
     QuickLook { item: Box<FileItem>, preview: Box<quick_look::Preview> },
 }
 
@@ -1122,7 +1127,7 @@ impl SkiApp {
         self.set_toast(message);
     }
 
-    fn close_search(&mut self) {
+    pub(super) fn close_search(&mut self) {
         self.show_search = false;
         if !self.search_query.is_empty() {
             self.search_query.clear();
@@ -1133,7 +1138,7 @@ impl SkiApp {
     }
 
     /// Search the whole home folder; results replace the folder listing until the query is cleared.
-    fn on_query_changed(&mut self, ctx: &egui::Context) {
+    pub(super) fn on_query_changed(&mut self, ctx: &egui::Context) {
         if self.search_query.trim().is_empty() {
             self.search_root = None;
             self.search.cancel();
@@ -1146,6 +1151,13 @@ impl SkiApp {
             self.selected_index = None;
             self.sync_selection(true);
             self.error_message = None;
+            // A plugin that understands the query (`tag:work`) answers without a scan
+            if let Some(paths) = self.plugins.search_paths(self.search_query.trim()) {
+                self.search.cancel();
+                self.items = paths.iter().filter(|p| p.symlink_metadata().is_ok()).filter_map(|p| FileItem::from_path(p)).filter(|i| self.type_filter.accepts(i)).collect();
+                self.resort_items();
+                return;
+            }
             let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
             let here = self.search_root.clone().filter(|p| p.is_dir() && !trash::contains(p));
             let root = if self.settings.search_scope == SearchScope::ThisFolder { here.unwrap_or(home) } else { home };
@@ -1716,6 +1728,7 @@ impl eframe::App for SkiApp {
         for message in self.plugins.messages() {
             self.set_toast(message);
         }
+        self.open_plugin_dialog();
 
         let found = self.search.poll();
         if !found.is_empty() && !self.search_query.trim().is_empty() {
@@ -2245,6 +2258,8 @@ impl SkiApp {
         let mut reorder: Option<(usize, usize)> = None;
         let mut eject: Option<(String, String, PathBuf)> = None;
         let mut menu_at: Option<(egui::Pos2, MenuTarget)> = None;
+        let plugin_rows = self.plugins.sidebar();
+        let mut plugin_click: Option<(&'static str, String)> = None;
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
             ui.spacing_mut().item_spacing.y = 2.0;
             let mut first = true;
@@ -2349,7 +2364,20 @@ impl SkiApp {
                         }
                 }
             }
+            if !plugin_rows.is_empty() {
+                material::divider(ui, &self.theme);
+                for (plugin, entry) in &plugin_rows {
+                    let selected = self.search_query.trim() == entry.id;
+                    if material::nav_item(ui, ("plugin_row", plugin, &entry.id), entry.icon, &entry.label, &self.theme, selected).clicked() {
+                        plugin_click = Some((plugin, entry.id.clone()));
+                    }
+                }
+            }
         });
+        if let Some((plugin, id)) = plugin_click {
+            let reaction = self.plugins.sidebar_click(plugin, &id);
+            self.apply_reaction(ui.ctx(), reaction);
+        }
 
         self.drop_zones.extend(zones);
         if let Some((from, to)) = reorder {
@@ -2476,9 +2504,7 @@ impl SkiApp {
                 let thumb = thumb_for(&self.thumbs, &self.folder_icons, item, show_thumbs);
                 let resp = file_row(ui, idx, item, &self.theme, selected, is_cut, should_scroll, thumb, hint.as_deref(), &self.columns, &self.settings.column_widths, row_height);
                 item_rects.push((idx, resp.rect));
-                if let Some(badge) = self.plugins.badge(item) {
-                    paint_badge(ui, &self.theme, badge, egui::pos2(resp.rect.left() + 38.0, resp.rect.center().y + 9.0));
-                }
+                plugin_ui::paint_marks(ui, &self.theme, &self.plugins.marks(item), egui::pos2(resp.rect.left() + 38.0, resp.rect.center().y + 9.0), egui::pos2(resp.rect.left() + 13.0, resp.rect.center().y + 12.0));
                 let mods = ui.input(|i| i.modifiers);
                 if resp.clicked() {
                     if self.settings.single_click_open && !mods.command && !mods.shift {
@@ -2572,9 +2598,7 @@ impl SkiApp {
                         })
                         .inner;
                     item_rects.push((idx, resp.rect));
-                    if let Some(badge) = self.plugins.badge(item) {
-                        paint_badge(ui, &self.theme, badge, egui::pos2(resp.rect.right() - 12.0, resp.rect.top() + 12.0));
-                    }
+                    plugin_ui::paint_marks(ui, &self.theme, &self.plugins.marks(item), egui::pos2(resp.rect.right() - 12.0, resp.rect.top() + 12.0), egui::pos2(resp.rect.left() + 14.0, resp.rect.top() + 12.0));
                     let mods = ui.input(|i| i.modifiers);
                     if resp.clicked() {
                         if self.settings.single_click_open && !mods.command && !mods.shift {
@@ -3383,10 +3407,7 @@ impl SkiApp {
             MenuAction::Mount(dev, name) => self.mount_drive(ctx, dev, name, true),
             MenuAction::Unmount(dev, name, mount) => self.unmount_drive(ctx, dev, name, mount, false),
             MenuAction::Eject(dev, name, mount) => self.unmount_drive(ctx, dev, name, mount, true),
-            MenuAction::Plugin(plugin, id, paths) => {
-                let here = self.current_path.clone();
-                self.plugins.run(plugin, &id, &paths, &here);
-            }
+            MenuAction::Plugin(plugin, id, paths, confirm) => self.run_plugin_entry(ctx, plugin, id, paths, confirm),
             MenuAction::Redo => self.redo(),
             MenuAction::OpenSettings => self.open_settings_dialog(),
             MenuAction::Shortcuts => self.dialog = Some(Dialog::Shortcuts),
@@ -3481,7 +3502,7 @@ impl SkiApp {
         let mut entries: Vec<MenuEntry> = Vec::new();
         let mut folded: Vec<(&'static str, &'static str, Vec<MenuEntry>)> = Vec::new();
         for (plugin, entry) in self.plugins.menu_items(&selection) {
-            let action = MenuAction::Plugin(plugin, entry.id, paths.clone());
+            let action = MenuAction::Plugin(plugin, entry.id, paths.clone(), entry.confirm);
             match entry.group {
                 Some(group) => match folded.iter_mut().find(|(g, ..)| *g == group) {
                     Some((.., list)) => list.push((entry.icon, entry.label, action)),
@@ -3991,6 +4012,7 @@ impl SkiApp {
             Dialog::OpenWith { .. } => 480.0,
             Dialog::BatchRename { .. } => 560.0,
             Dialog::QuickLook { .. } => 720.0,
+            Dialog::Plugin(_) => 640.0,
             Dialog::Confirm { .. } | Dialog::Alert { .. } => 400.0,
             _ => 440.0,
         };
@@ -4027,6 +4049,7 @@ impl SkiApp {
                             Dialog::Conflict { .. } => self.conflict_dialog_contents(ui, &mut dialog),
                             Dialog::SelectPattern { .. } => self.select_pattern_contents(ui, &mut dialog),
                             Dialog::QuickLook { .. } => self.quick_look_contents(ui, &mut dialog),
+                            Dialog::Plugin(_) => self.plugin_dialog_contents(ui, &mut dialog),
                         };
                     });
             });
@@ -4052,6 +4075,9 @@ impl SkiApp {
 
         if is_open {
             if close {
+                if let Dialog::Plugin(id) = &dialog {
+                    self.plugins.close_window(id);
+                }
                 self.closing_dialog = Some(dialog);
                 self.dialog = None;
             } else if self.dialog.is_none() {
@@ -4163,6 +4189,7 @@ impl SkiApp {
             match std::mem::replace(action, ConfirmAction::EmptyTrash) {
                 ConfirmAction::DeleteForever(paths) => self.delete_forever(paths),
                 ConfirmAction::EmptyTrash => self.empty_trash(),
+                ConfirmAction::Plugin(plugin, id, paths) => self.run_plugin_confirmed(ui.ctx(), plugin, &id, &paths),
                 ConfirmAction::ReplaceFile { mut queue, answer } => {
                     if queue.is_empty() {
                         self.chooser_answer_with(&answer);
@@ -4212,6 +4239,7 @@ impl SkiApp {
 
     /// Pins, folder icons and default apps follow a path that was renamed.
     fn retarget_path(&mut self, old: &Path, target: &Path) {
+        self.plugins.file_op_done(&crate::plugins::FileOpEvent::Moved(vec![(old.to_path_buf(), target.to_path_buf())]));
         if let Some(idx) = self.pins.iter().position(|p| p.as_path() == old) {
             self.pins[idx] = target.to_path_buf();
             Place::save_pins(&self.pins);

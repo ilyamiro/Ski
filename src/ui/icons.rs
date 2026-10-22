@@ -161,3 +161,6 @@ pub const DOCKER: &str = "\u{f0868}";
 pub const ZIP: &str = "\u{f05c4}";
 pub const TEXT: &str = "\u{f0219}";
 pub const CAD: &str = "\u{f0eeb}";
+
+pub const TAG: &str = "\u{f04f9}";
+pub const SOURCE_BRANCH: &str = "\u{f062c}";
