@@ -549,6 +549,8 @@ pub const CATALOG: &[(&str, &str)] = &[
     ("New tag", "Neuer Tag"),
     ("Tag name", "Tag-Name"),
     ("Names can't contain commas", "Namen dürfen keine Kommas enthalten"),
+    ("Names can't be longer than {} characters", "Namen dürfen nicht länger als {} Zeichen sein"),
+    ("No closed tab to reopen", "Kein geschlossener Tab zum Wiederherstellen"),
     ("Add tag", "Tag hinzufügen"),
     ("Add tag…", "Tag hinzufügen…"),
     ("Find tags in this folder", "Tags in diesem Ordner suchen"),
