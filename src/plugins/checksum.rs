@@ -7,7 +7,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Instant, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 use eframe::egui;
 
@@ -513,6 +513,9 @@ const SHARED_LISTS: [&str; 12] = [
     "sha256sums", "sha256sums.txt", "sha256sum.txt", "sha1sums", "sha1sums.txt", "sha512sums", "sha512sums.txt", "md5sums", "md5sums.txt", "md5sum.txt", "checksums", "checksums.txt",
 ];
 
+/// How long Properties trusts what it read from the clipboard and from checksum files.
+const RECHECK: Duration = Duration::from_secs(2);
+
 /// Names that hold checksums of other files.
 pub fn is_checksum_file(name: &str) -> bool {
     let lower = name.to_ascii_lowercase();
@@ -675,8 +678,9 @@ type Key = (PathBuf, Option<SystemTime>, u64);
 #[derive(Default)]
 pub struct Checksum {
     jobs: HashMap<Key, Arc<Job>>,
-    /// The text on the clipboard when the file was last looked at, read once per file.
-    clipboard: HashMap<Key, Option<String>>,
+    /// The text on the clipboard when the file was last looked at; read again after `RECHECK`,
+    /// so copying a hash while Properties is open shows up.
+    clipboard: HashMap<Key, (Instant, Option<String>)>,
     /// What the checksum files beside a file said about it, looked up once per file.
     verdicts: HashMap<Key, Option<(String, bool)>>,
     /// Verifications report here when they finish.
@@ -824,8 +828,11 @@ impl Plugin for Checksum {
                     let text = if *matches { trf("Matches {}", &[&file]) } else { trf("Does not match {}", &[&file]) };
                     rows.push((tr("Checksum file"), text));
                 }
-                let clip = self.clipboard.entry(key).or_insert_with(crate::clipboard::get_text);
-                if let Some(text) = clip.as_deref().filter(|t| looks_like_hash(t)) {
+                if self.clipboard.get(&key).is_none_or(|(at, _)| at.elapsed() > RECHECK) {
+                    self.clipboard.insert(key.clone(), (Instant::now(), crate::clipboard::get_text()));
+                }
+                let clip = &self.clipboard[&key];
+                if let Some(text) = clip.1.as_deref().filter(|t| looks_like_hash(t)) {
                     let verdict = match hashes.matching(text) {
                         Some(name) => trf("Match: the clipboard holds the {}", &[&name]),
                         None => tr("No match with the hash on the clipboard").to_owned(),
