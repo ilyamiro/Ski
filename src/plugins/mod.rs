@@ -107,6 +107,8 @@ pub struct SidebarEntry {
     pub id: String,
     pub label: String,
     pub icon: &'static str,
+    /// The row has an edit button that calls `sidebar_edit`.
+    pub editable: bool,
 }
 
 /// A change Ski made to files, reported to plugins once it is done.
@@ -182,6 +184,14 @@ pub trait Plugin {
     fn window_title(&self) -> Option<&'static str> {
         None
     }
+    /// How wide the dialog wants to be; the window is narrower when the screen is.
+    fn window_width(&self) -> f32 {
+        520.0
+    }
+    /// A line of context under the dialog's title.
+    fn window_subtitle(&self) -> Option<String> {
+        None
+    }
     /// The user closed the dialog (button, Escape, a click outside).
     fn close_window(&mut self) {}
     /// Draws the dialog's content; returns false when the plugin is done with it.
@@ -195,6 +205,8 @@ pub trait Plugin {
     fn sidebar_click(&mut self, _id: &str) -> Reaction {
         Reaction::None
     }
+    /// The edit button of the sidebar row `id` was pressed.
+    fn sidebar_edit(&mut self, _id: &str) {}
     /// Files were renamed, moved or removed by Ski.
     fn file_op_done(&mut self, _op: &FileOpEvent) {}
     /// A search query the plugin understands (`tag:work`): the paths it matches, or None when the
@@ -336,6 +348,14 @@ impl Plugins {
         self.active().find(|p| p.id() == plugin).and_then(|p| p.window_title())
     }
 
+    pub fn window_width(&self, plugin: &str) -> f32 {
+        self.active().find(|p| p.id() == plugin).map_or(520.0, |p| p.window_width())
+    }
+
+    pub fn window_subtitle(&self, plugin: &str) -> Option<String> {
+        self.active().find(|p| p.id() == plugin).and_then(|p| p.window_subtitle())
+    }
+
     /// Draws the dialog of `plugin`; false when it closed.
     pub fn window(&mut self, plugin: &str, ui: &mut eframe::egui::Ui, theme: &SerpantinumTheme) -> bool {
         self.active_mut().find(|p| p.id() == plugin).is_some_and(|p| p.window(ui, theme))
@@ -361,6 +381,12 @@ impl Plugins {
         match self.active_mut().find(|p| p.id() == plugin) {
             Some(p) => p.sidebar_click(id),
             None => Reaction::None,
+        }
+    }
+
+    pub fn sidebar_edit(&mut self, plugin: &str, id: &str) {
+        if let Some(p) = self.active_mut().find(|p| p.id() == plugin) {
+            p.sidebar_edit(id);
         }
     }
 

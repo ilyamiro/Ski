@@ -125,8 +125,8 @@ impl SkiApp {
     }
 }
 
-/// Small round eject button at the right end of a sidebar row; true when clicked.
-pub(super) fn row_eject_button(ui: &mut egui::Ui, row: egui::Rect, row_hovered: bool, id: impl std::hash::Hash + std::fmt::Debug, theme: &SerpantinumTheme) -> bool {
+/// Small round button at the right end of a sidebar row, shown on hover; true when clicked.
+pub(super) fn row_button(ui: &mut egui::Ui, row: egui::Rect, row_hovered: bool, id: impl std::hash::Hash + std::fmt::Debug, icon: &str, tip: &str, theme: &SerpantinumTheme) -> bool {
     let size = 28.0;
     let rect = egui::Rect::from_center_size(egui::pos2(row.right() - 8.0 - size / 2.0, row.center().y), egui::vec2(size, size));
     let resp = ui.interact(rect, ui.make_persistent_id(id), egui::Sense::click());
@@ -137,7 +137,7 @@ pub(super) fn row_eject_button(ui: &mut egui::Ui, row: egui::Rect, row_hovered: 
             ui.painter().circle_filled(rect.center(), size / 2.0, theme.with_alpha(theme.text, (hover * material::ALPHA_HOVER as f32) as u8));
         }
         let color = material::lerp_color(theme.subtext0, theme.text, hover);
-        material::paint_icon(ui.painter(), rect.center(), icons::EJECT, material::ICON_SM, color.gamma_multiply(show));
+        material::paint_icon(ui.painter(), rect.center(), icon, material::ICON_SM, color.gamma_multiply(show));
     }
-    resp.on_hover_text(tr("Eject")).clicked()
+    resp.on_hover_text(tip).clicked()
 }

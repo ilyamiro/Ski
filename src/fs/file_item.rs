@@ -288,32 +288,21 @@ impl FileItem {
     }
 
     pub fn formatted_date(&self) -> String {
-        if relative_dates_enabled() {
-            match self.modified {
-                Some(time) => {
-                    let duration = match SystemTime::now().duration_since(time) {
-                        Ok(d) => d,
-                        Err(_) => return tr("In the future").to_string(),
-                    };
-                    let secs = duration.as_secs();
-                    if secs < 60 {
-                        tr("Just now").to_string()
-                    } else if secs < 3600 {
-                        trf("{}m ago", &[&(secs / 60)])
-                    } else if secs < 86400 {
-                        trf("{}h ago", &[&(secs / 3600)])
-                    } else if secs < 86400 * 7 {
-                        trf("{}d ago", &[&(secs / 86400)])
-                    } else {
-                        trf("{}w ago", &[&(secs / (86400 * 7))])
-                    }
-                }
-                None => tr("Unknown").to_string(),
-            }
-        } else {
-            super::props::format_datetime(self.modified)
-        }
+        format_date(self.modified)
     }
+
+    pub fn formatted_created(&self) -> String {
+        format_date(self.created)
+    }
+
+    pub fn formatted_accessed(&self) -> String {
+        format_date(self.accessed)
+    }
+}
+
+/// A date the way the list shows it: relative to today or in full, as the setting says.
+fn format_date(time: Option<SystemTime>) -> String {
+    if relative_dates_enabled() { super::props::format_relative(time) } else { super::props::format_datetime(time) }
 }
 
 pub fn format_bytes(bytes: u64) -> String {

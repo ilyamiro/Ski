@@ -274,15 +274,15 @@ impl Plugin for Actions {
             }
         }
         ui.add_space(6.0);
-        ui.horizontal(|ui| {
-            ui.add_space(14.0);
-            if material::button(ui, "new_action", Some(icons::ADD), tr("New action"), theme, material::ButtonKind::Tonal, self.dir.is_some()).clicked() {
-                match self.create_template() {
-                    Ok(path) => self.messages.push(trf("Created {}", &[&path.display()])),
-                    Err(e) => self.messages.push(trf("Couldn't create the action: {}", &[&e])),
-                }
-            }
+        let create = material::control_row(ui, theme, material::row_hint("", theme), |ui| {
+            material::button(ui, "new_action", Some(icons::ADD), tr("New action"), theme, material::ButtonKind::Tonal, self.dir.is_some()).clicked()
         });
+        if create {
+            match self.create_template() {
+                Ok(path) => self.messages.push(trf("Created {}", &[&path.display()])),
+                Err(e) => self.messages.push(trf("Couldn't create the action: {}", &[&e])),
+            }
+        }
         ui.add_space(4.0);
     }
 

@@ -45,21 +45,67 @@ pub fn mode_string(mode: u32, is_dir: bool) -> String {
     out
 }
 
-/// `2026-10-18 14:03` in local time.
-pub fn format_datetime(time: Option<SystemTime>) -> String {
-    let Some(time) = time else { return tr("Unknown").to_owned() };
+fn local_tm(time: SystemTime) -> Option<libc::tm> {
     let secs = match time.duration_since(SystemTime::UNIX_EPOCH) {
         Ok(d) => d.as_secs() as libc::time_t,
         Err(e) => -(e.duration().as_secs() as libc::time_t),
     };
     // SAFETY: `tm` is plain data and `localtime_r` only writes into it.
-    let tm = unsafe {
+    unsafe {
         let mut tm: libc::tm = std::mem::zeroed();
-        if libc::localtime_r(&secs, &mut tm).is_null() {
-            return tr("Unknown").to_owned();
-        }
-        tm
-    };
+        (!libc::localtime_r(&secs, &mut tm).is_null()).then_some(tm)
+    }
+}
+
+/// Days since 1970-01-01 of a civil date, so calendar days can be told apart by subtraction.
+fn day_number(year: i64, month: i64, day: i64) -> i64 {
+    let y = if month <= 2 { year - 1 } else { year };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let doy = (153 * (month + if month > 2 { -3 } else { 9 }) + 2) / 5 + day - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146097 + doe - 719468
+}
+
+/// What a date looks like next to today, in calendar days, weeks, months and years:
+/// "Today, 23:12", "Yesterday, 22:40", "3 days ago", "Last week", "2 months ago".
+/// Each date is `(year, month, day, hour, minute)`.
+fn describe_age(now: (i64, i64, i64, i64, i64), then: (i64, i64, i64, i64, i64)) -> String {
+    let days = day_number(now.0, now.1, now.2) - day_number(then.0, then.1, then.2);
+    let clock = format!("{:02}:{:02}", then.3, then.4);
+    let months = (now.0 - then.0) * 12 + now.1 - then.1 - i64::from(now.2 < then.2);
+    match days {
+        ..=-1 => tr("In the future").to_owned(),
+        0 => trf("Today, {}", &[&clock]),
+        1 => trf("Yesterday, {}", &[&clock]),
+        2..=6 => trn(days as usize, "{} days ago", "{} days ago"),
+        7..=13 => tr("Last week").to_owned(),
+        14..=29 if months < 1 => trn((days / 7) as usize, "{} weeks ago", "{} weeks ago"),
+        _ if months <= 1 => tr("Last month").to_owned(),
+        _ if months < 12 => trn(months as usize, "{} months ago", "{} months ago"),
+        _ if months < 24 => tr("Last year").to_owned(),
+        _ => trn((months / 12) as usize, "{} years ago", "{} years ago"),
+    }
+}
+
+/// `Today, 23:12`, `Yesterday, 22:40`, `2 weeks ago`: how long ago, by the calendar in local time.
+pub fn format_relative(time: Option<SystemTime>) -> String {
+    let Some(time) = time else { return tr("Unknown").to_owned() };
+    let now = SystemTime::now();
+    match now.duration_since(time) {
+        Err(_) => return tr("In the future").to_owned(),
+        Ok(d) if d.as_secs() < 60 => return tr("Just now").to_owned(),
+        Ok(_) => {}
+    }
+    let (Some(a), Some(b)) = (local_tm(now), local_tm(time)) else { return tr("Unknown").to_owned() };
+    let parts = |tm: libc::tm| (i64::from(tm.tm_year) + 1900, i64::from(tm.tm_mon) + 1, i64::from(tm.tm_mday), i64::from(tm.tm_hour), i64::from(tm.tm_min));
+    describe_age(parts(a), parts(b))
+}
+
+/// `2026-10-18 14:03` in local time.
+pub fn format_datetime(time: Option<SystemTime>) -> String {
+    let Some(time) = time else { return tr("Unknown").to_owned() };
+    let Some(tm) = local_tm(time) else { return tr("Unknown").to_owned() };
     format!(
         "{:04}-{:02}-{:02} {:02}:{:02}",
         tm.tm_year + 1900,
@@ -361,6 +407,25 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn ages_follow_the_calendar() {
+        let now = (2026, 10, 22, 14, 0);
+        assert_eq!(describe_age(now, (2026, 10, 22, 8, 5)), "Today, 08:05");
+        // Yesterday is a calendar day, even when it was only a few hours ago
+        assert_eq!(describe_age((2026, 10, 22, 1, 0), (2026, 10, 21, 23, 30)), "Yesterday, 23:30");
+        assert_eq!(describe_age(now, (2026, 10, 19, 9, 0)), "3 days ago");
+        assert_eq!(describe_age(now, (2026, 10, 12, 9, 0)), "Last week");
+        assert_eq!(describe_age(now, (2026, 10, 1, 9, 0)), "3 weeks ago");
+        assert_eq!(describe_age(now, (2026, 9, 20, 9, 0)), "Last month");
+        assert_eq!(describe_age(now, (2026, 3, 2, 9, 0)), "7 months ago");
+        assert_eq!(describe_age(now, (2025, 8, 2, 9, 0)), "Last year");
+        assert_eq!(describe_age(now, (2023, 1, 2, 9, 0)), "3 years ago");
+        assert_eq!(describe_age(now, (2026, 10, 23, 9, 0)), "In the future");
+        // Across a year boundary and a leap day
+        assert_eq!(describe_age((2024, 3, 1, 0, 0), (2024, 2, 28, 0, 0)), "2 days ago");
+        assert_eq!(describe_age((2026, 1, 2, 9, 0), (2025, 12, 31, 9, 0)), "2 days ago");
     }
 
     #[test]

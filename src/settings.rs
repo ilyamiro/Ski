@@ -253,7 +253,7 @@ impl Default for Settings {
             show_status_bar: true,
             show_thumbnails: true,
             show_extensions: true,
-            relative_dates: false,
+            relative_dates: true,
             decimal_units: false,
             folder_sizes: FolderSizeMode::default(),
             size_on_disk: false,

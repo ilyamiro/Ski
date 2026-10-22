@@ -378,7 +378,7 @@ impl SkiApp {
             for color in ACCENTS {
                 let c = theme::parse_hex(color).unwrap_or(Color32::GRAY);
                 let on = self.settings.accent.as_deref().is_some_and(|a| a.eq_ignore_ascii_case(color));
-                if swatch(ui, ("accent", color), c, &theme, on).clicked() {
+                if material::swatch(ui, ("accent", color), c, &theme, on).clicked() {
                     self.settings.accent = Some(color.to_owned());
                     *hex = color.to_owned();
                     self.rebuild_theme();
@@ -658,7 +658,7 @@ impl SkiApp {
                 self.settings.show_extensions = !self.settings.show_extensions;
                 self.persist_settings();
             }
-            let desc = Some(tr("Show “2 hours ago” instead of a date"));
+            let desc = Some(tr("Show “Yesterday” or “2 weeks ago” instead of a date"));
             if switch_row_with(ui, "fv_relative_dates", icons::RECENT, tr("Relative dates"), desc, &theme, self.settings.relative_dates).clicked() {
                 self.settings.relative_dates = !self.settings.relative_dates;
                 self.persist_settings();
@@ -764,17 +764,15 @@ impl SkiApp {
                     self.persist_settings();
                 }
             });
-            material::hint_label_inset(ui, tr("Files in this folder are offered when you create a new file."), &theme, 14);
-            ui.horizontal(|ui| {
-                if button(ui, "open_templates", Some(icons::FOLDER_OPEN), tr("Open templates folder"), &theme, ButtonKind::Tonal, shown.is_some()).clicked()
-                    && let Some(dir) = shown
-                {
-                    // The folder is created on first use, so there is always somewhere to put templates
-                    let _ = std::fs::create_dir_all(&dir);
-                    self.pending_open = Some(dir);
-                }
+            let hint = tr("Files in this folder are offered when you create a new file.");
+            let open = material::control_row(ui, &theme, material::row_hint(hint, &theme), |ui| {
+                button(ui, "open_templates", Some(icons::FOLDER_OPEN), tr("Open templates folder"), &theme, ButtonKind::Tonal, shown.is_some()).clicked()
             });
-            ui.add_space(4.0);
+            if open && let Some(dir) = shown {
+                // The folder is created on first use, so there is always somewhere to put templates
+                let _ = std::fs::create_dir_all(&dir);
+                self.pending_open = Some(dir);
+            }
         });
     }
 
@@ -802,17 +800,15 @@ impl SkiApp {
         if self.plugins.is_enabled("actions") {
             material::section_label(ui, tr("Custom actions"), &theme);
             group_card(ui, &theme, |ui| {
-                material::hint_label_inset(ui, tr("Each .json file or executable script in the actions folder becomes an entry in the context menu. The selected files are passed as arguments and in SKI_SELECTED_FILES."), &theme, 14);
                 let dir = crate::plugins::actions::dir();
-                ui.horizontal(|ui| {
-                    if button(ui, "open_actions", Some(icons::FOLDER_OPEN), tr("Open actions folder"), &theme, ButtonKind::Tonal, dir.is_some()).clicked()
-                        && let Some(dir) = dir
-                    {
-                        let _ = std::fs::create_dir_all(&dir);
-                        self.pending_open = Some(dir);
-                    }
+                let hint = tr("Each .json file or executable script in the actions folder becomes an entry in the context menu. The selected files are passed as arguments and in SKI_SELECTED_FILES.");
+                let open = material::control_row(ui, &theme, material::row_hint(hint, &theme), |ui| {
+                    button(ui, "open_actions", Some(icons::FOLDER_OPEN), tr("Open actions folder"), &theme, ButtonKind::Tonal, dir.is_some()).clicked()
                 });
-                ui.add_space(4.0);
+                if open && let Some(dir) = dir {
+                    let _ = std::fs::create_dir_all(&dir);
+                    self.pending_open = Some(dir);
+                }
                 self.plugins.settings("actions", ui, &theme);
             });
         }
@@ -1220,33 +1216,6 @@ fn keycap_pill(
     }
 
     (resp, remove_clicked)
-}
-
-fn swatch(
-    ui: &mut egui::Ui,
-    id_source: impl std::hash::Hash + std::fmt::Debug,
-    color: egui::Color32,
-    theme: &SerpantinumTheme,
-    selected: bool,
-) -> egui::Response {
-    let (rect, resp) = ui.allocate_exact_size(egui::vec2(30.0, 30.0), egui::Sense::click());
-    let id = ui.make_persistent_id(id_source);
-    let fx = material::fx(ui, id, &resp, true, &material::FxSpec::ICON);
-    let sel_t = material::animate(ui.ctx(), id.with("sel"), selected);
-    let r = egui::Rect::from_center_size(rect.center(), rect.size() * fx.scale);
-    ui.painter().circle_filled(r.center(), r.width() / 2.0, color);
-    if fx.flash > 0.0 {
-        ui.painter().circle_filled(r.center(), r.width() / 2.0, egui::Color32::from_white_alpha((fx.flash * 120.0) as u8));
-    }
-    if fx.focus > 0.01 {
-        let ring = egui::Stroke::new(2.0, material::focus_color(ui.ctx()).gamma_multiply(fx.focus));
-        ui.painter().circle_stroke(r.center(), r.width() / 2.0 + 1.0, ring);
-    }
-    if sel_t > 0.01 {
-        let fg = material::on_color(theme, color).gamma_multiply(sel_t);
-        material::paint_icon(ui.painter(), rect.center(), icons::CHECK, material::ICON_MD * material::lerp(0.6, 1.0, sel_t), fg);
-    }
-    resp
 }
 
 fn theme_card(

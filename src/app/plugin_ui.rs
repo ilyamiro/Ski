@@ -96,7 +96,8 @@ impl SkiApp {
         let Dialog::Plugin(id) = dialog else { return false };
         let theme = self.theme;
         let Some(title) = self.plugins.window_title(id) else { return true };
-        let mut close = material::dialog_header(ui, title, None, &theme, "plugin_close");
+        let subtitle = self.plugins.window_subtitle(id);
+        let mut close = material::dialog_header(ui, title, subtitle.as_deref(), &theme, "plugin_close");
         close |= !self.plugins.window(id, ui, &theme);
         close
     }

@@ -567,6 +567,11 @@ impl Plugin for Duplicates {
         }
     }
 
+    fn window_width(&self) -> f32 {
+        // The empty and busy states are short messages; the list of groups needs room for paths
+        if self.view.as_ref().is_some_and(|v| v.phase != Phase::Scanning && v.error.is_none() && !v.cancelled && !v.groups.is_empty()) { 780.0 } else { 460.0 }
+    }
+
     fn window(&mut self, ui: &mut egui::Ui, theme: &SerpantinumTheme) -> bool {
         let Some(view) = self.view.as_mut() else { return false };
         let roots = view.roots.iter().map(|r| short(r)).collect::<Vec<_>>().join(", ");
@@ -625,7 +630,7 @@ impl Plugin for Duplicates {
         ui.add_space(6.0);
 
         let mut toggled: Option<(PathBuf, bool)> = None;
-        egui::ScrollArea::vertical().max_height(340.0).auto_shrink([false, true]).show_rows(ui, ROW_HEIGHT, view.rows.len(), |ui, range| {
+        egui::ScrollArea::vertical().max_height(material::dialog_list_height(ui, 330.0)).auto_shrink([false, true]).show_rows(ui, ROW_HEIGHT, view.rows.len(), |ui, range| {
             ui.spacing_mut().item_spacing.y = 0.0;
             for row in &view.rows[range] {
                 let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), ROW_HEIGHT), egui::Sense::hover());

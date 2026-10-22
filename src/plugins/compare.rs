@@ -541,6 +541,11 @@ impl Plugin for Compare {
         self.view.as_ref().map(|_| tr("Compare folders"))
     }
 
+    fn window_width(&self) -> f32 {
+        // The form alone is narrow; the result table needs room for paths and both sides' sizes
+        if self.view.as_ref().is_some_and(|v| v.scanned.is_some()) { 860.0 } else { 560.0 }
+    }
+
     fn close_window(&mut self) {
         if let Some(view) = self.view.take() {
             view.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -551,9 +556,11 @@ impl Plugin for Compare {
         let Some(view) = self.view.as_mut() else { return false };
         let (mut rescan, mut copy_right, mut copy_left, mut trash_left, mut trash_right, mut open) = (false, false, false, false, false, false);
 
-        for (label, text, id) in [(tr("Left folder"), 0, "left"), (tr("Right folder"), 1, "right")].map(|(l, t, i)| (l, t, i)) {
+        for (label, text, id) in [(tr("Left folder"), 0, "left"), (tr("Right folder"), 1, "right")] {
             ui.horizontal(|ui| {
-                ui.add_sized([96.0, 30.0], egui::Label::new(egui::RichText::new(label).size(material::FONT_CAPTION).color(theme.subtext1)));
+                // Fixed label column so both fields start at the same x
+                let (rect, _) = ui.allocate_exact_size(egui::vec2(88.0, 36.0), egui::Sense::hover());
+                material::paint_label(ui, rect.left(), rect.center().y, label, material::FONT_CAPTION, theme.subtext1, rect.width());
                 material::input_frame(theme).show(ui, |ui| {
                     let field = if text == 0 { &mut view.left } else { &mut view.right };
                     let response = ui.add(egui::TextEdit::singleline(field).id_salt(("compare_path", id)).frame(egui::Frame::NONE).desired_width(f32::INFINITY).font(egui::FontId::proportional(material::FONT_BODY)));
@@ -564,16 +571,18 @@ impl Plugin for Compare {
             });
         }
         ui.add_space(4.0);
-        ui.horizontal(|ui| {
+        ui.allocate_ui_with_layout(egui::vec2(ui.available_width(), 36.0), egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if material::button(ui, "compare_go", Some(icons::SYNC), tr("Compare"), theme, material::ButtonKind::Filled, true).clicked() {
                 rescan = true;
             }
-            let on = view.contents;
-            ui.add_space(6.0);
-            if material::chip(ui, "compare_contents", None, tr("Compare contents"), theme, on).clicked() {
-                view.contents = !on;
-                rescan = view.scanned.is_some();
-            }
+            ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                ui.add_space(94.0);
+                let on = view.contents;
+                if material::chip(ui, "compare_contents", None, tr("Compare contents"), theme, on).clicked() {
+                    view.contents = !on;
+                    rescan = view.scanned.is_some();
+                }
+            });
         });
 
         if let Some(error) = &view.error {
@@ -616,7 +625,7 @@ impl Plugin for Compare {
 
         let mut toggled: Option<(usize, bool)> = None;
         let (info_w, class_w) = (76.0, 128.0);
-        egui::ScrollArea::vertical().max_height(300.0).auto_shrink([false, true]).show_rows(ui, ROW_HEIGHT, view.visible.len(), |ui, range| {
+        egui::ScrollArea::vertical().max_height(material::dialog_list_height(ui, 400.0)).auto_shrink([false, true]).show_rows(ui, ROW_HEIGHT, view.visible.len(), |ui, range| {
             ui.spacing_mut().item_spacing.y = 0.0;
             for &index in &view.visible[range] {
                 let entry = &view.entries[index];

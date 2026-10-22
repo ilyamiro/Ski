@@ -253,8 +253,13 @@ type FolderRead = (u64, PathBuf, HashMap<PathBuf, Entry>);
 type Tagged = (PathBuf, Vec<String>);
 
 struct Prompt {
+    /// Files that get the new tag; empty when editing `editing`.
     paths: Vec<PathBuf>,
+    /// The tag being renamed or deleted, when the prompt edits one.
+    editing: Option<String>,
     name: String,
+    /// The colour picked in the dialog; None keeps the tag's current one.
+    color: Option<[u8; 3]>,
     first_frame: bool,
 }
 
@@ -265,7 +270,6 @@ pub struct Tags {
     dir: Option<PathBuf>,
     generation: u64,
     folder_rx: Option<mpsc::Receiver<FolderRead>>,
-    scan_rx: Option<mpsc::Receiver<Vec<Tagged>>>,
     prompt: Option<Prompt>,
     messages: Vec<String>,
 }
@@ -281,7 +285,7 @@ impl Tags {
     }
 
     fn with(registry: Registry, colors: BTreeMap<String, [u8; 3]>) -> Self {
-        Self { registry, colors, cache: HashMap::new(), dir: None, generation: 0, folder_rx: None, scan_rx: None, prompt: None, messages: Vec::new() }
+        Self { registry, colors, cache: HashMap::new(), dir: None, generation: 0, folder_rx: None, prompt: None, messages: Vec::new() }
     }
 
     pub fn color(&self, name: &str) -> [u8; 3] {
@@ -354,8 +358,47 @@ impl Tags {
         }
     }
 
+    fn start_edit(&mut self, name: &str) {
+        self.prompt = Some(Prompt { paths: Vec::new(), editing: Some(name.to_owned()), name: name.to_owned(), color: None, first_frame: true });
+    }
+
+    /// Gives every file with the tag `from` the name `to` instead (merging when it has both).
+    fn rename_tag(&mut self, from: &str, to: &str) {
+        let paths = self.registry.with_tag(from);
+        self.edit(&paths, |tags| {
+            tags.retain(|t| !same_tag(t, from));
+            if !tags.iter().any(|t| same_tag(t, to)) {
+                tags.push(to.to_owned());
+            }
+        });
+        if let Some(key) = self.colors.keys().find(|k| same_tag(k, from)).cloned()
+            && let Some(rgb) = self.colors.remove(&key)
+        {
+            self.colors.entry(to.to_owned()).or_insert(rgb);
+            self.save_colors();
+        }
+    }
+
+    fn set_color(&mut self, name: &str, rgb: Option<[u8; 3]>) {
+        if let Some(rgb) = rgb {
+            self.colors.retain(|k, _| !same_tag(k, name));
+            self.colors.insert(name.to_owned(), rgb);
+            self.save_colors();
+        }
+    }
+
+    fn delete_tag(&mut self, name: &str) {
+        let paths = self.registry.with_tag(name);
+        self.edit(&paths, |tags| tags.retain(|t| !same_tag(t, name)));
+        let before = self.colors.len();
+        self.colors.retain(|k, _| !same_tag(k, name));
+        if self.colors.len() != before {
+            self.save_colors();
+        }
+    }
+
     fn start_prompt(&mut self, paths: &[PathBuf]) {
-        self.prompt = Some(Prompt { paths: paths.to_vec(), name: String::new(), first_frame: true });
+        self.prompt = Some(Prompt { paths: paths.to_vec(), editing: None, name: String::new(), color: None, first_frame: true });
     }
 }
 
@@ -418,27 +461,11 @@ impl Plugin for Tags {
                 Err(mpsc::TryRecvError::Disconnected) => self.folder_rx = None,
             }
         }
-        if let Some(rx) = &self.scan_rx {
-            match rx.try_recv() {
-                Ok(found) => {
-                    self.scan_rx = None;
-                    let count = found.len();
-                    for (path, tags) in found {
-                        self.registry.record(&path, &tags);
-                    }
-                    self.registry.save();
-                    self.messages.push(if count == 0 { tr("No tagged files found here").to_owned() } else { trn(count, "Found {} tagged file", "Found {} tagged files") });
-                    changed = true;
-                }
-                Err(mpsc::TryRecvError::Empty) => {}
-                Err(mpsc::TryRecvError::Disconnected) => self.scan_rx = None,
-            }
-        }
         changed
     }
 
     fn busy(&self) -> bool {
-        self.folder_rx.is_some() || self.scan_rx.is_some()
+        self.folder_rx.is_some()
     }
 
     fn marks(&self, item: &FileItem) -> Vec<Mark> {
@@ -489,16 +516,32 @@ impl Plugin for Tags {
     }
 
     fn window_title(&self) -> Option<&'static str> {
-        self.prompt.as_ref().map(|_| tr("New tag"))
+        self.prompt.as_ref().map(|p| if p.editing.is_some() { tr("Edit tag") } else { tr("New tag") })
     }
 
     fn close_window(&mut self) {
         self.prompt = None;
     }
 
+    fn window_width(&self) -> f32 {
+        420.0
+    }
+
+    fn window_subtitle(&self) -> Option<String> {
+        let prompt = self.prompt.as_ref()?;
+        let count = match &prompt.editing {
+            Some(name) => self.registry.with_tag(name).len(),
+            None => prompt.paths.len(),
+        };
+        match (&prompt.editing, prompt.paths.as_slice()) {
+            (None, [one]) => Some(file_name(one)),
+            _ => Some(trn(count, "{} file", "{} files")),
+        }
+    }
+
     fn window(&mut self, ui: &mut egui::Ui, theme: &SerpantinumTheme) -> bool {
-        let Some(prompt) = self.prompt.as_mut() else { return false };
-        let mut add = false;
+        let Some(mut prompt) = self.prompt.take() else { return false };
+        let (mut add, mut delete) = (false, false);
         let valid = clean_name(&prompt.name).is_some();
         material::input_frame(theme).show(ui, |ui| {
             let out = egui::TextEdit::singleline(&mut prompt.name)
@@ -509,6 +552,14 @@ impl Plugin for Tags {
             let response = ui.add(out);
             if std::mem::take(&mut prompt.first_frame) {
                 response.request_focus();
+                // Renaming starts with the name selected, so typing replaces it
+                if prompt.editing.is_some()
+                    && let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), response.id)
+                {
+                    let end = egui::text::CCursor::new(prompt.name.chars().count());
+                    state.cursor.set_char_range(Some(egui::text::CCursorRange::two(egui::text::CCursor::new(0), end)));
+                    state.store(ui.ctx(), response.id);
+                }
             }
             add |= response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
         });
@@ -516,46 +567,65 @@ impl Plugin for Tags {
             let problem = if prompt.name.trim().chars().count() > MAX_NAME { trf("Names can't be longer than {} characters", &[&MAX_NAME]) } else { tr("Names can't contain commas").to_owned() };
             ui.label(egui::RichText::new(problem).size(material::FONT_CAPTION).color(theme.red));
         }
-        ui.add_space(4.0);
+        // The colour follows the typed name until one is picked
+        let shown = prompt.color.unwrap_or_else(|| self.color(prompt.editing.as_deref().filter(|_| prompt.name.trim().is_empty()).unwrap_or(prompt.name.trim())));
+        ui.add_space(2.0);
+        if let Some(rgb) = material::control_row(ui, theme, material::row_hint(tr("Color"), theme), |ui| material::swatch_choice(ui, "tag_dialog_color", &PALETTE, shown, theme)) {
+            prompt.color = Some(rgb);
+        }
+        ui.add_space(2.0);
         ui.allocate_ui_with_layout(egui::vec2(ui.available_width(), 36.0), egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            add |= material::button(ui, "tag_add", Some(icons::CHECK), tr("Add tag"), theme, material::ButtonKind::Filled, valid).clicked();
+            let label = if prompt.editing.is_some() { tr("Save") } else { tr("Add tag") };
+            add |= material::button(ui, "tag_add", Some(icons::CHECK), label, theme, material::ButtonKind::Filled, valid).clicked();
+            if prompt.editing.is_some() {
+                // The destructive choice sits at the far side, away from Save
+                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                    delete = material::button(ui, "tag_delete", Some(icons::TRASH), tr("Delete tag"), theme, material::ButtonKind::Danger, true).clicked();
+                });
+            }
         });
-        if add && let Some(name) = clean_name(&prompt.name) {
-            let paths = std::mem::take(&mut prompt.paths);
-            self.prompt = None;
-            self.edit(&paths, |tags| {
+        if let Some(old) = prompt.editing.clone() {
+            if delete {
+                self.delete_tag(&old);
+                return false;
+            }
+            if add && let Some(name) = clean_name(&prompt.name) {
+                if name != old {
+                    self.rename_tag(&old, &name);
+                }
+                self.set_color(&name, prompt.color);
+                return false;
+            }
+        } else if add && let Some(name) = clean_name(&prompt.name) {
+            self.set_color(&name, prompt.color);
+            self.edit(&prompt.paths, |tags| {
                 if !tags.iter().any(|t| same_tag(t, &name)) {
                     tags.push(name.clone());
                 }
             });
             return false;
         }
+        self.prompt = Some(prompt);
         true
     }
 
     fn sidebar(&self) -> Vec<SidebarEntry> {
-        let mut rows: Vec<SidebarEntry> = self
+        self
             .registry
             .names()
             .into_iter()
-            .map(|(name, _)| SidebarEntry { id: format!("tag:{name}"), label: name, icon: icons::TAG })
-            .collect();
-        rows.push(SidebarEntry { id: "scan".to_owned(), label: tr("Find tags in this folder").to_owned(), icon: icons::SEARCH });
-        rows
+            .map(|(name, _)| SidebarEntry { id: format!("tag:{name}"), label: name, icon: icons::TAG, editable: true })
+            .collect()
     }
 
     fn sidebar_click(&mut self, id: &str) -> Reaction {
-        if id == "scan" {
-            if let Some(dir) = self.dir.clone().filter(|_| self.scan_rx.is_none()) {
-                let (tx, rx) = mpsc::channel();
-                self.scan_rx = Some(rx);
-                std::thread::spawn(move || {
-                    let _ = tx.send(scan_tree(&dir));
-                });
-            }
-            return Reaction::None;
-        }
         Reaction::Search(id.to_owned())
+    }
+
+    fn sidebar_edit(&mut self, id: &str) {
+        if let Some(name) = id.strip_prefix("tag:") {
+            self.start_edit(name);
+        }
     }
 
     fn file_op_done(&mut self, op: &FileOpEvent) {
@@ -618,25 +688,11 @@ impl Plugin for Tags {
         }
         let mut chosen: Option<(String, [u8; 3])> = None;
         for name in &names {
-            ui.horizontal(|ui| {
-                ui.add_space(14.0);
-                ui.label(egui::RichText::new(name).size(material::FONT_BODY).color(theme.text));
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.add_space(14.0);
-                    let current = self.color(name);
-                    for rgb in PALETTE.iter().rev() {
-                        let (rect, response) = ui.allocate_exact_size(egui::vec2(20.0, 20.0), egui::Sense::click());
-                        let color = egui::Color32::from_rgb(rgb[0], rgb[1], rgb[2]);
-                        ui.painter().circle_filled(rect.center(), 7.5, color);
-                        if *rgb == current {
-                            ui.painter().circle_stroke(rect.center(), 9.5, egui::Stroke::new(2.0, theme.text));
-                        }
-                        if response.clicked() {
-                            chosen = Some((name.clone(), *rgb));
-                        }
-                    }
-                });
-            });
+            let current = self.color(name);
+            let pick = material::control_row(ui, theme, material::row_text(name, theme), |ui| material::swatch_choice(ui, ("tag_color", name), &PALETTE, current, theme));
+            if let Some(rgb) = pick {
+                chosen = Some((name.clone(), rgb));
+            }
         }
         if let Some((name, rgb)) = chosen {
             self.colors.insert(name, rgb);
@@ -710,6 +766,26 @@ mod tests {
         tags.run("toggle:work", std::slice::from_ref(&file), &dir);
         assert!(read_tags(&file).unwrap().is_empty());
         assert!(tags.registry.with_tag("work").is_empty());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn renaming_and_deleting_a_tag_reaches_every_file() {
+        let Some((dir, file)) = scratch_file("rename") else { return };
+        let mut colors = BTreeMap::new();
+        colors.insert("work".to_owned(), [1, 2, 3]);
+        let mut tags = Tags::with(Registry::default(), colors);
+        tags.run("toggle:work", std::slice::from_ref(&file), &dir);
+        tags.run("toggle:home", std::slice::from_ref(&file), &dir);
+        tags.rename_tag("work", "job");
+        assert_eq!(read_tags(&file).unwrap(), vec!["home", "job"]);
+        assert_eq!(tags.color("job"), [1, 2, 3]);
+        // Renaming onto a tag the file already has merges the two
+        tags.rename_tag("home", "JOB");
+        assert_eq!(read_tags(&file).unwrap(), vec!["job"]);
+        tags.delete_tag("job");
+        assert!(read_tags(&file).unwrap().is_empty());
+        assert!(tags.registry.names().is_empty());
         std::fs::remove_dir_all(dir).unwrap();
     }
 

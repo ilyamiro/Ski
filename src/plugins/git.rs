@@ -260,6 +260,10 @@ impl Plugin for Git {
         self.diff = None;
     }
 
+    fn window_width(&self) -> f32 {
+        900.0
+    }
+
     fn window(&mut self, ui: &mut egui::Ui, theme: &SerpantinumTheme) -> bool {
         let Some(view) = &self.diff else { return false };
         ui.label(egui::RichText::new(&view.title).size(crate::ui::material::FONT_CAPTION).color(theme.subtext1));
@@ -271,7 +275,7 @@ impl Plugin for Git {
             ui.label(egui::RichText::new(tr("No changes")).color(theme.subtext0));
             return true;
         }
-        egui::ScrollArea::both().max_height(420.0).auto_shrink([false, true]).show_rows(ui, 15.0, view.lines.len(), |ui, rows| {
+        egui::ScrollArea::both().max_height(crate::ui::material::dialog_list_height(ui, 200.0)).auto_shrink([false, true]).show_rows(ui, 15.0, view.lines.len(), |ui, rows| {
             ui.spacing_mut().item_spacing.y = 0.0;
             for line in &view.lines[rows] {
                 let color = match line.as_bytes().first() {

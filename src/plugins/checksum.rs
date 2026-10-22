@@ -757,6 +757,10 @@ impl Plugin for Checksum {
         self.report = None;
     }
 
+    fn window_width(&self) -> f32 {
+        480.0
+    }
+
     fn window(&mut self, ui: &mut egui::Ui, theme: &SerpantinumTheme) -> bool {
         let Some(report) = &self.report else { return false };
         let summary = trf("{}: {} OK, {} failed, {} missing", &[&report.source, &report.ok, &report.failed.len(), &report.missing.len()]);
@@ -765,7 +769,7 @@ impl Plugin for Checksum {
         if report.cancelled {
             ui.label(egui::RichText::new(tr("Cancelled, the list is incomplete")).size(material::FONT_CAPTION).color(theme.subtext1));
         }
-        egui::ScrollArea::vertical().max_height(320.0).auto_shrink([false, true]).show(ui, |ui| {
+        egui::ScrollArea::vertical().max_height(material::dialog_list_height(ui, 260.0)).auto_shrink([false, true]).show(ui, |ui| {
             for (title, names, color) in [(tr("Failed"), &report.failed, theme.red), (tr("Missing"), &report.missing, theme.yellow)] {
                 if names.is_empty() {
                     continue;

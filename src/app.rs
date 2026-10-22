@@ -1317,6 +1317,26 @@ impl SkiApp {
         self.handle_drops(ctx);
 
         if ctx.egui_wants_keyboard_input() {
+            // In the search field the arrows walk through the results, and Enter opens the one reached
+            if self.show_search && !self.is_editing_path && !self.search_query.trim().is_empty() && self.dialog.is_none() {
+                let arrow = ctx.input_mut(|i| {
+                    let mut step = 0;
+                    for mods in [egui::Modifiers::NONE, egui::Modifiers::SHIFT] {
+                        if i.consume_key(mods, egui::Key::ArrowDown) {
+                            step = 1;
+                        } else if i.consume_key(mods, egui::Key::ArrowUp) {
+                            step = -1;
+                        }
+                    }
+                    step
+                });
+                if arrow != 0 {
+                    let shift = ctx.input(|i| i.modifiers.shift);
+                    self.move_selection(arrow, shift);
+                } else if self.selected_index.is_some() && ctx.input(|i| i.key_pressed(egui::Key::Enter)) {
+                    self.open_selected();
+                }
+            }
             if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
                 self.is_editing_path = false;
                 self.close_search();
@@ -2238,7 +2258,7 @@ impl SkiApp {
         let mut picked = None;
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing = egui::vec2(6.0, 6.0);
-            ui.add_space(f32::from(CONTENT_INSET));
+            ui.add_space(HEADER_INSET);
             for filter in TypeFilter::ALL {
                 if chip(ui, ("bar_type", filter.label()), None, filter.label(), &theme, self.type_filter == filter).clicked() {
                     picked = Some(filter);
@@ -2249,7 +2269,7 @@ impl SkiApp {
         if !self.search_query.trim().is_empty() {
             ui.horizontal_wrapped(|ui| {
                 ui.spacing_mut().item_spacing = egui::vec2(6.0, 6.0);
-                ui.add_space(f32::from(CONTENT_INSET));
+                ui.add_space(HEADER_INSET);
                 for (scope, label) in [(SearchScope::ThisFolder, tr("This folder")), (SearchScope::Everywhere, tr("Everywhere"))] {
                     if chip(ui, ("bar_scope", label), None, label, &theme, self.settings.search_scope == scope).clicked() && self.settings.search_scope != scope {
                         self.settings.search_scope = scope;
@@ -2322,6 +2342,7 @@ impl SkiApp {
         let mut menu_at: Option<(egui::Pos2, MenuTarget)> = None;
         let plugin_rows = self.plugins.sidebar();
         let mut plugin_click: Option<(&'static str, String)> = None;
+        let mut plugin_edit: Option<(&'static str, String)> = None;
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
             ui.spacing_mut().item_spacing.y = 2.0;
             let mut first = true;
@@ -2393,7 +2414,7 @@ impl SkiApp {
                             ui.ctx().request_repaint();
                         }
                         if drive.mounted && drive.removable && !busy
-                            && drives_ui::row_eject_button(ui, resp.rect, resp.hovered(), ("eject", idx), &self.theme) {
+                            && drives_ui::row_button(ui, resp.rect, resp.hovered(), ("eject", idx), icons::EJECT, tr("Eject"), &self.theme) {
                             eject = Some((drive.dev.clone(), place.name.clone(), place.path.clone()));
                             continue;
                         }
@@ -2430,12 +2451,19 @@ impl SkiApp {
                 material::divider(ui, &self.theme);
                 for (plugin, entry) in &plugin_rows {
                     let selected = self.search_query.trim() == entry.id;
-                    if material::nav_item(ui, ("plugin_row", plugin, &entry.id), entry.icon, &entry.label, &self.theme, selected).clicked() {
+                    let reserve = if entry.editable { material::NAV_TRAILING } else { 0.0 };
+                    let resp = material::nav_item_with(ui, ("plugin_row", plugin, &entry.id), entry.icon, &entry.label, &self.theme, selected, reserve);
+                    if entry.editable && drives_ui::row_button(ui, resp.rect, resp.hovered(), ("plugin_edit", plugin, &entry.id), icons::MORE, tr("Edit tag"), &self.theme) {
+                        plugin_edit = Some((plugin, entry.id.clone()));
+                    } else if resp.clicked() {
                         plugin_click = Some((plugin, entry.id.clone()));
                     }
                 }
             }
         });
+        if let Some((plugin, id)) = plugin_edit {
+            self.plugins.sidebar_edit(plugin, &id);
+        }
         if let Some((plugin, id)) = plugin_click {
             let reaction = self.plugins.sidebar_click(plugin, &id);
             self.apply_reaction(ui.ctx(), reaction);
@@ -2839,6 +2867,13 @@ impl SkiApp {
             }
 
             was_active = drag.active;
+            // A plain click on empty space (no drag, no modifiers) deselects
+            if released && !drag.active && !mods.command && !mods.shift && !self.selection.is_empty() {
+                self.selection.clear();
+                self.selected_index = None;
+                self.anchor = None;
+                self.last_cursor = None;
+            }
             if down && !released {
                 is_active = drag.active;
                 self.drag_select = Some(drag);
@@ -4125,7 +4160,7 @@ impl SkiApp {
             Dialog::OpenWith { .. } => 480.0,
             Dialog::BatchRename { .. } => 560.0,
             Dialog::QuickLook { .. } => 720.0,
-            Dialog::Plugin(_) => 720.0,
+            Dialog::Plugin(id) => self.plugins.window_width(id),
             Dialog::Confirm { .. } | Dialog::Alert { .. } => 400.0,
             _ => 440.0,
         };

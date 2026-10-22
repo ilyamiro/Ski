@@ -1123,8 +1123,8 @@ impl Column {
         match self {
             Column::Size => item.formatted_size(),
             Column::Modified => item.formatted_date(),
-            Column::Created => crate::fs::props::format_datetime(item.created),
-            Column::Accessed => crate::fs::props::format_datetime(item.accessed),
+            Column::Created => item.formatted_created(),
+            Column::Accessed => item.formatted_accessed(),
             Column::Owner => item.owner(),
             Column::Permissions => item.formatted_perms(),
         }
@@ -1174,6 +1174,10 @@ pub fn list_header(
     let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 30.0), egui::Sense::hover());
     let fitting = fitting_columns(columns, widths, rect.width());
     let mut clicked = None;
+    // A hairline under the titles, and a little air before the first row
+    let line_y = snap(ui.painter(), Rect::from_min_size(Pos2::new(rect.left(), rect.bottom()), Vec2::new(rect.width(), 1.0))).top();
+    ui.painter().line_segment([Pos2::new(rect.left() + 6.0, line_y), Pos2::new(rect.right() - 6.0, line_y)], egui::Stroke::new(1.0, theme.surface0));
+    ui.add_space(4.0);
 
     let mut cell = |ui: &mut egui::Ui, id: &str, key: Option<SortBy>, label: &str, cell: Rect| {
         let resp = ui.interact(cell, ui.make_persistent_id(("list_header", id)), if key.is_some() { egui::Sense::click() } else { egui::Sense::hover() });
@@ -1185,7 +1189,8 @@ pub fn list_header(
         if bg_alpha > 0 {
             ui.painter().rect_filled(snap(ui.painter(), cell), CornerRadius::same(radius_sm()), theme.with_alpha(theme.text, bg_alpha));
         }
-        let color = lerp_color(theme.subtext1, theme.text, hover.max(active_t));
+        // Dimmer than the row text below, so the titles read as labels and not as data
+        let color = lerp_color(theme.subtext0, theme.text, hover.max(active_t));
         let font = egui::FontId::proportional(FONT_CAPTION);
         let text_rect = ui.painter().text(Pos2::new(cell.left() + 10.0, cell.center().y), Align2::LEFT_CENTER, label, font, color);
         if active_t > 0.01 {
@@ -1289,18 +1294,18 @@ pub fn file_row(
 
     let mut right = r.right() - ROW_PAD_RIGHT;
     let subtext_color = theme.subtext1.gamma_multiply(fade);
+    let fitting = fitting_columns(columns, widths, r.width());
+    for (column, edge) in column_edges(&fitting, widths, r) {
+        let width = column.width(widths);
+        paint_label(ui, edge - width + 10.0, r.center().y, &column.value(item), FONT_CAPTION, subtext_color, width - 14.0);
+    }
+    right -= fitting.iter().map(|c| c.width(widths)).sum::<f32>();
+    // A search result also says which folder it is in, between its name and the columns
     if let Some(hint) = path_hint {
-        let galley = truncated(ui, hint, FONT_CAPTION, subtext_color, (r.width() * 0.4).min(260.0));
+        let galley = truncated(ui, hint, FONT_CAPTION, subtext_color, (r.width() * 0.3).min(260.0).min((right - r.left() - ROW_NAME_X - 80.0).max(0.0)));
         let pos = Pos2::new(right - galley.size().x, r.center().y - galley.size().y / 2.0);
         right = pos.x - 12.0;
         ui.painter().galley(pos, galley, subtext_color);
-    } else {
-        let fitting = fitting_columns(columns, widths, r.width());
-        for (column, edge) in column_edges(&fitting, widths, r) {
-            let width = column.width(widths);
-            paint_label(ui, edge - width + 10.0, r.center().y, &column.value(item), FONT_CAPTION, subtext_color, width - 14.0);
-        }
-        right -= fitting.iter().map(|c| c.width(widths)).sum::<f32>();
     }
 
     if cut_t > 0.01 {
@@ -1893,6 +1898,83 @@ pub fn hint_label_inset(ui: &mut egui::Ui, text: &str, theme: &SerpantinumTheme,
         ui.set_width(ui.available_width());
         ui.add(egui::Label::new(egui::RichText::new(text).size(FONT_CAPTION).color(theme.subtext1)).wrap());
     });
+}
+
+/// Round colour choice used wherever the user picks a colour; `selected` shows a check.
+pub fn swatch(
+    ui: &mut egui::Ui,
+    id_source: impl std::hash::Hash + std::fmt::Debug,
+    color: egui::Color32,
+    theme: &SerpantinumTheme,
+    selected: bool,
+) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(30.0, 30.0), egui::Sense::click());
+    let id = ui.make_persistent_id(id_source);
+    let fx = fx(ui, id, &resp, true, &FxSpec::ICON);
+    let sel_t = animate(ui.ctx(), id.with("sel"), selected);
+    let r = egui::Rect::from_center_size(rect.center(), rect.size() * fx.scale);
+    ui.painter().circle_filled(r.center(), r.width() / 2.0, color);
+    if fx.flash > 0.0 {
+        ui.painter().circle_filled(r.center(), r.width() / 2.0, egui::Color32::from_white_alpha((fx.flash * 120.0) as u8));
+    }
+    if fx.focus > 0.01 {
+        let ring = egui::Stroke::new(2.0, focus_color(ui.ctx()).gamma_multiply(fx.focus));
+        ui.painter().circle_stroke(r.center(), r.width() / 2.0 + 1.0, ring);
+    }
+    if sel_t > 0.01 {
+        let fg = on_color(theme, color).gamma_multiply(sel_t);
+        paint_icon(ui.painter(), rect.center(), icons::CHECK, ICON_MD * lerp(0.6, 1.0, sel_t), fg);
+    }
+    resp
+}
+
+
+/// A colour choice with the same swatches everywhere: returns the colour clicked.
+pub fn swatch_choice(ui: &mut egui::Ui, id_source: impl std::hash::Hash + std::fmt::Debug + Copy, colors: &[[u8; 3]], current: [u8; 3], theme: &SerpantinumTheme) -> Option<[u8; 3]> {
+    let mut chosen = None;
+    ui.spacing_mut().item_spacing.x = 8.0;
+    // Right to left, so the first colour ends up leftmost
+    for rgb in colors.iter().rev() {
+        let color = Color32::from_rgb(rgb[0], rgb[1], rgb[2]);
+        if swatch(ui, (id_source, rgb), color, theme, *rgb == current).clicked() {
+            chosen = Some(*rgb);
+        }
+    }
+    chosen
+}
+
+pub fn row_hint(text: &str, theme: &SerpantinumTheme) -> egui::RichText {
+    egui::RichText::new(text).size(FONT_CAPTION).color(theme.subtext1)
+}
+
+pub fn row_text(text: &str, theme: &SerpantinumTheme) -> egui::RichText {
+    egui::RichText::new(text).size(FONT_BODY).color(theme.text)
+}
+
+/// A settings line: `text` on the left, the controls on the right edge of the card.
+/// The controls are laid out right to left; the closure's result is handed back.
+pub fn control_row<R>(ui: &mut egui::Ui, theme: &SerpantinumTheme, text: egui::RichText, controls: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    let _ = theme;
+    ui.horizontal(|ui| {
+        ui.set_min_height(MENU_ROW_HEIGHT + 4.0);
+        ui.add_space(14.0);
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.add_space(8.0);
+            let out = controls(ui);
+            ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                ui.add(egui::Label::new(text).wrap());
+            });
+            out
+        })
+        .inner
+    })
+    .inner
+}
+
+/// Height a scrolling list in a dialog may take: what the window leaves after `reserved` pixels of
+/// the dialog's other content, within sensible bounds.
+pub fn dialog_list_height(ui: &egui::Ui, reserved: f32) -> f32 {
+    (ui.ctx().content_rect().height() - reserved).clamp(160.0, 560.0)
 }
 
 /// Standard dialog header with title, optional subtitle, and close button.
