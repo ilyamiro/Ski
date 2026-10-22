@@ -325,6 +325,11 @@ impl Plugins {
         self.active().find_map(|p| p.window_title().map(|t| (p.id(), t)))
     }
 
+    /// The title of the dialog `plugin` asks for, if it does.
+    pub fn window_title(&self, plugin: &str) -> Option<&'static str> {
+        self.active().find(|p| p.id() == plugin).and_then(|p| p.window_title())
+    }
+
     /// Draws the dialog of `plugin`; false when it closed.
     pub fn window(&mut self, plugin: &str, ui: &mut eframe::egui::Ui, theme: &SerpantinumTheme) -> bool {
         self.active_mut().find(|p| p.id() == plugin).is_some_and(|p| p.window(ui, theme))

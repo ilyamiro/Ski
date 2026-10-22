@@ -95,7 +95,7 @@ impl SkiApp {
     pub(super) fn plugin_dialog_contents(&mut self, ui: &mut egui::Ui, dialog: &mut Dialog) -> bool {
         let Dialog::Plugin(id) = dialog else { return false };
         let theme = self.theme;
-        let Some((_, title)) = self.plugins.wanted_window().filter(|(plugin, _)| plugin == id) else { return true };
+        let Some(title) = self.plugins.window_title(id) else { return true };
         let mut close = material::dialog_header(ui, title, None, &theme, "plugin_close");
         close |= !self.plugins.window(id, ui, &theme);
         close
