@@ -50,6 +50,11 @@ pub fn format(tags: &[String]) -> String {
     tags.join(",")
 }
 
+/// Tag names match without regard to case, in any script (the registry folds the same way).
+fn same_tag(a: &str, b: &str) -> bool {
+    a == b || a.to_lowercase() == b.to_lowercase()
+}
+
 /// A name that fits the attribute: no comma (it separates names), no control characters, not empty.
 pub fn clean_name(name: &str) -> Option<String> {
     let name = name.trim();
@@ -280,7 +285,7 @@ impl Tags {
     fn known(&self) -> Vec<String> {
         let mut names: Vec<String> = self.registry.names().into_iter().map(|(n, _)| n).collect();
         for name in self.colors.keys() {
-            if !names.iter().any(|n| n.eq_ignore_ascii_case(name)) {
+            if !names.iter().any(|n| same_tag(n, name)) {
                 names.push(name.clone());
             }
         }
@@ -435,7 +440,7 @@ impl Plugin for Tags {
         let group = tr("Tags");
         let mut items = Vec::new();
         for name in self.known() {
-            let all = per_file.iter().all(|tags| tags.iter().any(|t| t.eq_ignore_ascii_case(&name)));
+            let all = per_file.iter().all(|tags| tags.iter().any(|t| same_tag(t, &name)));
             items.push(MenuItem::new(format!("toggle:{name}"), intern(&name), if all { icons::CHECK } else { icons::TAG }).group(group));
         }
         items.push(MenuItem::new("new", tr("New tag…"), icons::ADD).group(group));
@@ -447,13 +452,13 @@ impl Plugin for Tags {
 
     fn run(&mut self, id: &str, paths: &[PathBuf], _dir: &Path) -> Reaction {
         if let Some(name) = id.strip_prefix("toggle:") {
-            let all = paths.iter().all(|p| self.tags_of(p).iter().any(|t| t.eq_ignore_ascii_case(name)));
+            let all = paths.iter().all(|p| self.tags_of(p).iter().any(|t| same_tag(t, name)));
             let name = name.to_owned();
             if all {
-                self.edit(paths, |tags| tags.retain(|t| !t.eq_ignore_ascii_case(&name)));
+                self.edit(paths, |tags| tags.retain(|t| !same_tag(t, &name)));
             } else {
                 self.edit(paths, |tags| {
-                    if !tags.iter().any(|t| t.eq_ignore_ascii_case(&name)) {
+                    if !tags.iter().any(|t| same_tag(t, &name)) {
                         tags.push(name.clone());
                     }
                 });
@@ -501,7 +506,7 @@ impl Plugin for Tags {
             let paths = std::mem::take(&mut prompt.paths);
             self.prompt = None;
             self.edit(&paths, |tags| {
-                if !tags.iter().any(|t| t.eq_ignore_ascii_case(&name)) {
+                if !tags.iter().any(|t| same_tag(t, &name)) {
                     tags.push(name.clone());
                 }
             });
@@ -561,7 +566,7 @@ impl Plugin for Tags {
     fn search_paths(&self, query: &str) -> Option<Vec<PathBuf>> {
         let name = query.trim().strip_prefix("tag:").or_else(|| query.trim().strip_prefix("Tag:"))?.trim();
         // Trust the attribute over the remembered list; drop what is gone or no longer tagged
-        Some(self.registry.with_tag(name).into_iter().filter(|p| read_tags(p).map_or(true, |tags| tags.iter().any(|t| t.eq_ignore_ascii_case(name)))).collect())
+        Some(self.registry.with_tag(name).into_iter().filter(|p| read_tags(p).map_or(true, |tags| tags.iter().any(|t| same_tag(t, name)))).collect())
     }
 
     fn properties(&mut self, item: &FileItem) -> Vec<PropertyGroup> {
@@ -619,6 +624,13 @@ impl Plugin for Tags {
 mod tests {
     use super::*;
     use crate::fs::xattr::{self, tests::scratch_file};
+
+    #[test]
+    fn case_folding_covers_non_ascii_names() {
+        assert!(same_tag("Übung", "übung"));
+        assert!(same_tag("Работа", "работа"));
+        assert!(!same_tag("a", "b"));
+    }
 
     #[test]
     fn parses_and_formats_the_comma_list() {
