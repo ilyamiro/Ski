@@ -12,10 +12,12 @@ pub(super) struct TabState {
     forward_history: Vec<PathBuf>,
     search_query: String,
     type_filter: TypeFilter,
+    sort_by: SortBy,
+    sort_order: SortOrder,
 }
 
 impl TabState {
-    fn fresh(path: PathBuf) -> Self {
+    fn fresh(path: PathBuf, sort_by: SortBy, sort_order: SortOrder) -> Self {
         Self {
             current_path: path,
             selection: Vec::new(),
@@ -24,6 +26,8 @@ impl TabState {
             forward_history: Vec::new(),
             search_query: String::new(),
             type_filter: TypeFilter::All,
+            sort_by,
+            sort_order,
         }
     }
 }
@@ -58,6 +62,8 @@ impl SkiApp {
             forward_history: std::mem::take(&mut self.forward_history),
             search_query: std::mem::take(&mut self.search_query),
             type_filter: self.type_filter,
+            sort_by: self.sort_by,
+            sort_order: self.sort_order,
         }
     }
 
@@ -68,6 +74,8 @@ impl SkiApp {
         self.forward_history = state.forward_history;
         self.search_query = state.search_query;
         self.type_filter = state.type_filter;
+        self.sort_by = state.sort_by;
+        self.sort_order = state.sort_order;
         self.search = Search::new();
         self.path_input = self.current_path.to_string_lossy().into_owned();
         self.is_editing_path = false;
@@ -119,7 +127,7 @@ impl SkiApp {
         if !path.as_os_str().is_empty() && !is_virtual(&path) {
             recent::record(&path);
         }
-        self.put_tab_state(TabState::fresh(path));
+        self.put_tab_state(TabState::fresh(path, self.sort_by, self.sort_order));
         self.tab_enter = Some(id);
     }
 

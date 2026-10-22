@@ -59,7 +59,7 @@ pub fn load(custom: Option<&Path>) -> Vec<Template> {
     let Some(dir) = user_dir(custom) else { return all };
     let mut found = Vec::new();
     collect(&dir, 0, &mut found);
-    found.sort_by_key(|t| t.name.to_lowercase());
+    found.sort_by(|a, b| super::scanner::natural_cmp(&a.name, &b.name));
     all.extend(found);
     all
 }

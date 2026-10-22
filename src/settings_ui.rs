@@ -509,19 +509,19 @@ impl SkiApp {
                 self.settings.view_mode = self.view_mode;
                 self.persist_settings();
             }
-            let fields = [SortBy::Name, SortBy::Size, SortBy::Modified];
+            let fields = [SortBy::Name, SortBy::Size, SortBy::Type, SortBy::Modified];
             let current = fields.iter().position(|f| *f == self.sort_by).unwrap_or(0);
-            if let Some(i) = choice_row(ui, "fv_sort_by", icons::SORT_ASC, tr("Sort by"), &[tr("Name"), tr("Size"), tr("Modified")], current, &theme) {
+            if let Some(i) = choice_row(ui, "fv_sort_by", icons::SORT_ASC, tr("Sort by"), &[tr("Name"), tr("Size"), tr("Type"), tr("Modified")], current, &theme) {
                 self.sort_by = fields[i];
                 self.settings.sort_by = fields[i];
-                self.reload_items();
+                self.apply_sort();
                 self.persist_settings();
             }
             let asc = self.sort_order == SortOrder::Ascending;
             if let Some(i) = choice_row(ui, "fv_sort_order", icons::SORT_DESC, tr("Order"), &[tr("Ascending"), tr("Descending")], usize::from(!asc), &theme) {
                 self.sort_order = if i == 0 { SortOrder::Ascending } else { SortOrder::Descending };
                 self.settings.sort_order = self.sort_order;
-                self.reload_items();
+                self.apply_sort();
                 self.persist_settings();
             }
         });

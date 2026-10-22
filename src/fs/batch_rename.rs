@@ -199,7 +199,10 @@ pub fn preview(entries: &[Entry], rules: &Rules) -> Vec<String> {
     let mut ranked: Vec<usize> = (0..entries.len()).collect();
     match rules.order {
         Order::AsListed => {}
-        Order::Name => ranked.sort_by_key(|&i| entries[i].path.file_name().map(|n| n.to_string_lossy().to_lowercase())),
+        Order::Name => {
+            let name = |i: usize| entries[i].path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            ranked.sort_by(|&a, &b| super::scanner::natural_cmp(&name(a), &name(b)));
+        }
         Order::Date => ranked.sort_by(|&a, &b| entries[a].date.cmp(&entries[b].date)),
     }
     let mut rank = vec![0usize; entries.len()];

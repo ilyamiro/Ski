@@ -21,7 +21,7 @@ use crate::fs::{
     apps::{self, AppEntry},
     places::{load_folder_icons, save_folder_icons, Place, PlaceGroup, PlaceKind, BOOKMARKS_PATH, RECENT_PATH, is_virtual},
     props::{FolderScan, Properties},
-    scanner::{read_directory, ListOptions, TypeFilter},
+    scanner::{natural_cmp, read_directory, sort_items, starts_with_folded, ListOptions, TypeFilter},
     recent,
     search::{Search, SearchOptions, SearchScope},
     trash,
@@ -252,12 +252,12 @@ impl Picker {
                     .collect()
             })
             .unwrap_or_default();
-        self.folders.sort_by_key(|p| p.file_name().map(|n| n.to_string_lossy().to_lowercase()));
+        self.folders.sort_by(|a, b| by_file_name(a, b));
         self.images = if self.icon_for.is_some() {
             let mut images: Vec<PathBuf> = std::fs::read_dir(&dir)
                 .map(|rd| rd.flatten().filter(|e| !e.file_name().to_string_lossy().starts_with('.')).map(|e| e.path()).filter(|p| crate::thumbs::is_image(p)).collect())
                 .unwrap_or_default();
-            images.sort_by_key(|p| p.file_name().map(|n| n.to_string_lossy().to_lowercase()));
+            images.sort_by(|a, b| by_file_name(a, b));
             images
         } else {
             Vec::new()
@@ -265,6 +265,11 @@ impl Picker {
         self.dir = dir;
         self.chosen = None;
     }
+}
+
+fn by_file_name(a: &Path, b: &Path) -> std::cmp::Ordering {
+    let name = |p: &Path| p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    natural_cmp(&name(a), &name(b))
 }
 
 pub struct SkiApp {
@@ -609,14 +614,41 @@ impl SkiApp {
         self.set_toast(tr("Refreshed"));
     }
 
-    pub fn reload_items(&mut self) {
-        let opts = ListOptions {
+    fn list_options(&self) -> ListOptions {
+        ListOptions {
             show_hidden: self.show_hidden,
             sort_by: self.sort_by,
             sort_order: self.sort_order,
             folders_first: self.folders_first,
             type_filter: self.type_filter,
-        };
+        }
+    }
+
+    /// Put the listing in the current sort order, keeping the same files selected.
+    fn resort_items(&mut self) {
+        let focus = self.selected_index.and_then(|i| self.items.get(i)).map(|i| i.path.clone());
+        let selected = self.selected_paths();
+        let opts = self.list_options();
+        sort_items(&mut self.items, &opts);
+        let at = |items: &[FileItem], p: &PathBuf| items.iter().position(|i| &i.path == p);
+        self.selection = selected.iter().filter_map(|p| at(&self.items, p)).collect();
+        self.selected_index = focus.as_ref().and_then(|p| at(&self.items, p));
+        self.anchor = self.selected_index;
+        self.last_cursor = self.selected_index;
+    }
+
+    /// The sort changed: search results are reordered where they are (the search keeps running),
+    /// a folder is read again.
+    pub(crate) fn apply_sort(&mut self) {
+        if self.search_query.trim().is_empty() {
+            self.reload_items();
+        } else {
+            self.resort_items();
+        }
+    }
+
+    pub fn reload_items(&mut self) {
+        let opts = self.list_options();
         let listing = if self.in_recent() { Ok(self.recent_items()) } else { read_directory(&self.current_path, &opts) };
         match listing {
             Ok(mut items) => {
@@ -1581,8 +1613,15 @@ impl SkiApp {
         }
         self.type_ahead.0.push_str(text);
         self.type_ahead.1 = std::time::Instant::now();
-        let needle = self.type_ahead.0.to_lowercase();
-        if let Some(idx) = self.items.iter().position(|i| i.name.to_lowercase().starts_with(&needle)) {
+        // Pressing one letter again and again steps through the files that start with it
+        let typed = &self.type_ahead.0;
+        let first = typed.chars().next().unwrap_or_default();
+        let repeated = typed.chars().count() > 1 && typed.chars().all(|c| c == first);
+        let needle = if repeated { first.to_string() } else { typed.clone() };
+        let after = if repeated { self.selected_index.map_or(0, |i| i + 1) } else { 0 };
+        let len = self.items.len();
+        let hit = (0..len).map(|n| (after + n) % len).find(|&i| starts_with_folded(&self.items[i].name, &needle));
+        if let Some(idx) = hit {
             self.click_select(idx, egui::Modifiers::NONE);
             self.scroll_to_selected = true;
         }
@@ -1681,6 +1720,7 @@ impl eframe::App for SkiApp {
         let found = self.search.poll();
         if !found.is_empty() && !self.search_query.trim().is_empty() {
             self.items.extend(found);
+            self.resort_items();
         }
 
         let title = format!("{} — Ski", self.location_name());
@@ -2405,15 +2445,16 @@ impl SkiApp {
         let row_height = material::animate_value(ui.ctx(), egui::Id::unique("list_row_height"), self.settings.density.row_height(), material::ANIM);
         let show_thumbs = self.settings.show_thumbnails;
 
-        if !self.is_mixed_listing()
+        if !self.in_recent()
             && let Some(key) = material::list_header(ui, &self.theme, &self.columns, &mut self.settings.column_widths, self.sort_by, self.sort_order) {
                 if key == self.sort_by {
                     self.sort_order = if self.sort_order == SortOrder::Ascending { SortOrder::Descending } else { SortOrder::Ascending };
                 } else {
                     self.sort_by = key;
-                    self.sort_order = if key == SortBy::Name { SortOrder::Ascending } else { SortOrder::Descending };
+                    // Dates read newest-first; everything else starts A to Z / small to large
+                    self.sort_order = if matches!(key, SortBy::Modified | SortBy::Created | SortBy::Accessed) { SortOrder::Descending } else { SortOrder::Ascending };
                 }
-                self.reload_items();
+                self.apply_sort();
             }
 
         let cut: &[PathBuf] = match &self.clipboard {
@@ -2966,16 +3007,16 @@ impl SkiApp {
 
         material::divider(ui, &theme);
         self.section_title(ui, tr("Sort by"));
-        for (field, label) in [(SortBy::Name, tr("Name")), (SortBy::Size, tr("Size")), (SortBy::Modified, tr("Last modified"))] {
+        for (field, label) in [(SortBy::Name, tr("Name")), (SortBy::Size, tr("Size")), (SortBy::Type, tr("Type")), (SortBy::Modified, tr("Last modified")), (SortBy::Created, tr("Created")), (SortBy::Accessed, tr("Accessed")), (SortBy::Owner, tr("Owner")), (SortBy::Permissions, tr("Permissions"))] {
             if material::radio_row(ui, ("vo_sort", label), label, &theme, self.sort_by == field).clicked() && self.sort_by != field {
                 self.sort_by = field;
-                reload = true;
+                self.apply_sort();
             }
         }
         let descending = self.sort_order == SortOrder::Descending;
         if material::toggle_row(ui, "vo_reverse", tr("Reverse order"), None, &theme, descending).clicked() {
             self.sort_order = if descending { SortOrder::Ascending } else { SortOrder::Descending };
-            reload = true;
+            self.apply_sort();
         }
 
         material::divider(ui, &theme);
@@ -5172,6 +5213,13 @@ mod tests {
         app.type_ahead("C");
         assert_eq!(selected(&app).as_deref(), Some("Charlie.txt"), "a pause starts a new word, case is ignored");
         assert_eq!(app.selection.len(), 1);
+        app.type_ahead.1 -= TYPE_AHEAD_TIMEOUT;
+        app.type_ahead("b");
+        assert_eq!(selected(&app).as_deref(), Some("beta.txt"));
+        app.type_ahead("b");
+        assert_eq!(selected(&app).as_deref(), Some("bravo.txt"), "the same letter again steps to the next match");
+        app.type_ahead("b");
+        assert_eq!(selected(&app).as_deref(), Some("beta.txt"), "and wraps around");
         std::fs::remove_dir_all(&base).unwrap();
     }
 
