@@ -168,6 +168,7 @@ impl SkiApp {
                 return;
             }
         }
+        self.set_toast(tr("No closed tab to reopen"));
     }
 
     /// Open `path` in a new tab next to the current one and show it.
