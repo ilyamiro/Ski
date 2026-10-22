@@ -1856,20 +1856,21 @@ impl eframe::App for SkiApp {
                     }
                 }
 
+                let show_filter_bar = !self.search_query.trim().is_empty() || self.type_filter != TypeFilter::All;
+                material::collapsible(ui, "filter_bar_collapse", show_filter_bar, |ui| {
+                    self.render_filter_bar(ui);
+                });
+
                 if self.settings.swipe_navigation && self.chooser.is_none() {
                     let (scroll, now) = ui.input(|i| (i.smooth_scroll_delta, i.time));
-                    let over = ui.rect_contains_pointer(ui.max_rect());
+                    // Over the listing, below the filter bar, and not while files are being dragged or selected
+                    let over = ui.rect_contains_pointer(ui.available_rect_before_wrap()) && self.dnd.is_none() && self.drag_select.is_none();
                     match self.swipe.feed(if over { scroll } else { egui::Vec2::ZERO }, now) {
                         Some(Swipe::Back) => self.go_back(),
                         Some(Swipe::Forward) => self.go_forward(),
                         None => {}
                     }
                 }
-
-                let show_filter_bar = !self.search_query.trim().is_empty() || self.type_filter != TypeFilter::All;
-                material::collapsible(ui, "filter_bar_collapse", show_filter_bar, |ui| {
-                    self.render_filter_bar(ui);
-                });
 
                 if let Some(err) = &self.error_message {
                     material::empty_state(ui, &self.theme, icons::INFO, tr("This folder can't be opened"), Some(err));
