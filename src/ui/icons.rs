@@ -46,6 +46,14 @@ pub const MORE: &str = "\u{f01d8}";
 
 pub const VIEW_LIST: &str = "\u{f0572}";
 pub const GRID_VIEW: &str = "\u{f0570}";
+pub const SORT_VARIANT: &str = "\u{f04bf}";
+pub const ROUNDED_CORNER: &str = "\u{f0607}";
+pub const SIDEBAR: &str = "\u{f06fd}";
+pub const STATUS_BAR: &str = "\u{f06fb}";
+pub const ANIMATION: &str = "\u{f093a}";
+pub const RUN: &str = "\u{f070e}";
+pub const RULER: &str = "\u{f046d}";
+pub const CURSOR: &str = "\u{f01c0}";
 pub const VIEW_COLUMN: &str = "\u{f056d}";
 pub const RESIZE: &str = "\u{f0a68}";
 pub const VISIBILITY: &str = "\u{f06d0}";

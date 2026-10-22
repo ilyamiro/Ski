@@ -637,8 +637,9 @@ pub fn split_icon_button(
         } else {
             CornerRadius { nw: small, sw: small, ne: round, se: round }
         };
-        let hovered = lerp_color(theme.surface2, theme.text, fx.press * 0.08);
-        paint_fill(ui.painter(), r, corners, lerp_color(theme.surface1, hovered, fx.hover.max(fx.press)), &fx);
+        // Rests on the same fill as the address pill next to it, and follows it on hover
+        let hovered = lerp_color(theme.surface1, theme.surface2, fx.press);
+        paint_fill(ui.painter(), r, corners, lerp_color(theme.surface0, hovered, fx.hover.max(fx.press)), &fx);
         let color = lerp_color(theme.subtext1, theme.text, fx.hover.max(fx.press));
         paint_icon(ui.painter(), rect.center(), glyph, if left { (size * 0.5).round() } else { 14.0 }, color);
         if tip.is_empty() { response } else { response.on_hover_text(tip) }
@@ -803,10 +804,27 @@ pub fn segmented_in(
     theme: &SerpantinumTheme,
     focus_rect: Option<Rect>,
 ) -> Option<usize> {
-    segmented_sized(ui, id_source, options, selected, theme, focus_rect, None)
+    segmented_sized(ui, id_source, options, selected, theme, focus_rect, None, None)
+}
+
+/// Width of one cell of a `segmented` control that shows an icon instead of text.
+const SEGMENT_ICON_W: f32 = 44.0;
+
+/// `segmented` whose cells are icons; `labels` are their tooltips.
+pub fn segmented_icons(
+    ui: &mut egui::Ui,
+    id_source: impl std::hash::Hash + std::fmt::Debug,
+    glyphs: &[&str],
+    labels: &[&str],
+    selected: usize,
+    theme: &SerpantinumTheme,
+) -> Option<usize> {
+    segmented_sized(ui, id_source, labels, selected, theme, None, None, Some(glyphs))
 }
 
 /// `segmented_in` that stretches its cells to fill `fill` points of width, when they need less.
+/// With `glyphs`, each cell shows that icon and `options` are only the tooltips.
+#[allow(clippy::too_many_arguments)]
 pub fn segmented_sized(
     ui: &mut egui::Ui,
     id_source: impl std::hash::Hash + std::fmt::Debug,
@@ -815,11 +833,12 @@ pub fn segmented_sized(
     theme: &SerpantinumTheme,
     focus_rect: Option<Rect>,
     fill: Option<f32>,
+    glyphs: Option<&[&str]>,
 ) -> Option<usize> {
     let font = egui::FontId::proportional(FONT_CHIP);
     let mut widths: Vec<f32> = options
         .iter()
-        .map(|o| (ui.painter().layout_no_wrap((*o).to_owned(), font.clone(), theme.text).size().x + 28.0).max(52.0))
+        .map(|o| if glyphs.is_some() { SEGMENT_ICON_W } else { (ui.painter().layout_no_wrap((*o).to_owned(), font.clone(), theme.text).size().x + 28.0).max(52.0) })
         .collect();
     if let Some(fill) = fill {
         let natural: f32 = widths.iter().sum();
@@ -894,7 +913,15 @@ pub fn segmented_sized(
         }
         let on = animate(ui.ctx(), id.with(("on", i)), i == selected);
         let color = lerp_color(lerp_color(theme.subtext0, theme.text, hover.max(press)), theme.mauve, on);
-        ui.painter().text(cell.center(), Align2::CENTER_CENTER, *label, font.clone(), color);
+        match glyphs.and_then(|g| g.get(i)) {
+            Some(glyph) => paint_icon(ui.painter(), cell.center(), glyph, ICON_MD, color),
+            None => {
+                ui.painter().text(cell.center(), Align2::CENTER_CENTER, *label, font.clone(), color);
+            }
+        }
+        if glyphs.is_some() {
+            resp.clone().on_hover_text(*label);
+        }
         if resp.clicked() {
             clicked = Some(i);
         }
@@ -1740,11 +1767,26 @@ pub fn choice_row(
     selected: usize,
     theme: &SerpantinumTheme,
 ) -> Option<usize> {
+    choice_row_with(ui, id_source, icon, label, options, None, selected, theme)
+}
+
+/// `choice_row` whose choices are icons (`glyphs`), with `options` as their tooltips.
+#[allow(clippy::too_many_arguments)]
+pub fn choice_row_with(
+    ui: &mut egui::Ui,
+    id_source: impl std::hash::Hash + std::fmt::Debug,
+    icon: &str,
+    label: &str,
+    options: &[&str],
+    glyphs: Option<&[&str]>,
+    selected: usize,
+    theme: &SerpantinumTheme,
+) -> Option<usize> {
     let id = ui.make_persistent_id(id_source);
     let font = egui::FontId::proportional(FONT_CHIP);
     let seg_w: f32 = options
         .iter()
-        .map(|o| (ui.painter().layout_no_wrap((*o).to_owned(), font.clone(), theme.text).size().x + 28.0).max(52.0))
+        .map(|o| if glyphs.is_some() { SEGMENT_ICON_W } else { (ui.painter().layout_no_wrap((*o).to_owned(), font.clone(), theme.text).size().x + 28.0).max(52.0) })
         .sum::<f32>()
         + 8.0;
     let label_w = ui.painter().layout_no_wrap(label.to_owned(), egui::FontId::proportional(FONT_BODY), theme.text).size().x;
@@ -1766,7 +1808,7 @@ pub fn choice_row(
         Rect::from_min_size(Pos2::new(rect.left() + 8.0, rect.top() + SETTING_HEIGHT - 4.0), Vec2::new(width - 16.0, seg_h))
     };
     let fill = (!inline).then_some(seg_rect.width());
-    ui.scope_builder(egui::UiBuilder::new().max_rect(seg_rect), |ui| segmented_sized(ui, id, options, selected, theme, Some(rect), fill)).inner
+    ui.scope_builder(egui::UiBuilder::new().max_rect(seg_rect), |ui| segmented_sized(ui, id, options, selected, theme, Some(rect), fill, glyphs)).inner
 }
 
 /// Smoothly expands and collapses a vertical block of widgets when `open` toggles.

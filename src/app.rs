@@ -3032,7 +3032,7 @@ impl SkiApp {
         let hidden_hint = crate::keymap::hint(&self.settings.keybinds, crate::keymap::Action::ToggleHidden, self.settings.vim_keys);
         ui.spacing_mut().item_spacing.y = 2.0;
 
-        if let Some(i) = segmented(ui, "vo_view", &[tr("List"), tr("Grid")], usize::from(self.view_mode == ViewMode::Grid), &theme) {
+        if let Some(i) = material::segmented_icons(ui, "vo_view", &[icons::VIEW_LIST, icons::GRID_VIEW], &[tr("List view"), tr("Grid view")], usize::from(self.view_mode == ViewMode::Grid), &theme) {
             self.view_mode = if i == 0 { ViewMode::List } else { ViewMode::Grid };
         }
 
@@ -3725,7 +3725,7 @@ impl SkiApp {
                 self.history_entries(),
                 vec![
                     (icons::REFRESH, tr("Refresh"), MenuAction::Refresh),
-                    (icons::SETTINGS, tr("Settings"), MenuAction::OpenSettings),
+                    (icons::COG, tr("Settings"), MenuAction::OpenSettings),
                 ],
                 {
                     let mut tools = vec![(icons::KEYBOARD, tr("Keyboard shortcuts"), MenuAction::Shortcuts)];

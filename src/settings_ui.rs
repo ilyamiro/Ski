@@ -20,6 +20,42 @@ fn category_focus_id() -> egui::Id {
     egui::Id::unique("set_cat_focus")
 }
 
+/// Choices as chips in as many rows as the card needs, each row stretched to the full width.
+/// Returns the index that was clicked.
+fn chip_rows(ui: &mut egui::Ui, id: &str, labels: &[&str], on: impl Fn(usize) -> bool, theme: &SerpantinumTheme) -> Option<usize> {
+    let gap = 8.0;
+    let avail = ui.available_width() - 16.0;
+    let widths: Vec<f32> = labels.iter().map(|l| material::chip_natural_width(ui, None, l, theme)).collect();
+    // Greedy rows, then each row stretched to the same total width
+    let mut rows: Vec<Vec<usize>> = vec![Vec::new()];
+    let mut used = 0.0;
+    for (i, w) in widths.iter().enumerate() {
+        let need = if rows.last().is_some_and(|r| r.is_empty()) { *w } else { used + gap + w };
+        if need > avail && !rows.last().is_some_and(|r| r.is_empty()) {
+            rows.push(Vec::new());
+            used = *w;
+        } else {
+            used = need;
+        }
+        rows.last_mut().unwrap().push(i);
+    }
+    let mut clicked = None;
+    for row in rows {
+        let natural: f32 = row.iter().map(|i| widths[*i]).sum();
+        let grow = ((avail - gap * (row.len() - 1) as f32) / natural).max(1.0);
+        ui.horizontal(|ui| {
+            ui.add_space(8.0);
+            ui.spacing_mut().item_spacing.x = gap;
+            for i in row {
+                if material::chip_width(ui, (id, labels[i]), None, labels[i], theme, on(i), Some(widths[i] * grow)).clicked() {
+                    clicked = Some(i);
+                }
+            }
+        });
+    }
+    clicked
+}
+
 impl SkiApp {
     pub(crate) fn open_settings_dialog(&mut self) {
         self.capturing_key = false;
@@ -107,8 +143,8 @@ impl SkiApp {
                 let categories: [(usize, &str, &str); CATEGORY_COUNT as usize] = [
                     (0, icons::COG, tr("General")),
                     (1, icons::TUNE, tr("Appearance")),
-                    (2, icons::VIEW_LIST, tr("Files & View")),
-                    (3, icons::SETTINGS, tr("Behavior")),
+                    (2, icons::FOLDER_OPEN, tr("Files & View")),
+                    (3, icons::CURSOR, tr("Behavior")),
                     (4, icons::KEYBOARD, tr("Keybindings")),
                     (5, icons::APPS, tr("Applications")),
                     (6, icons::TEMPLATE, tr("Plugins")),
@@ -280,7 +316,7 @@ impl SkiApp {
                 self.persist_settings();
             }
             let desc = Some(tr("Opens the next window instantly, at the cost of some memory while closed"));
-            if switch_row_with(ui, "run_in_background", icons::REFRESH, tr("Keep running in the background"), desc, &theme, self.settings.run_in_background).clicked() {
+            if switch_row_with(ui, "run_in_background", icons::RUN, tr("Keep running in the background"), desc, &theme, self.settings.run_in_background).clicked() {
                 self.settings.run_in_background = !self.settings.run_in_background;
                 self.persist_settings();
             }
@@ -371,19 +407,19 @@ impl SkiApp {
         group_card(ui, &theme, |ui| {
             let scales = [0.85, 1.0, 1.15, 1.3];
             let current = scales.iter().position(|s| (self.settings.scale - s).abs() < 0.01).unwrap_or(1);
-            if let Some(i) = choice_row(ui, "scale", icons::VIEW_LIST, tr("Size"), &[tr("Compact"), tr("Default"), tr("Large"), tr("Larger")], current, &theme) {
+            if let Some(i) = choice_row(ui, "scale", icons::RESIZE, tr("Size"), &[tr("Compact"), tr("Default"), tr("Large"), tr("Larger")], current, &theme) {
                 self.settings.scale = scales[i];
                 ui.ctx().set_zoom_factor(scales[i]);
                 self.persist_settings();
             }
             const CORNERS: [f32; 4] = [0.0, 0.6, 1.0, 1.4];
             let corners = CORNERS.iter().position(|c| (self.settings.corner_scale - c).abs() < 0.01).unwrap_or(2);
-            if let Some(i) = choice_row(ui, "corners", icons::GRID_VIEW, tr("Corners"), &[tr("Square"), tr("Soft"), tr("Default"), tr("Round")], corners, &theme) {
+            if let Some(i) = choice_row(ui, "corners", icons::ROUNDED_CORNER, tr("Corners"), &[tr("Square"), tr("Soft"), tr("Default"), tr("Round")], corners, &theme) {
                 self.settings.corner_scale = CORNERS[i];
                 self.rebuild_theme();
                 self.persist_settings();
             }
-            if switch_row_with(ui, "app_animations", icons::REFRESH, tr("Animations"), None, &theme, self.settings.animations).clicked() {
+            if switch_row_with(ui, "app_animations", icons::ANIMATION, tr("Animations"), None, &theme, self.settings.animations).clicked() {
                 self.settings.animations = !self.settings.animations;
                 self.persist_settings();
             }
@@ -499,27 +535,38 @@ impl SkiApp {
         }
     }
 
+    /// The "Sort by" row of the Files & View tab: a title like the rows around it, the fields as chips below.
+    fn sort_field_chips(&self, ui: &mut egui::Ui, theme: &SerpantinumTheme) -> Option<SortBy> {
+        let (head, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), material::ENTRY_HEIGHT), egui::Sense::hover());
+        material::paint_icon(ui.painter(), head.left_center() + egui::vec2(material::INSET_ICON + 2.0, 0.0), icons::SORT_VARIANT, material::ICON_MD, theme.subtext0);
+        material::paint_label(ui, head.left() + material::INSET_LABEL + 2.0, head.center().y, tr("Sort by"), material::FONT_BODY, theme.text, head.width() - material::INSET_LABEL - 12.0);
+        let fields = [SortBy::Name, SortBy::Size, SortBy::Type, SortBy::Modified, SortBy::Created, SortBy::Accessed, SortBy::Owner, SortBy::Permissions];
+        let labels = [tr("Name"), tr("Size"), tr("Type"), tr("Last modified"), tr("Created"), tr("Accessed"), tr("Owner"), tr("Permissions")];
+        let picked = chip_rows(ui, "fv_sort", &labels, |i| self.sort_by == fields[i], theme).map(|i| fields[i]);
+        ui.add_space(4.0);
+        picked
+    }
+
     fn files_view_tab(&mut self, ui: &mut egui::Ui) {
         let theme = self.theme;
 
         material::section_label(ui, tr("View"), &theme);
         group_card(ui, &theme, |ui| {
-            if let Some(i) = choice_row(ui, "fv_view", icons::VIEW_LIST, tr("Default view"), &[tr("List"), tr("Grid")], usize::from(self.view_mode == ViewMode::Grid), &theme) {
+            if let Some(i) = material::choice_row_with(ui, "fv_view", icons::VIEW_LIST, tr("Default view"), &[tr("List view"), tr("Grid view")], Some(&[icons::VIEW_LIST, icons::GRID_VIEW]), usize::from(self.view_mode == ViewMode::Grid), &theme) {
                 self.view_mode = if i == 0 { ViewMode::List } else { ViewMode::Grid };
                 self.settings.view_mode = self.view_mode;
                 self.persist_settings();
             }
-            let fields = [SortBy::Name, SortBy::Size, SortBy::Type, SortBy::Modified];
-            let current = fields.iter().position(|f| *f == self.sort_by).unwrap_or(0);
-            if let Some(i) = choice_row(ui, "fv_sort_by", icons::SORT_ASC, tr("Sort by"), &[tr("Name"), tr("Size"), tr("Type"), tr("Modified")], current, &theme) {
-                self.sort_by = fields[i];
-                self.settings.sort_by = fields[i];
+            if let Some(field) = self.sort_field_chips(ui, &theme) {
+                self.sort_by = field;
+                self.settings.sort_by = field;
                 self.apply_sort();
                 self.persist_settings();
             }
-            let asc = self.sort_order == SortOrder::Ascending;
-            if let Some(i) = choice_row(ui, "fv_sort_order", icons::SORT_DESC, tr("Order"), &[tr("Ascending"), tr("Descending")], usize::from(!asc), &theme) {
-                self.sort_order = if i == 0 { SortOrder::Ascending } else { SortOrder::Descending };
+            let descending = self.sort_order == SortOrder::Descending;
+            let order_icon = if descending { icons::SORT_DESC } else { icons::SORT_ASC };
+            if switch_row_with(ui, "fv_sort_order", order_icon, tr("Reverse order"), None, &theme, descending).clicked() {
+                self.sort_order = if descending { SortOrder::Ascending } else { SortOrder::Descending };
                 self.settings.sort_order = self.sort_order;
                 self.apply_sort();
                 self.persist_settings();
@@ -528,28 +575,28 @@ impl SkiApp {
 
         material::section_label(ui, tr("Layout"), &theme);
         group_card(ui, &theme, |ui| {
-            if switch_row_with(ui, "fv_show_hidden", icons::VISIBILITY, tr("Show hidden files"), None, &theme, self.show_hidden).clicked() {
+            if switch_row_with(ui, "fv_show_hidden", icons::VISIBILITY, tr("Hidden files"), None, &theme, self.show_hidden).clicked() {
                 self.show_hidden = !self.show_hidden;
                 self.settings.show_hidden = self.show_hidden;
                 self.reload_items();
                 self.persist_settings();
             }
-            if switch_row_with(ui, "fv_folders_first", icons::FOLDER, tr("Folders before files"), None, &theme, self.folders_first).clicked() {
+            if switch_row_with(ui, "fv_folders_first", icons::FOLDER, tr("Folders first"), None, &theme, self.folders_first).clicked() {
                 self.folders_first = !self.folders_first;
                 self.settings.folders_first = self.folders_first;
                 self.reload_items();
                 self.persist_settings();
             }
-            if switch_row_with(ui, "fv_show_sidebar", icons::MENU, tr("Sidebar"), None, &theme, self.settings.show_sidebar).clicked() {
+            if switch_row_with(ui, "fv_show_sidebar", icons::SIDEBAR, tr("Sidebar"), None, &theme, self.settings.show_sidebar).clicked() {
                 self.settings.show_sidebar = !self.settings.show_sidebar;
                 self.persist_settings();
             }
-            if switch_row_with(ui, "fv_show_status", icons::INFO, tr("Status bar"), None, &theme, self.settings.show_status_bar).clicked() {
+            if switch_row_with(ui, "fv_show_status", icons::STATUS_BAR, tr("Status bar"), None, &theme, self.settings.show_status_bar).clicked() {
                 self.settings.show_status_bar = !self.settings.show_status_bar;
                 self.persist_settings();
             }
             let desc = Some(tr("Each folder keeps its own list or grid choice"));
-            if switch_row_with(ui, "fv_remember_view", icons::FOLDER_MOVE, tr("Remember view per folder"), desc, &theme, self.settings.remember_view_per_folder).clicked() {
+            if switch_row_with(ui, "fv_remember_view", icons::PIN, tr("Remember view per folder"), desc, &theme, self.settings.remember_view_per_folder).clicked() {
                 self.settings.remember_view_per_folder = !self.settings.remember_view_per_folder;
                 self.persist_settings();
             }
@@ -559,7 +606,7 @@ impl SkiApp {
         group_card(ui, &theme, |ui| {
             let densities = [Density::Compact, Density::Comfortable, Density::Spacious];
             let current = densities.iter().position(|d| *d == self.settings.density).unwrap_or(1);
-            if let Some(i) = choice_row(ui, "fv_density", icons::VIEW_LIST, tr("Row height"), &[tr("Compact"), tr("Comfortable"), tr("Spacious")], current, &theme) {
+            if let Some(i) = choice_row(ui, "fv_density", icons::RESIZE, tr("Row height"), &[tr("Compact"), tr("Comfortable"), tr("Spacious")], current, &theme) {
                 self.settings.density = densities[i];
                 self.persist_settings();
             }
@@ -567,41 +614,15 @@ impl SkiApp {
             let (head, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), material::ENTRY_HEIGHT), egui::Sense::hover());
             material::paint_icon(ui.painter(), head.left_center() + egui::vec2(material::INSET_ICON + 2.0, 0.0), icons::VIEW_COLUMN, material::ICON_MD, theme.subtext0);
             material::paint_label(ui, head.left() + material::INSET_LABEL + 2.0, head.center().y, tr("Columns"), material::FONT_BODY, theme.text, head.width() - material::INSET_LABEL - 12.0);
-            let gap = 8.0;
-            let avail = ui.available_width() - 16.0;
-            let widths: Vec<f32> = Column::ALL.iter().map(|c| material::chip_natural_width(ui, None, c.label(), &theme)).collect();
-            // Greedy rows, then each row stretched to the same total width
-            let mut rows: Vec<Vec<usize>> = vec![Vec::new()];
-            let mut used = 0.0;
-            for (i, w) in widths.iter().enumerate() {
-                let need = if rows.last().is_some_and(|r| r.is_empty()) { *w } else { used + gap + w };
-                if need > avail && !rows.last().is_some_and(|r| r.is_empty()) {
-                    rows.push(Vec::new());
-                    used = *w;
-                } else {
-                    used = need;
-                }
-                rows.last_mut().unwrap().push(i);
-            }
-            for row in rows {
-                let natural: f32 = row.iter().map(|i| widths[*i]).sum();
-                let grow = ((avail - gap * (row.len() - 1) as f32) / natural).max(1.0);
-                ui.horizontal(|ui| {
-                    ui.add_space(8.0);
-                    ui.spacing_mut().item_spacing.x = gap;
-                    for i in row {
-                        let col = Column::ALL[i];
-                        let on = self.columns.contains(&col);
-                        if material::chip_width(ui, ("fv_col", col.label()), None, col.label(), &theme, on, Some(widths[i] * grow)).clicked() {
-                            self.columns = Column::ALL
-                                .into_iter()
-                                .filter(|c| (*c == col) != self.columns.contains(c))
-                                .collect();
-                            self.settings.columns = self.columns.clone();
-                            self.persist_settings();
-                        }
-                    }
-                });
+            let labels = Column::ALL.map(|c| c.label());
+            if let Some(i) = chip_rows(ui, "fv_col", &labels, |i| self.columns.contains(&Column::ALL[i]), &theme) {
+                let col = Column::ALL[i];
+                self.columns = Column::ALL
+                    .into_iter()
+                    .filter(|c| (*c == col) != self.columns.contains(c))
+                    .collect();
+                self.settings.columns = self.columns.clone();
+                self.persist_settings();
             }
             ui.add_space(4.0);
         });
@@ -650,7 +671,7 @@ impl SkiApp {
                 self.apply_sort();
             }
             let current = usize::from(self.settings.decimal_units);
-            if let Some(i) = choice_row(ui, "fv_units", icons::INFO, tr("File size units"), &["1024 B = 1 KiB", "1000 B = 1 KB"], current, &theme) {
+            if let Some(i) = choice_row(ui, "fv_units", icons::RULER, tr("File size units"), &["1024 B = 1 KiB", "1000 B = 1 KB"], current, &theme) {
                 self.settings.decimal_units = i == 1;
                 self.persist_settings();
             }
