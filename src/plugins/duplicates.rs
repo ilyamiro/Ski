@@ -331,6 +331,8 @@ struct View {
     rows: Vec<Row>,
     error: Option<String>,
     cancelled: bool,
+    /// A trash job for this scan is running; its result has not come back yet.
+    removing: bool,
 }
 
 impl View {
@@ -418,6 +420,7 @@ impl Duplicates {
             rows: Vec::new(),
             error: None,
             cancelled: false,
+            removing: false,
         });
         let title = tr("Looking for duplicate files").to_owned();
         Reaction::Job(AppJob::new(title, move |w| {
@@ -440,6 +443,9 @@ impl Duplicates {
             return;
         }
         let (generation, tx) = (view.generation, self.tx.clone());
+        if let Some(view) = self.view.as_mut() {
+            view.removing = true;
+        }
         let doomed: Vec<PathBuf> = plans.iter().flat_map(|p| p.doomed.iter().map(|m| m.path.clone())).collect();
         let count = doomed.len();
         let title = trn(count, "Moving {} duplicate to the trash", "Moving {} duplicates to the trash");
@@ -511,6 +517,7 @@ impl Plugin for Duplicates {
                 Msg::Trashed { generation, paths } => {
                     if let Some(view) = self.view.as_mut().filter(|v| v.generation == generation) {
                         view.forget(&paths);
+                        view.removing = false;
                     }
                     changed = true;
                 }
@@ -663,7 +670,7 @@ impl Plugin for Duplicates {
             let label = if count == 0 { tr("Nothing selected").to_owned() } else { trf("{} selected, {}", &[&trn(count, "{} file", "{} files"), &format_bytes(bytes)]) };
             ui.label(egui::RichText::new(label).size(material::FONT_BODY).color(theme.subtext1));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                remove = material::button(ui, "dup_remove", Some(icons::TRASH), tr("Move to trash"), theme, material::ButtonKind::Danger, count > 0).clicked() && count > 0;
+                remove = material::button(ui, "dup_remove", Some(icons::TRASH), tr("Move to trash"), theme, material::ButtonKind::Danger, count > 0 && !view.removing).clicked() && count > 0 && !view.removing;
             });
         });
         if remove {
@@ -759,7 +766,7 @@ mod tests {
     }
 
     fn view_with(groups: Vec<Group>) -> View {
-        let mut view = View { generation: 1, roots: vec![PathBuf::from("/a")], cancel: Arc::default(), phase: Phase::Done, groups, selected: HashSet::new(), rows: Vec::new(), error: None, cancelled: false };
+        let mut view = View { generation: 1, roots: vec![PathBuf::from("/a")], cancel: Arc::default(), phase: Phase::Done, groups, selected: HashSet::new(), rows: Vec::new(), error: None, cancelled: false, removing: false };
         view.rebuild_rows();
         view
     }
