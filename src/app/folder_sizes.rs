@@ -69,13 +69,13 @@ impl SkiApp {
     pub(super) fn tick_folder_sizes(&mut self, ctx: &egui::Context) {
         dirsize::set_size_on_disk(self.settings.size_on_disk);
         if !self.in_recent() && !self.sizes.counting.load(Ordering::Relaxed) {
-            let missing: Vec<PathBuf> = self.items.iter().filter(|i| i.is_dir).take(400).filter(|i| !dirsize::has_count(&i.path)).map(|i| i.path.clone()).collect();
+            let missing: Vec<PathBuf> = self.items.iter().filter(|i| i.is_dir && !dirsize::has_count(&i.path)).take(400).map(|i| i.path.clone()).collect();
             if !missing.is_empty() {
                 dirsize::count_in_background(missing, Arc::clone(&self.sizes.counting));
             }
         }
         if self.settings.folder_sizes == FolderSizeMode::Always {
-            let wanted: Vec<PathBuf> = self.items.iter().take(AUTO_ROWS).filter(|i| i.is_dir).map(|i| i.path.clone()).collect();
+            let wanted: Vec<PathBuf> = self.items.iter().filter(|i| i.is_dir).take(AUTO_ROWS).map(|i| i.path.clone()).collect();
             // The selection feeds the status line
             let selected: Vec<PathBuf> = self.selection.iter().filter_map(|&i| self.items.get(i)).filter(|i| i.is_dir).map(|i| i.path.clone()).collect();
             for path in wanted.into_iter().chain(selected) {
