@@ -52,9 +52,16 @@ impl Repo {
             out.discard |= matches!(y, 'M' | 'D') && x != 'U';
             out.diff |= x != '?';
         }
+        // Git reports a folder with nothing tracked in it as one entry, so what is inside is untracked too
+        out.stage |= selected.iter().any(|s| self.in_untracked_folder(s));
         // One diff window shows one thing
         out.diff &= selected.len() == 1;
         out
+    }
+
+    /// Whether a folder above `path` is listed as untracked as a whole.
+    pub fn in_untracked_folder(&self, path: &Path) -> bool {
+        path.ancestors().skip(1).take_while(|a| a.starts_with(&self.root) && *a != self.root).any(|a| self.states.get(a) == Some(&('?', '?')))
     }
 }
 
@@ -263,7 +270,8 @@ impl Plugin for Git {
     }
 
     fn badge(&self, item: &FileItem) -> Option<Badge> {
-        self.repo.as_ref()?.files.get(&item.path).copied()
+        let repo = self.repo.as_ref()?;
+        repo.files.get(&item.path).copied().or_else(|| repo.in_untracked_folder(&item.path).then_some(Badge { letter: '?', tone: Tone::Bad }))
     }
 
     fn status(&self) -> Option<Status> {
@@ -438,6 +446,15 @@ mod tests {
         assert_eq!(letter("/r/merge.rs"), Some('!'));
         assert_eq!(letter("/r/gone.rs"), Some('D'));
         assert_eq!(letter("/r"), None);
+    }
+
+    #[test]
+    fn files_in_an_untracked_folder_can_be_staged() {
+        let repo = parse_status(Path::new("/r"), "## main\0?? notes/\0 M a.rs\0");
+        assert!(repo.in_untracked_folder(Path::new("/r/notes/x.txt")));
+        assert!(!repo.in_untracked_folder(Path::new("/r/notes")));
+        assert!(!repo.in_untracked_folder(Path::new("/r/a.rs")));
+        assert!(repo.applies(&[Path::new("/r/notes/x.txt")]).stage);
     }
 
     #[test]
