@@ -59,6 +59,12 @@ impl Repo {
         out
     }
 
+    /// The paths with a status at or below them that satisfies `wanted`; git refuses a whole command
+    /// when one path is not known to it.
+    fn keep(&self, paths: &[PathBuf], wanted: impl Fn(char, char) -> bool) -> Vec<PathBuf> {
+        paths.iter().filter(|p| self.states.iter().any(|(path, &(x, y))| path.starts_with(p) && wanted(x, y))).cloned().collect()
+    }
+
     /// Whether a folder above `path` is listed as untracked as a whole.
     pub fn in_untracked_folder(&self, path: &Path) -> bool {
         path.ancestors().skip(1).take_while(|a| a.starts_with(&self.root) && *a != self.root).any(|a| self.states.get(a) == Some(&('?', '?')))
@@ -217,7 +223,17 @@ impl Plugin for Git {
     fn run(&mut self, id: &str, paths: &[PathBuf], _dir: &Path) -> Reaction {
         let (Some(action), Some(root)) = (Action::from_id(id), self.repo.as_ref().map(|r| r.root.clone())) else { return Reaction::None };
         let tx = self.done.get_or_insert_with(mpsc::channel).0.clone();
-        let paths = paths.to_vec();
+        let mut paths = paths.to_vec();
+        if let Some(repo) = &self.repo {
+            match action {
+                Action::Unstage => paths = repo.keep(&paths, |x, y| !matches!(x, ' ' | '?' | '!' | 'U') && y != 'U'),
+                Action::Discard => paths = repo.keep(&paths, |x, y| matches!(y, 'M' | 'D') && x != 'U'),
+                _ => {}
+            }
+        }
+        if paths.is_empty() {
+            return Reaction::None;
+        }
         self.running += 1;
         std::thread::spawn(move || {
             let _ = tx.send(match action {
