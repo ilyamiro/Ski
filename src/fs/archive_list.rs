@@ -102,7 +102,7 @@ pub fn list_capped(path: &Path, cap: usize, limit: Duration, cancel: &AtomicBool
         list_7z(path, cap, deadline, cancel)?
     };
     listing.packed = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
-    listing.unpacked = listing.entries.iter().map(|e| e.size).sum();
+    listing.unpacked = listing.entries.iter().fold(0u64, |sum, e| sum.saturating_add(e.size));
     Ok(listing)
 }
 
@@ -312,7 +312,7 @@ pub fn tree(entries: &[ArchiveEntry]) -> Vec<Node> {
         }
         if let Some(&p) = parent_of.get(&id) {
             let (size, count) = (raw[id].size, files[id]);
-            raw[p].size += size;
+            raw[p].size = raw[p].size.saturating_add(size);
             files[p] += count;
         }
     }
