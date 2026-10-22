@@ -80,7 +80,7 @@ impl Drop for ArchiveView {
 
 impl Preview {
     pub fn load(item: &FileItem) -> Self {
-        let body = if !item.is_dir && crate::fs::ops::is_archive(&item.path) {
+        let body = if !item.is_dir && archive_list::is_listable(&item.path) {
             Body::Archive(Box::new(ArchiveView::start(item.path.clone())))
         } else if crate::thumbs::is_image(&item.path) || crate::thumbs::has_preview(&item.path) {
             Body::Picture { dimensions: image::image_dimensions(&item.path).ok() }

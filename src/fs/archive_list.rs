@@ -64,6 +64,14 @@ pub fn sanitize(name: &str) -> String {
     }
 }
 
+/// Whether the archive holds several files that can be listed: a lone compressed file (`log.gz`)
+/// has no tree to show.
+pub fn is_listable(path: &Path) -> bool {
+    let name = path.file_name().map(|n| n.to_string_lossy().to_lowercase()).unwrap_or_default();
+    let single = [".gz", ".xz", ".bz2", ".zst"].iter().any(|e| name.ends_with(e)) && !name.contains(".tar.");
+    ops::is_archive(path) && !single
+}
+
 pub fn list(path: &Path, cancel: &AtomicBool) -> Result<Listing, Failure> {
     list_capped(path, MAX_ENTRIES, TIME_LIMIT, cancel)
 }
@@ -327,6 +335,16 @@ pub fn tree(entries: &[ArchiveEntry]) -> Vec<Node> {
 mod tests {
     use super::*;
     use crate::fs::ops::{ArchiveFormat, compress};
+
+    #[test]
+    fn a_lone_compressed_file_has_no_tree() {
+        for name in ["a.zip", "a.tar.gz", "a.tgz", "a.tar.zst", "a.7z"] {
+            assert!(is_listable(Path::new(name)), "{name}");
+        }
+        for name in ["log.gz", "dump.sql.xz", "data.bz2", "backup.zst", "notes.txt"] {
+            assert!(!is_listable(Path::new(name)), "{name}");
+        }
+    }
 
     fn scratch(name: &str) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!("ski-archive-list-{name}-{}", std::process::id()));
