@@ -109,7 +109,7 @@ const MAX_DIFF_LINES: usize = 4000;
 
 enum Done {
     /// A stage, unstage or discard finished: the message to show.
-    Changed(Result<String, String>),
+    Changed(Result<String, String>, Action),
     Diff(Result<DiffView, String>),
 }
 
@@ -125,6 +125,7 @@ pub struct Git {
     running: usize,
     diff: Option<DiffView>,
     messages: Vec<String>,
+    refresh: bool,
 }
 
 impl Plugin for Git {
@@ -172,8 +173,10 @@ impl Plugin for Git {
         let results: Vec<Done> = self.done.as_ref().map(|(_, rx)| rx.try_iter().collect()).unwrap_or_default();
         for result in results {
             match result {
-                Done::Changed(outcome) => {
+                Done::Changed(outcome, action) => {
                     self.running = self.running.saturating_sub(1);
+                    // Restoring files puts back what the listing shows
+                    self.refresh |= action == Action::Discard && outcome.is_ok();
                     self.messages.push(outcome.unwrap_or_else(|e| e));
                     // The badges are out of date now: ask again without waiting for the throttle
                     self.read_status();
@@ -238,10 +241,14 @@ impl Plugin for Git {
         std::thread::spawn(move || {
             let _ = tx.send(match action {
                 Action::Diff => Done::Diff(diff(&root, &paths)),
-                _ => Done::Changed(change(&root, action, &paths)),
+                _ => Done::Changed(change(&root, action, &paths), action),
             });
         });
         Reaction::None
+    }
+
+    fn reaction(&mut self) -> Reaction {
+        if std::mem::take(&mut self.refresh) { Reaction::Refresh } else { Reaction::None }
     }
 
     fn window_title(&self) -> Option<&'static str> {

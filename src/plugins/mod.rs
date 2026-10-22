@@ -98,6 +98,8 @@ pub enum Reaction {
     Search(String),
     /// Run this as a file operation.
     Job(Job),
+    /// Files in the open folder changed behind the app's back: list it again.
+    Refresh,
 }
 
 /// A row a plugin adds to the sidebar.

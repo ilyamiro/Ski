@@ -69,6 +69,12 @@ impl SkiApp {
                     self.job_removals.insert(id, job.removes);
                 }
             }
+            Reaction::Refresh => {
+                crate::fs::dirsize::clear();
+                if self.search_query.trim().is_empty() {
+                    self.reload_items();
+                }
+            }
             Reaction::Search(query) => {
                 self.show_search = true;
                 self.search_query = query;
