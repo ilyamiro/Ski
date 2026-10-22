@@ -1757,7 +1757,7 @@ impl SkiApp {
                 let (mut show_view, mut show_search_btn, mut show_nav) = (true, !sidebar_visible, true);
                 let needed = |view: bool, search: bool, nav: bool| {
                     let menu = if sidebar_visible { 0.0 } else { button_w };
-                    TITLE_MIN + TITLE_GAP + menu + if view { button_w } else { 0.0 } + if search { button_w } else { 0.0 } + if nav { nav_w } else { 0.0 }
+                    TITLE_MIN + TITLE_GAP + menu + if view { material::SPLIT_BUTTON_W + gap } else { 0.0 } + if search { button_w } else { 0.0 } + if nav { nav_w } else { 0.0 }
                 };
                 let room = ui.available_width();
                 if needed(show_view, show_search_btn, show_nav) > room {
@@ -1785,7 +1785,7 @@ impl SkiApp {
                 // Search lives in the sidebar; without a sidebar it becomes a header button.
                 let show_jobs = !self.engine.jobs.is_empty();
                 let jobs_w = if show_jobs { button_w } else { 0.0 };
-                let right_w = jobs_w + if sidebar_visible { 0.0 } else { button_w } + if show_search_btn { button_w } else { 0.0 } + if show_view { CONTROL_HEIGHT } else { 0.0 };
+                let right_w = jobs_w + if sidebar_visible { 0.0 } else { button_w } + if show_search_btn { button_w } else { 0.0 } + if show_view { material::SPLIT_BUTTON_W } else { 0.0 };
                 let title_width = (ui.available_width() - right_w - TITLE_GAP).max(40.0);
 
                 let (title_rect, title_resp) =

@@ -570,7 +570,13 @@ pub fn filled_icon_button(
     if tooltip.is_empty() { response } else { response.on_hover_text(tooltip) }
 }
 
-/// Two joined round buttons: a main one that acts at once and a narrower arrow for a menu. Returns both responses.
+const SPLIT_MAIN_W: f32 = 30.0;
+const SPLIT_ARROW_W: f32 = 18.0;
+const SPLIT_GAP: f32 = 1.0;
+/// Total width of `split_icon_button`.
+pub const SPLIT_BUTTON_W: f32 = SPLIT_MAIN_W + SPLIT_GAP + SPLIT_ARROW_W;
+
+/// Two joined buttons: a main one that acts at once and a narrower arrow for a menu. Returns both responses.
 pub fn split_icon_button(
     ui: &mut egui::Ui,
     id_source: impl std::hash::Hash + std::fmt::Debug + Copy,
@@ -581,15 +587,14 @@ pub fn split_icon_button(
     arrow_tooltip: &str,
 ) -> (egui::Response, egui::Response) {
     let size = CONTROL_HEIGHT;
-    let arrow_w = 24.0;
-    let prev_gap = std::mem::replace(&mut ui.spacing_mut().item_spacing.x, 2.0);
+    let prev_gap = std::mem::replace(&mut ui.spacing_mut().item_spacing.x, SPLIT_GAP);
     let half = |ui: &mut egui::Ui, id: (_, u8), glyph: &str, w: f32, left: bool, tip: &str| {
         let (rect, response) = ui.allocate_exact_size(Vec2::new(w, size), egui::Sense::click());
         let id = ui.make_persistent_id(id);
         let fx = fx(ui, id, &response, true, &FxSpec::CLICK);
         let r = scaled(rect, fx.scale);
-        let round = (r.height() / 2.0) as u8;
-        let small = radius_sm();
+        let round = radius_md();
+        let small = 2;
         let corners = if left {
             CornerRadius { nw: round, sw: round, ne: small, se: small }
         } else {
@@ -598,11 +603,11 @@ pub fn split_icon_button(
         let hovered = lerp_color(theme.surface2, theme.text, fx.press * 0.08);
         paint_fill(ui.painter(), r, corners, lerp_color(theme.surface1, hovered, fx.hover.max(fx.press)), &fx);
         let color = lerp_color(theme.subtext1, theme.text, fx.hover.max(fx.press));
-        paint_icon(ui.painter(), rect.center(), glyph, (size * 0.5).round(), color);
+        paint_icon(ui.painter(), rect.center(), glyph, if left { (size * 0.5).round() } else { 14.0 }, color);
         if tip.is_empty() { response } else { response.on_hover_text(tip) }
     };
-    let main = half(ui, (id_source, 0), icon, size, true, tooltip);
-    let more = half(ui, (id_source, 1), arrow, arrow_w, false, arrow_tooltip);
+    let main = half(ui, (id_source, 0), icon, SPLIT_MAIN_W, true, tooltip);
+    let more = half(ui, (id_source, 1), arrow, SPLIT_ARROW_W, false, arrow_tooltip);
     ui.spacing_mut().item_spacing.x = prev_gap;
     (main, more)
 }
