@@ -9,6 +9,7 @@ mod chooser_ui;
 mod dnd;
 mod drives_ui;
 mod file_actions;
+mod folder_sizes;
 mod jobs_ui;
 mod perms;
 mod plugin_ui;
@@ -132,6 +133,8 @@ enum MenuAction {
     Eject(String, String, PathBuf),
     /// An entry a plugin added: the plugin's id, the entry's id and the files it applies to.
     Plugin(&'static str, String, Vec<PathBuf>, Option<&'static str>),
+    /// Measure these folders.
+    CalcSize(Vec<PathBuf>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -373,6 +376,7 @@ pub struct SkiApp {
     picker: Option<Picker>,
     /// The selection summary the pill still shows while it fades out.
     pill_text: String,
+    sizes: folder_sizes::SizeScheduler,
     /// Set when Ski runs as the open / save dialog of other programs.
     pub(crate) chooser: Option<crate::chooser::Chooser>,
     pub(crate) closing_dialog: Option<Dialog>,
@@ -496,6 +500,7 @@ impl SkiApp {
             dialog: None,
             picker: None,
             pill_text: String::new(),
+            sizes: Default::default(),
             chooser: None,
             closing_dialog: None,
             dialog_kind: None,
@@ -542,6 +547,7 @@ impl SkiApp {
 
     /// Switch to `path` after the history was updated: reset everything that belonged to the old place.
     fn arrive(&mut self, path: PathBuf) {
+        self.sizes.cancel_all();
         self.current_path = path;
         if !self.in_recent() {
             self.settings.last_dir = Some(self.current_path.clone());
@@ -615,6 +621,8 @@ impl SkiApp {
         // Also reload the theme from disk in case the wallpaper / Matugen theme changed
         self.system_theme = SerpantinumTheme::load();
         self.rebuild_theme();
+        self.sizes.cancel_all();
+        crate::fs::dirsize::clear();
         self.reload_items();
         self.set_toast(tr("Refreshed"));
     }
@@ -1737,6 +1745,7 @@ impl eframe::App for SkiApp {
             self.set_toast(message);
         }
         self.open_plugin_dialog();
+        self.tick_folder_sizes(&ctx);
 
         let found = self.search.poll();
         if !found.is_empty() && !self.search_query.trim().is_empty() {
@@ -2822,9 +2831,16 @@ impl SkiApp {
             parts.push(trn(files, "{} file", "{} files"));
         }
         let mut text = trf("{} selected", &[&parts.join(", ")]);
-        if files > 0 {
-            let size: u64 = selected.iter().filter(|i| !i.is_dir).map(|i| i.size).sum();
-            text.push_str(&format!(" · {}", crate::fs::file_item::format_bytes(size)));
+        let file_bytes: u64 = selected.iter().filter(|i| !i.is_dir).map(|i| i.size).sum();
+        let folder_items: Vec<&FileItem> = selected.iter().copied().filter(|i| i.is_dir).collect();
+        match self.selection_folder_bytes(&folder_items) {
+            Some((folder_bytes, waiting, partial)) if folders > 0 => {
+                let total = crate::fs::file_item::format_bytes(file_bytes + folder_bytes);
+                let shown = if waiting { "…".to_owned() } else if partial { format!("≥ {total}") } else { total };
+                text.push_str(&format!(" · {shown}"));
+            }
+            _ if files > 0 => text.push_str(&format!(" · {}", crate::fs::file_item::format_bytes(file_bytes))),
+            _ => {}
         }
         Some(text)
     }
@@ -3055,6 +3071,11 @@ impl SkiApp {
         if material::toggle_row(ui, "vo_hidden", tr("Hidden files"), hidden_hint.as_deref(), &theme, self.show_hidden).clicked() {
             self.show_hidden = !self.show_hidden;
             reload = true;
+        }
+        let always = self.settings.folder_sizes == crate::settings::FolderSizeMode::Always;
+        if material::toggle_row(ui, "vo_folder_sizes", tr("Folder sizes"), None, &theme, always).clicked() {
+            self.settings.folder_sizes = if always { crate::settings::FolderSizeMode::OnDemand } else { crate::settings::FolderSizeMode::Always };
+            self.persist_settings();
         }
         if material::toggle_row(ui, "vo_folders_first", tr("Folders first"), None, &theme, self.folders_first).clicked() {
             self.folders_first = !self.folders_first;
@@ -3288,6 +3309,7 @@ impl SkiApp {
         }
         self.selected_index = None;
         self.refresh_listing();
+        self.forget_sizes(&removed);
         self.plugins.file_op_done(&crate::plugins::FileOpEvent::Removed(removed));
         if trashed.is_empty() {
             self.set_toast(trf("Could not move to trash: {}", &[&failed.join(" · ")]));
@@ -3357,6 +3379,7 @@ impl SkiApp {
 
     fn delete_forever(&mut self, paths: Vec<PathBuf>) {
         self.plugins.file_op_done(&crate::plugins::FileOpEvent::Removed(paths.clone()));
+        self.forget_sizes(&paths);
         let label = Self::describe_count(&paths);
         self.selected_index = None;
         let title = trf("Deleting {}", &[&label]);
@@ -3421,6 +3444,7 @@ impl SkiApp {
             MenuAction::Unmount(dev, name, mount) => self.unmount_drive(ctx, dev, name, mount, false),
             MenuAction::Eject(dev, name, mount) => self.unmount_drive(ctx, dev, name, mount, true),
             MenuAction::Plugin(plugin, id, paths, confirm) => self.run_plugin_entry(ctx, plugin, id, paths, confirm),
+            MenuAction::CalcSize(paths) => self.calculate_sizes(&paths),
             MenuAction::Redo => self.redo(),
             MenuAction::OpenSettings => self.open_settings_dialog(),
             MenuAction::Shortcuts => self.dialog = Some(Dialog::Shortcuts),
@@ -3561,6 +3585,7 @@ impl SkiApp {
             }
         };
         let (in_trash, mixed) = (self.in_trash(), self.is_mixed_listing());
+        let calc_size = self.settings.folder_sizes == crate::settings::FolderSizeMode::OnDemand;
         // Clipboard / transfer / archive entries shared by every selection; `keep` leaves out
         // everything that would move or remove the items themselves
         let file_groups = |paths: Vec<PathBuf>, archives: bool, keep: bool| {
@@ -3622,10 +3647,13 @@ impl SkiApp {
             }
             groups.push(mark);
             groups.extend(file_groups(vec![item.path.clone()], !item.is_dir && ops::is_archive(&item.path), keep));
-            groups.push(vec![
-                (icons::COPY, tr("Copy path"), MenuAction::CopyPath(item.path.clone())),
-                (icons::INFO, tr("Properties"), MenuAction::Properties(item.path.clone())),
-            ]);
+            let mut info = Vec::new();
+            if item.is_dir && calc_size {
+                info.push((icons::STORAGE, tr("Calculate size"), MenuAction::CalcSize(vec![item.path.clone()])));
+            }
+            info.push((icons::COPY, tr("Copy path"), MenuAction::CopyPath(item.path.clone())));
+            info.push((icons::INFO, tr("Properties"), MenuAction::Properties(item.path.clone())));
+            groups.push(info);
             groups
         };
         match target {
@@ -3643,8 +3671,14 @@ impl SkiApp {
                 let group = self.menu_group(item);
                 let paths: Vec<PathBuf> = group.iter().map(|i| i.path.clone()).collect();
                 let archives = group.iter().any(|i| !i.is_dir && ops::is_archive(&i.path));
+                let folders: Vec<PathBuf> = group.iter().filter(|i| i.is_dir).map(|i| i.path.clone()).collect();
                 let mut groups = file_groups(paths, archives, false);
-                groups.push(vec![(icons::INFO, tr("Properties"), MenuAction::Properties(item.path.clone()))]);
+                let mut info = Vec::new();
+                if !folders.is_empty() && calc_size {
+                    info.push((icons::STORAGE, tr("Calculate size"), MenuAction::CalcSize(folders)));
+                }
+                info.push((icons::INFO, tr("Properties"), MenuAction::Properties(item.path.clone())));
+                groups.push(info);
                 groups
             }
             MenuTarget::Item(item) => single_groups(item, false, false),
@@ -4253,6 +4287,7 @@ impl SkiApp {
     /// Pins, folder icons and default apps follow a path that was renamed.
     fn retarget_path(&mut self, old: &Path, target: &Path) {
         self.plugins.file_op_done(&crate::plugins::FileOpEvent::Moved(vec![(old.to_path_buf(), target.to_path_buf())]));
+        self.forget_sizes([old, target]);
         if let Some(idx) = self.pins.iter().position(|p| p.as_path() == old) {
             self.pins[idx] = target.to_path_buf();
             Place::save_pins(&self.pins);
@@ -4894,8 +4929,14 @@ impl SkiApp {
             use std::sync::atomic::Ordering::Relaxed;
             let s = &scan.state;
             let (size, files, folders, done) = (s.size.load(Relaxed), s.files.load(Relaxed), s.folders.load(Relaxed), s.done.load(Relaxed));
-            let total = format!("{}{}", crate::fs::file_item::format_bytes(size), if done { "" } else { tr(" so far…") });
+            let totals = s.totals();
+            let at_least = if totals.partial { "≥ " } else { "" };
+            let total = format!("{at_least}{}{}", crate::fs::file_item::format_bytes(size), if done { "" } else { tr(" so far…") });
             groups[0].1.push((tr("Total size"), format!("{total} · {} · {}", trn(files as usize, "{} file", "{} files"), trn(folders as usize, "{} folder", "{} folders"))));
+            groups[0].1.push((tr("Size on disk"), format!("{at_least}{}", crate::fs::file_item::format_bytes(totals.disk))));
+            if totals.partial {
+                groups[0].1.push((tr("Note"), tr("Some folders couldn't be read, so the real size is larger").to_owned()));
+            }
             subtitle = format!("{} · {total}", props.kind);
             if !done {
                 ctx.request_repaint();
@@ -5150,6 +5191,43 @@ fn name_field(ui: &mut egui::Ui, theme: &SerpantinumTheme, text: &mut String, fi
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// "Always" measures the folders of the listing, the selection's status line adds them up, and
+    /// changing a folder from inside Ski makes its total (and its parents') stale.
+    #[test]
+    fn folder_sizes_are_measured_shown_and_invalidated() {
+        let work = std::env::temp_dir().join(format!("ski_app_sizes_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&work);
+        std::fs::create_dir_all(work.join("big")).unwrap();
+        std::fs::create_dir_all(work.join("empty")).unwrap();
+        std::fs::write(work.join("big/data.bin"), vec![0u8; 5000]).unwrap();
+        std::fs::write(work.join("note.txt"), "12345").unwrap();
+
+        let ctx = egui::Context::default();
+        let settings = Settings { folder_sizes: crate::settings::FolderSizeMode::Always, ..Settings::default() };
+        let mut app = SkiApp::new(work.clone(), SerpantinumTheme::default(), settings, &ctx);
+        let big = work.join("big");
+        for _ in 0..300 {
+            app.tick_folder_sizes(&ctx);
+            if crate::fs::dirsize::totals(&big).is_some() && crate::fs::dirsize::totals(&work.join("empty")).is_some() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let item = app.items.iter().find(|i| i.name == "big").unwrap().clone();
+        assert_eq!(item.formatted_size(), crate::fs::file_item::format_bytes(5000));
+
+        // The status line adds the folder to the files that are selected with it
+        app.selection = app.items.iter().enumerate().filter(|(_, i)| i.name == "big" || i.name == "note.txt").map(|(n, _)| n).collect();
+        let summary = app.selection_summary().unwrap();
+        assert!(summary.ends_with(&crate::fs::file_item::format_bytes(5005)), "{summary}");
+
+        // Something changed inside: the folder and its parent must be measured again
+        app.rename_entry(&big.join("data.bin"), "renamed.bin").unwrap();
+        assert!(crate::fs::dirsize::totals(&big).is_none());
+        assert!(crate::fs::dirsize::totals(&work).is_none());
+        std::fs::remove_dir_all(&work).unwrap();
+    }
 
     /// Drives rename, trash, undo and permanent delete through the app, in a sandboxed data folder.
     #[test]

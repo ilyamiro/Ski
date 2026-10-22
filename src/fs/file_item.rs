@@ -273,7 +273,7 @@ impl FileItem {
 
     pub fn formatted_size(&self) -> String {
         if self.is_dir {
-            "—".to_string()
+            super::dirsize::label(&self.path)
         } else {
             format_bytes(self.size)
         }

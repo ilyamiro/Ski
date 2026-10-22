@@ -637,6 +637,18 @@ impl SkiApp {
                 self.settings.relative_dates = !self.settings.relative_dates;
                 self.persist_settings();
             }
+            let modes = [crate::settings::FolderSizeMode::Off, crate::settings::FolderSizeMode::OnDemand, crate::settings::FolderSizeMode::Always];
+            let at = modes.iter().position(|m| *m == self.settings.folder_sizes).unwrap_or(1);
+            if let Some(i) = choice_row(ui, "fv_folder_sizes", icons::STORAGE, tr("Folder sizes"), &[tr("Off"), tr("On demand"), tr("Always")], at, &theme) {
+                self.settings.folder_sizes = modes[i];
+                self.persist_settings();
+            }
+            let desc = Some(tr("Measure the space folders occupy on disk instead of the sum of file sizes"));
+            if switch_row_with(ui, "fv_size_on_disk", icons::STORAGE, tr("Size on disk"), desc, &theme, self.settings.size_on_disk).clicked() {
+                self.settings.size_on_disk = !self.settings.size_on_disk;
+                self.persist_settings();
+                self.apply_sort();
+            }
             let current = usize::from(self.settings.decimal_units);
             if let Some(i) = choice_row(ui, "fv_units", icons::INFO, tr("File size units"), &["1024 B = 1 KiB", "1000 B = 1 KB"], current, &theme) {
                 self.settings.decimal_units = i == 1;

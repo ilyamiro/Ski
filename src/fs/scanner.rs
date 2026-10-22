@@ -196,6 +196,10 @@ fn name_cmp(a: &FileItem, b: &FileItem) -> Ordering {
         .then_with(|| a.name.cmp(&b.name))
 }
 
+fn effective_size(item: &FileItem) -> u64 {
+    if item.is_dir { super::dirsize::known_bytes(&item.path).unwrap_or(0) } else { item.size }
+}
+
 pub fn sort_items(items: &mut [FileItem], opts: &ListOptions) {
     let (sort_by, sort_order) = (opts.sort_by, opts.sort_order);
     let owners: std::collections::HashMap<u32, String> = if sort_by == SortBy::Owner {
@@ -215,7 +219,17 @@ pub fn sort_items(items: &mut [FileItem], opts: &ListOptions) {
 
         let ordering = match sort_by {
             SortBy::Name => name_cmp(a, b),
-            SortBy::Size => a.size.cmp(&b.size),
+            SortBy::Size => match (a.is_dir, b.is_dir) {
+                // Measured folders by size; the ones not measured yet follow, whichever way the column is ordered
+                (true, true) => match (super::dirsize::known_bytes(&a.path), super::dirsize::known_bytes(&b.path)) {
+                    (Some(x), Some(y)) => x.cmp(&y),
+                    (None, None) => Ordering::Equal,
+                    (Some(_), None) => if sort_order == SortOrder::Ascending { Ordering::Less } else { Ordering::Greater },
+                    (None, Some(_)) => if sort_order == SortOrder::Ascending { Ordering::Greater } else { Ordering::Less },
+                },
+                // Files and folders mixed (folders first is off): a folder counts by its size, or as empty
+                _ => effective_size(a).cmp(&effective_size(b)),
+            },
             SortBy::Type => extension_of(a).cmp(&extension_of(b)),
             SortBy::Modified => a.modified.cmp(&b.modified),
             SortBy::Created => a.created.cmp(&b.created),
@@ -236,6 +250,30 @@ pub fn sort_items(items: &mut [FileItem], opts: &ListOptions) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn folders_not_measured_yet_sort_after_measured_ones_either_way() {
+        use super::super::dirsize;
+        let root = std::env::temp_dir().join(format!("ski-sortsize-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        for name in ["big", "small", "unknown-a", "unknown-b"] {
+            std::fs::create_dir_all(root.join(name)).unwrap();
+        }
+        let totals = |bytes| dirsize::Totals { bytes, disk: bytes, files: 1, folders: 0, partial: false };
+        dirsize::store(&root.join("big"), totals(9000));
+        dirsize::store(&root.join("small"), totals(10));
+        let items = || ["unknown-b", "big", "unknown-a", "small"].map(|n| FileItem::from_path(&root.join(n)).unwrap()).to_vec();
+        let names = |items: &[FileItem]| items.iter().map(|i| i.name.clone()).collect::<Vec<_>>();
+        let opts = |sort_order| ListOptions { show_hidden: false, sort_by: SortBy::Size, sort_order, folders_first: true, type_filter: TypeFilter::All };
+
+        let mut ascending = items();
+        sort_items(&mut ascending, &opts(SortOrder::Ascending));
+        assert_eq!(names(&ascending), ["small", "big", "unknown-a", "unknown-b"]);
+        let mut descending = items();
+        sort_items(&mut descending, &opts(SortOrder::Descending));
+        assert_eq!(names(&descending), ["big", "small", "unknown-a", "unknown-b"]);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
 
     #[test]
     fn numbers_sort_by_value() {

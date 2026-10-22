@@ -16,3 +16,4 @@ pub mod glob;
 pub mod templates;
 pub mod drives;
 pub mod xattr;
+pub mod dirsize;

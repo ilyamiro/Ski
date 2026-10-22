@@ -231,6 +231,8 @@ Ski bundles a few optional features as plugins. Switch them on or off in Setting
 
   The command runs in the open folder with the selected files as arguments, and `SKI_SELECTED_FILES` and `SKI_CURRENT_DIR` are set. Filters: `extensions`, `dirs_only`, `files_only`, `single`.
 
+Folder sizes: the Size column shows how many items a folder holds. Right-click a folder → Calculate size (Settings → Files & View → Details → Folder sizes: Off, On demand, Always) measures it; sizes appear in the column, in the status line for a selection and in sorting. Two folders are measured at a time, hard-linked files count once, links are not followed and other mounted disks are skipped. A folder Ski could not fully read shows `≥`. Sizes are remembered for the session and dropped when Ski changes something inside, or on refresh (`F5`); changes made by other programs show after a refresh. "Size on disk" counts allocated blocks instead of file lengths.
+
 Typing in a folder jumps to the file whose name starts with what you typed (Settings → Behavior → Type to jump); `/` or Ctrl+F still searches.
 
 ## Archives

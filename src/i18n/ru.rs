@@ -562,4 +562,13 @@ pub const CATALOG: &[(&str, &str)] = &[
     ("Find tags in this folder", "Найти теги в этой папке"),
     ("Pick a colour for each tag. Other file managers see the names only.", "Выберите цвет для каждого тега. Другие файловые менеджеры видят только названия."),
     ("No tags yet. Right-click a file and choose Tags.", "Тегов пока нет. Нажмите правой кнопкой на файл и выберите «Теги»."),
+    ("Calculate size", "Вычислить размер"),
+    ("Folder sizes", "Размеры папок"),
+    ("Size on disk", "Размер на диске"),
+    ("On demand", "По запросу"),
+    ("Always", "Всегда"),
+    ("Off", "Выкл."),
+    ("Measure the space folders occupy on disk instead of the sum of file sizes", "Измерять место, занятое папками на диске, а не сумму размеров файлов"),
+    ("Note", "Примечание"),
+    ("Some folders couldn't be read, so the real size is larger", "Некоторые папки не удалось прочитать, поэтому настоящий размер больше"),
 ];

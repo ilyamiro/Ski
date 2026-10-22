@@ -1,5 +1,5 @@
 //! Detailed file information (the "Properties" view) plus the small helpers the list columns share.
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
@@ -74,10 +74,26 @@ pub fn format_datetime(time: Option<SystemTime>) -> String {
 #[derive(Default)]
 pub struct ScanState {
     pub size: AtomicU64,
+    /// Space on disk (allocated blocks) rather than the sum of file lengths.
+    pub disk: AtomicU64,
     pub files: AtomicU64,
     pub folders: AtomicU64,
     pub done: AtomicBool,
+    /// A folder could not be read, so the totals are a lower bound.
+    pub partial: AtomicBool,
     cancel: AtomicBool,
+}
+
+impl ScanState {
+    pub fn totals(&self) -> super::dirsize::Totals {
+        super::dirsize::Totals {
+            bytes: self.size.load(Ordering::Relaxed),
+            disk: self.disk.load(Ordering::Relaxed),
+            files: self.files.load(Ordering::Relaxed),
+            folders: self.folders.load(Ordering::Relaxed),
+            partial: self.partial.load(Ordering::Relaxed),
+        }
+    }
 }
 
 pub struct FolderScan {
@@ -102,19 +118,47 @@ impl Drop for FolderScan {
     }
 }
 
-fn walk(dir: &Path, state: &ScanState) {
-    let Ok(entries) = std::fs::read_dir(dir) else { return };
-    for entry in entries.flatten() {
-        if state.cancel.load(Ordering::Relaxed) {
-            return;
-        }
-        let Ok(meta) = entry.metadata() else { continue };
-        if meta.is_dir() {
-            state.folders.fetch_add(1, Ordering::Relaxed);
-            walk(&entry.path(), state);
-        } else {
-            state.files.fetch_add(1, Ordering::Relaxed);
-            state.size.fetch_add(meta.len(), Ordering::Relaxed);
+/// Adds up everything below `root` without recursion (deep trees cannot overflow the stack).
+/// Links are not followed, a file with several hard links counts once, and other file systems
+/// mounted inside the tree (`/proc`, a USB disk) are left out.
+fn walk(root: &Path, state: &ScanState) {
+    use std::os::unix::fs::MetadataExt;
+    let root_dev = root.symlink_metadata().map(|m| m.dev()).ok();
+    let mut linked: HashSet<(u64, u64)> = HashSet::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            state.partial.store(true, Ordering::Relaxed);
+            continue;
+        };
+        for entry in entries {
+            if state.cancel.load(Ordering::Relaxed) {
+                return;
+            }
+            let Ok(entry) = entry else {
+                state.partial.store(true, Ordering::Relaxed);
+                continue;
+            };
+            // `DirEntry::metadata` does not follow a symbolic link
+            let Ok(meta) = entry.metadata() else {
+                state.partial.store(true, Ordering::Relaxed);
+                continue;
+            };
+            if meta.is_dir() {
+                if root_dev.is_some_and(|d| d != meta.dev()) {
+                    continue;
+                }
+                state.folders.fetch_add(1, Ordering::Relaxed);
+                state.disk.fetch_add(meta.blocks() * 512, Ordering::Relaxed);
+                stack.push(entry.path());
+            } else {
+                if meta.nlink() > 1 && !linked.insert((meta.dev(), meta.ino())) {
+                    continue;
+                }
+                state.files.fetch_add(1, Ordering::Relaxed);
+                state.size.fetch_add(meta.len(), Ordering::Relaxed);
+                state.disk.fetch_add(meta.blocks() * 512, Ordering::Relaxed);
+            }
         }
     }
 }
@@ -306,4 +350,94 @@ fn text_details(path: &Path, size: u64) -> Option<Vec<(&'static str, String)>> {
         (tr("Characters"), content.chars().count().to_string()),
         (tr("Encoding"), "UTF-8".to_owned()),
     ])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tree(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("ski-props-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn walk_counts_hard_links_once_and_does_not_follow_symlinks() {
+        let dir = tree("walk");
+        std::fs::create_dir_all(dir.join("sub/deeper")).unwrap();
+        std::fs::write(dir.join("a.bin"), vec![1u8; 1000]).unwrap();
+        std::fs::hard_link(dir.join("a.bin"), dir.join("sub/a-link.bin")).unwrap();
+        std::fs::write(dir.join("sub/deeper/b.bin"), vec![2u8; 500]).unwrap();
+        let outside = tree("outside");
+        std::fs::write(outside.join("big.bin"), vec![3u8; 100_000]).unwrap();
+        std::os::unix::fs::symlink(&outside, dir.join("link-to-folder")).unwrap();
+        std::os::unix::fs::symlink(outside.join("big.bin"), dir.join("link-to-file")).unwrap();
+
+        let state = ScanState::default();
+        walk(&dir, &state);
+        let totals = state.totals();
+        // The two names of one inode count once; the links count as links, not as their targets
+        assert_eq!(totals.folders, 2);
+        assert!(totals.bytes >= 1500 && totals.bytes < 2000, "{totals:?}");
+        assert!(!totals.partial);
+        assert!(totals.disk >= totals.bytes.min(4096));
+        std::fs::remove_dir_all(&dir).unwrap();
+        std::fs::remove_dir_all(&outside).unwrap();
+    }
+
+    #[test]
+    fn an_unreadable_folder_makes_the_total_partial() {
+        use std::os::unix::fs::PermissionsExt;
+        // Root reads everything
+        // SAFETY: geteuid has no preconditions
+        if unsafe { libc::geteuid() } == 0 {
+            return;
+        }
+        let dir = tree("partial");
+        std::fs::create_dir_all(dir.join("locked")).unwrap();
+        std::fs::write(dir.join("ok.txt"), "12345").unwrap();
+        std::fs::set_permissions(dir.join("locked"), std::fs::Permissions::from_mode(0o000)).unwrap();
+        let state = ScanState::default();
+        walk(&dir, &state);
+        std::fs::set_permissions(dir.join("locked"), std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(state.totals().partial);
+        assert_eq!(state.totals().bytes, 5);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_cancelled_walk_stops_at_once() {
+        let dir = tree("cancel");
+        for i in 0..50 {
+            std::fs::write(dir.join(format!("{i}.txt")), "x").unwrap();
+        }
+        let state = ScanState::default();
+        state.cancel.store(true, Ordering::Relaxed);
+        walk(&dir, &state);
+        assert_eq!(state.files.load(Ordering::Relaxed), 0);
+
+        // Dropping a running scan raises the flag its thread watches
+        let scan = FolderScan::start(dir.clone());
+        let state = Arc::clone(&scan.state);
+        drop(scan);
+        assert!(state.cancel.load(Ordering::Relaxed));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn deep_trees_do_not_overflow_the_stack() {
+        let dir = tree("deep");
+        let mut path = dir.clone();
+        // Long relative path chain built level by level through the parent
+        for _ in 0..200 {
+            path.push("d");
+            std::fs::create_dir_all(&path).unwrap();
+        }
+        let state = ScanState::default();
+        walk(&dir, &state);
+        assert_eq!(state.folders.load(Ordering::Relaxed), 200);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 }

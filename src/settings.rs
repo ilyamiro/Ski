@@ -67,6 +67,9 @@ pub struct Settings {
     pub show_extensions: bool,
     pub relative_dates: bool,
     pub decimal_units: bool,
+    pub folder_sizes: FolderSizeMode,
+    /// Folder sizes show the space used on disk instead of the sum of file lengths.
+    pub size_on_disk: bool,
     pub animations: bool,
     pub remember_view_per_folder: bool,
     pub folder_views: std::collections::HashMap<PathBuf, ViewMode>,
@@ -81,6 +84,17 @@ pub enum StartLocation {
     Home,
     LastVisited,
     Custom,
+}
+
+/// When folders get a size in the listing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum FolderSizeMode {
+    Off,
+    /// Only the folders you ask about ("Calculate size").
+    #[default]
+    OnDemand,
+    /// Every folder in the listing.
+    Always,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -228,6 +242,8 @@ impl Default for Settings {
             show_extensions: true,
             relative_dates: false,
             decimal_units: false,
+            folder_sizes: FolderSizeMode::default(),
+            size_on_disk: false,
             animations: true,
             remember_view_per_folder: false,
             folder_views: Default::default(),

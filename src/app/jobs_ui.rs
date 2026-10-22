@@ -89,11 +89,19 @@ impl SkiApp {
             Effect::Record(entry) => {
                 undoable = outcome.ok;
                 self.report_moves(&entry);
+                self.forget_entry_sizes(&entry);
                 self.history.record(entry);
             }
-            Effect::Undone(entry) => self.history.push_redo(entry),
-            Effect::Redone(entry) => self.history.push_undo(entry),
-            Effect::None => {}
+            Effect::Undone(entry) => {
+                self.forget_entry_sizes(&entry);
+                self.history.push_redo(entry);
+            }
+            Effect::Redone(entry) => {
+                self.forget_entry_sizes(&entry);
+                self.history.push_undo(entry);
+            }
+            // A job that changed things without an undo (deleting for good, a cancelled copy)
+            Effect::None => crate::fs::dirsize::clear(),
         }
         let message = if outcome.cancelled || outcome.ok { outcome.message } else { trf("Failed: {}", &[&outcome.message]) };
         if undoable {

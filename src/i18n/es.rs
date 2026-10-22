@@ -562,4 +562,13 @@ pub const CATALOG: &[(&str, &str)] = &[
     ("Find tags in this folder", "Buscar etiquetas en esta carpeta"),
     ("Pick a colour for each tag. Other file managers see the names only.", "Elija un color para cada etiqueta. Otros gestores solo ven los nombres."),
     ("No tags yet. Right-click a file and choose Tags.", "Aún no hay etiquetas. Haga clic derecho en un archivo y elija Etiquetas."),
+    ("Calculate size", "Calcular tamaño"),
+    ("Folder sizes", "Tamaños de carpetas"),
+    ("Size on disk", "Tamaño en disco"),
+    ("On demand", "Bajo demanda"),
+    ("Always", "Siempre"),
+    ("Off", "Desactivado"),
+    ("Measure the space folders occupy on disk instead of the sum of file sizes", "Medir el espacio que ocupan las carpetas en disco en lugar de la suma de los tamaños de archivo"),
+    ("Note", "Nota"),
+    ("Some folders couldn't be read, so the real size is larger", "Algunas carpetas no se pudieron leer, así que el tamaño real es mayor"),
 ];
