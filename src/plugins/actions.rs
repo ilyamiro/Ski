@@ -15,7 +15,7 @@
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant, SystemTime};
 
@@ -73,6 +73,8 @@ pub struct Actions {
     messages: Vec<String>,
     done_tx: mpsc::Sender<String>,
     done_rx: mpsc::Receiver<String>,
+    /// An action finished, and may have changed the files in the open folder.
+    finished: Arc<AtomicBool>,
     running: Arc<AtomicUsize>,
 }
 
@@ -96,6 +98,7 @@ impl Actions {
             messages: Vec::new(),
             done_tx,
             done_rx,
+            finished: Arc::default(),
             running: Arc::default(),
         };
         actions.reload();
@@ -308,7 +311,7 @@ impl Plugin for Actions {
         };
         let selected = paths.iter().map(|p| p.to_string_lossy()).collect::<Vec<_>>().join("\n");
         command.current_dir(dir).env("SKI_SELECTED_FILES", selected).env("SKI_CURRENT_DIR", dir).stdin(std::process::Stdio::null());
-        let (tx, label, running) = (self.done_tx.clone(), entry.label, Arc::clone(&self.running));
+        let (tx, label, running, finished) = (self.done_tx.clone(), entry.label, Arc::clone(&self.running), Arc::clone(&self.finished));
         running.fetch_add(1, Ordering::Relaxed);
         std::thread::spawn(move || {
             let message = match command.output() {
@@ -321,9 +324,14 @@ impl Plugin for Actions {
                 Err(e) => trf("{} failed: {}", &[&label, &e]),
             };
             let _ = tx.send(message);
+            finished.store(true, Ordering::Relaxed);
             running.fetch_sub(1, Ordering::Relaxed);
         });
         Reaction::None
+    }
+
+    fn reaction(&mut self) -> Reaction {
+        if self.finished.swap(false, Ordering::Relaxed) { Reaction::Refresh } else { Reaction::None }
     }
 
     fn busy(&self) -> bool {
