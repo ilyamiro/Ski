@@ -300,6 +300,8 @@ pub struct SkiApp {
     history_job: Option<u64>,
     /// Files plugin jobs were started to remove, by job.
     job_removals: HashMap<u64, Vec<PathBuf>>,
+    /// The folder size mode the View options switch went on from, which turning it off restores.
+    sizes_before_always: crate::settings::FolderSizeMode,
     pending_conflicts: VecDeque<ConflictRequest>,
     jobs_popover: bool,
     jobs_button_rect: egui::Rect,
@@ -455,6 +457,7 @@ impl SkiApp {
             history: History::default(),
             history_job: None,
             job_removals: HashMap::new(),
+            sizes_before_always: crate::settings::FolderSizeMode::OnDemand,
             pending_conflicts: VecDeque::new(),
             jobs_popover: false,
             jobs_button_rect: egui::Rect::NOTHING,
@@ -3112,7 +3115,12 @@ impl SkiApp {
         }
         let always = self.settings.folder_sizes == crate::settings::FolderSizeMode::Always;
         if material::toggle_row(ui, "vo_folder_sizes", tr("Folder sizes"), None, &theme, always).clicked() {
-            self.settings.folder_sizes = if always { crate::settings::FolderSizeMode::OnDemand } else { crate::settings::FolderSizeMode::Always };
+            if always {
+                self.settings.folder_sizes = self.sizes_before_always;
+            } else {
+                self.sizes_before_always = self.settings.folder_sizes;
+                self.settings.folder_sizes = crate::settings::FolderSizeMode::Always;
+            }
             self.persist_settings();
         }
         if material::toggle_row(ui, "vo_folders_first", tr("Folders first"), None, &theme, self.folders_first).clicked() {
