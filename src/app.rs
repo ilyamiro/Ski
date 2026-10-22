@@ -4226,6 +4226,8 @@ impl SkiApp {
                 });
             });
             if let Some(i) = picked {
+                // What the template picked before put at the end of the name, which the new one replaces
+                let old_ext = templates.get(*template).and_then(|t| t.extension()).map(str::to_owned);
                 *template = i;
                 let chosen = &templates[i];
                 let stem_of = |n: &str| match n.rfind('.') {
@@ -4234,9 +4236,10 @@ impl SkiApp {
                 };
                 // A name nobody has typed follows the template; a typed one only changes its extension
                 let base = if *edited {
+                    let without_old = old_ext.filter(|e| name.ends_with(&format!(".{e}"))).map(|e| name[..name.len() - e.len() - 1].to_owned());
                     match chosen.extension() {
-                        Some(ext) => format!("{}.{ext}", stem_of(name)),
-                        None => stem_of(name),
+                        Some(ext) => format!("{}.{ext}", without_old.unwrap_or_else(|| stem_of(name))),
+                        None => without_old.unwrap_or_else(|| name.clone()),
                     }
                 } else {
                     chosen.file_name.clone()
