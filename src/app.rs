@@ -680,7 +680,7 @@ impl SkiApp {
                 }
             }
         }
-        if let Err(err) = open::that(path) {
+        if let Err(err) = open::that_detached(path) {
             self.set_toast(trf("Failed to open file: {}", &[&err]));
         }
     }
