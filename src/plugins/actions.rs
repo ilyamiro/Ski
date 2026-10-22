@@ -61,7 +61,8 @@ pub struct Failure {
 }
 
 /// The folder and every file in it with its modification time: when it differs, the folder is read again.
-type Stamp = Vec<(PathBuf, Option<SystemTime>)>;
+/// Each path with its modification time and mode: `chmod +x` changes only the mode.
+type Stamp = Vec<(PathBuf, Option<SystemTime>, Option<u32>)>;
 
 pub struct Actions {
     entries: Vec<Entry>,
@@ -135,13 +136,15 @@ impl Actions {
 }
 
 fn stamp(dir: &Path) -> Stamp {
-    let modified = |p: &Path| std::fs::metadata(p).and_then(|m| m.modified()).ok();
+    let modified = |p: &Path| std::fs::metadata(p).ok().map(|m| (m.modified().ok(), m.permissions().mode()));
     let mut files: Vec<PathBuf> = std::fs::read_dir(dir).map(|rd| rd.flatten().map(|e| e.path()).collect()).unwrap_or_default();
     files.sort();
-    let mut stamp = vec![(dir.to_path_buf(), modified(dir))];
+    let split = |p: &Path| modified(p).map_or((None, None), |(time, mode)| (time, Some(mode)));
+    let (time, mode) = split(dir);
+    let mut stamp = vec![(dir.to_path_buf(), time, mode)];
     stamp.extend(files.into_iter().map(|f| {
-        let time = modified(&f);
-        (f, time)
+        let (time, mode) = split(&f);
+        (f, time, mode)
     }));
     stamp
 }
