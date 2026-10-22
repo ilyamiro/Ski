@@ -54,8 +54,7 @@ pub enum Tint {
     Muted,
 }
 
-/// Word processor, spreadsheet and presentation files are drawn as a little document with the
-/// letter of the program that opens them.
+/// Word processor, spreadsheet and presentation files get a drawn page icon of their own.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Office {
     Document,
