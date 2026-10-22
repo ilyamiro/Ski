@@ -681,8 +681,8 @@ pub struct Checksum {
     /// The text on the clipboard when the file was last looked at; read again after `RECHECK`,
     /// so copying a hash while Properties is open shows up.
     clipboard: HashMap<Key, (Instant, Option<String>)>,
-    /// What the checksum files beside a file said about it, looked up once per file.
-    verdicts: HashMap<Key, Option<(String, bool)>>,
+    /// What the checksum files beside a file said about it; looked up again after `RECHECK`.
+    verdicts: HashMap<Key, (Instant, Option<(String, bool)>)>,
     /// Verifications report here when they finish.
     reports: Option<(std::sync::mpsc::Sender<Report>, std::sync::mpsc::Receiver<Report>)>,
     report: Option<Report>,
@@ -823,8 +823,10 @@ impl Plugin for Checksum {
             Some(Err(error)) => vec![PropertyGroup { title: tr("Checksums"), rows: vec![(tr("Error"), error)] }],
             Some(Ok(hashes)) => {
                 let mut rows = vec![("MD5", hashes.md5.clone()), ("SHA-1", hashes.sha1.clone()), ("SHA-256", hashes.sha256.clone()), ("SHA-512", hashes.sha512.clone())];
-                let verdict = self.verdicts.entry(key.clone()).or_insert_with(|| verdict_for(&item.path, &hashes));
-                if let Some((file, matches)) = verdict {
+                if self.verdicts.get(&key).is_none_or(|(at, _)| at.elapsed() > RECHECK) {
+                    self.verdicts.insert(key.clone(), (Instant::now(), verdict_for(&item.path, &hashes)));
+                }
+                if let Some((file, matches)) = &self.verdicts[&key].1 {
                     let text = if *matches { trf("Matches {}", &[&file]) } else { trf("Does not match {}", &[&file]) };
                     rows.push((tr("Checksum file"), text));
                 }
