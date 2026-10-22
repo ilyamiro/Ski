@@ -5,6 +5,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+use crate::fs::engine::{Outcome, Worker};
 use crate::fs::file_item::FileItem;
 use crate::ui::theme::SerpantinumTheme;
 
@@ -62,13 +63,22 @@ impl MenuItem {
     }
 }
 
+/// Long work a plugin hands to the app, which runs it as a file operation: it shows progress in the
+/// operations list and can be paused and cancelled there.
+pub struct Job {
+    pub title: String,
+    pub work: Box<dyn FnOnce(&mut Worker) -> Outcome + Send>,
+}
+
 /// What the app does after a plugin ran an entry or handled a click.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Default)]
 pub enum Reaction {
     #[default]
     None,
     /// Put this text in the search field and search.
     Search(String),
+    /// Run this as a file operation.
+    Job(Job),
 }
 
 /// A row a plugin adds to the sidebar.
@@ -386,7 +396,7 @@ mod tests {
         assert!(plugins.menu_items(&[item()]).is_empty());
         plugins.file_op_done(&FileOpEvent::Removed(vec![PathBuf::from("/x")]));
         assert!(events.borrow().is_empty());
-        assert_eq!(plugins.run("fake", "go", &[], Path::new("/")), Reaction::None);
+        assert!(matches!(plugins.run("fake", "go", &[], Path::new("/")), Reaction::None));
     }
 
     #[test]
@@ -395,7 +405,7 @@ mod tests {
         let entries = plugins.menu_items(&[item()]);
         assert_eq!(entries[0].0, "fake");
         assert_eq!(entries[0].1.confirm, Some("Sure?"));
-        assert_eq!(plugins.run("fake", "go", &[], Path::new("/tmp")), Reaction::Search("/tmp".to_owned()));
+        assert!(matches!(plugins.run("fake", "go", &[], Path::new("/tmp")), Reaction::Search(q) if q == "/tmp"));
     }
 
     #[test]

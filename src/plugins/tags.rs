@@ -197,7 +197,7 @@ fn read_folder(dir: &Path, previous: &HashMap<PathBuf, Entry>) -> HashMap<PathBu
 }
 
 /// Walks `dir` and returns every file with tags.
-fn scan_tree(dir: &Path) -> Vec<(PathBuf, Vec<String>)> {
+fn scan_tree(dir: &Path) -> Vec<Tagged> {
     let mut found = Vec::new();
     let mut stack = vec![dir.to_path_buf()];
     let mut seen = 0usize;
@@ -226,6 +226,10 @@ fn scan_tree(dir: &Path) -> Vec<(PathBuf, Vec<String>)> {
     found
 }
 
+/// A folder read on a worker: the generation that asked, the folder and what it holds.
+type FolderRead = (u64, PathBuf, HashMap<PathBuf, Entry>);
+type Tagged = (PathBuf, Vec<String>);
+
 struct Prompt {
     paths: Vec<PathBuf>,
     name: String,
@@ -238,8 +242,8 @@ pub struct Tags {
     cache: HashMap<PathBuf, Entry>,
     dir: Option<PathBuf>,
     generation: u64,
-    folder_rx: Option<mpsc::Receiver<(u64, PathBuf, HashMap<PathBuf, Entry>)>>,
-    scan_rx: Option<mpsc::Receiver<Vec<(PathBuf, Vec<String>)>>>,
+    folder_rx: Option<mpsc::Receiver<FolderRead>>,
+    scan_rx: Option<mpsc::Receiver<Vec<Tagged>>>,
     prompt: Option<Prompt>,
     messages: Vec<String>,
 }
@@ -656,12 +660,12 @@ mod tests {
     fn toggling_through_the_plugin_tags_and_untags_files() {
         let Some((dir, file)) = scratch_file("toggle") else { return };
         let mut tags = Tags::with(Registry::default(), BTreeMap::new());
-        tags.run("toggle:work", &[file.clone()], &dir);
+        tags.run("toggle:work", std::slice::from_ref(&file), &dir);
         assert_eq!(read_tags(&file).unwrap(), vec!["work"]);
         assert_eq!(tags.registry.with_tag("WORK"), vec![file.clone()]);
         assert_eq!(tags.search_paths("tag:work"), Some(vec![file.clone()]));
         assert_eq!(tags.search_paths("work"), None);
-        tags.run("toggle:work", &[file.clone()], &dir);
+        tags.run("toggle:work", std::slice::from_ref(&file), &dir);
         assert!(read_tags(&file).unwrap().is_empty());
         assert!(tags.registry.with_tag("work").is_empty());
         std::fs::remove_dir_all(dir).unwrap();

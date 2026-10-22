@@ -58,7 +58,7 @@ impl Shared {
         }
     }
 
-    fn set_current(&self, name: &str) {
+    pub fn set_current(&self, name: &str) {
         if let Ok(mut current) = self.current.lock() {
             *current = name.to_owned();
         }
@@ -85,7 +85,7 @@ fn cancelled() -> io::Error {
     io::Error::new(io::ErrorKind::Interrupted, "cancelled")
 }
 
-fn is_cancel(err: &io::Error) -> bool {
+pub fn is_cancel(err: &io::Error) -> bool {
     err.kind() == io::ErrorKind::Interrupted
 }
 
@@ -262,11 +262,11 @@ impl Worker {
         }
     }
 
-    fn add_bytes(&self, n: u64) {
+    pub fn add_bytes(&self, n: u64) {
         self.shared.bytes_done.fetch_add(n, Relaxed);
     }
 
-    fn file_done(&self) {
+    pub fn file_done(&self) {
         self.shared.files_done.fetch_add(1, Relaxed);
     }
 }

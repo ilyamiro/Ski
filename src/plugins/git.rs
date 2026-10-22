@@ -611,7 +611,7 @@ mod tests {
         assert!(plugin.menu_items(&[FileItem::from_path(Path::new("/")).unwrap()]).is_empty());
 
         // Staging runs on a worker, reports, and the badge follows without waiting for the throttle
-        plugin.run("stage", &[a.path.clone()], &root);
+        plugin.run("stage", std::slice::from_ref(&a.path), &root);
         wait(&mut plugin, &|p| p.repo.as_ref().is_some_and(|r| r.states.get(&a.path) == Some(&('M', ' '))));
         let messages = plugin.messages();
         assert_eq!(messages.len(), 1, "{messages:?}");
@@ -619,7 +619,7 @@ mod tests {
         assert_eq!(ids, ["unstage", "diff"]);
 
         // The diff window opens with the changes and closes on request
-        plugin.run("diff", &[a.path.clone()], &root);
+        plugin.run("diff", std::slice::from_ref(&a.path), &root);
         wait(&mut plugin, &|p| p.diff.is_some());
         assert_eq!(plugin.window_title(), Some(tr("Changes")));
         plugin.close_window();

@@ -62,6 +62,9 @@ impl SkiApp {
     pub(super) fn apply_reaction(&mut self, ctx: &egui::Context, reaction: Reaction) {
         match reaction {
             Reaction::None => {}
+            Reaction::Job(job) => {
+                self.engine.spawn(crate::fs::engine::JobKind::Other, job.title, String::new(), job.work);
+            }
             Reaction::Search(query) => {
                 self.show_search = true;
                 self.search_query = query;
