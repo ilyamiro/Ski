@@ -1275,6 +1275,9 @@ impl SkiApp {
             && !matches!(self.dialog, Some(Dialog::Conflict { .. }))
             && (self.dialog.is_some() || self.menu.take().is_some()) {
                 if let Some(d) = self.dialog.take() {
+                    if let Dialog::Plugin(id) = &d {
+                        self.plugins.close_window(id);
+                    }
                     self.closing_dialog = Some(d);
                 }
                 return;
