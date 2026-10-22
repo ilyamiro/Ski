@@ -60,7 +60,12 @@ fn open_window(mut request: instance::Request) -> eframe::Result {
     // Tabs of the last session, which only a normal launch without a folder argument brings back
     let mut session = None;
     let given = if chooser.is_some() { None } else { args.first().filter(|a| !a.starts_with("--")).cloned() };
+    // Tabs to keep beside a folder given on the command line, so that launch does not replace the saved session
+    let mut kept_session = None;
     let initial_path = if let Some(arg) = given {
+        if chooser.is_none() && settings.start_location == settings::StartLocation::RestoreTabs {
+            kept_session = Some(settings.restorable_session().0);
+        }
         let path = PathBuf::from(arg);
         // Relative to where the launch was made, which a resident process does not share
         let path = if fs::places::is_virtual(&path) { path } else { request.cwd.join(path) };
@@ -135,6 +140,9 @@ fn open_window(mut request: instance::Request) -> eframe::Result {
             }
             if let Some((paths, active)) = session.filter(|_| chooser.is_none()) {
                 app.restore_tabs(&paths, active);
+            }
+            if let Some(paths) = kept_session.filter(|_| chooser.is_none()) {
+                app.add_session_tabs(&paths);
             }
             if let Some(path) = select {
                 app.select_path(&path);

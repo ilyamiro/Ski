@@ -152,6 +152,14 @@ impl SkiApp {
         self.switch_tab(active);
     }
 
+    /// Open the tabs of a saved session after the first tab, which shows a folder the launch asked for.
+    pub fn add_session_tabs(&mut self, paths: &[PathBuf]) {
+        for path in paths {
+            self.new_tab(path.clone());
+        }
+        self.switch_tab(0);
+    }
+
     /// Bring back the tab that was closed last.
     pub(super) fn reopen_tab(&mut self) {
         while let Some(path) = self.closed_tabs.pop() {
