@@ -1044,8 +1044,8 @@ fn paint_thumb(ui: &egui::Ui, tex: &egui::TextureHandle, rect: Rect, radius: u8)
 }
 
 /// Left edge of the name in a list row; the header lines its first label up with it.
-pub const ROW_NAME_X: f32 = 54.0;
-const ROW_PAD_RIGHT: f32 = 16.0;
+pub const ROW_NAME_X: f32 = 48.0;
+const ROW_PAD_RIGHT: f32 = 20.0;
 /// Narrowest the name may get before detail columns start dropping out.
 const ROW_NAME_MIN: f32 = 160.0;
 
@@ -1276,28 +1276,31 @@ pub fn file_row(
     paint_fill(ui.painter(), r, CornerRadius::same(radius_md()), bg, &fx);
 
     let fade = lerp(1.0, 0.58, cut_t);
-    let icon_center = Pos2::new(r.left() + 28.0, r.center().y);
+    // The icon grows with the row, so a tight list is not full of oversized glyphs
+    let icon_size = (row_height * 0.6).round().clamp(16.0, 28.0);
+    let k = icon_size / 24.0;
+    let icon_center = Pos2::new(r.left() + 24.0, r.center().y);
     if thumb_t < 0.99 {
         let (glyph, color) = item_icon_animated(item, theme, sel_t);
-        paint_item_icon(ui.painter(), item, icon_center, 24.0, (glyph, color), fade * (1.0 - thumb_t));
+        paint_item_icon(ui.painter(), item, icon_center, icon_size, (glyph, color), fade * (1.0 - thumb_t));
     }
     if let Some(tex) = thumb {
         ui.scope(|ui| {
             ui.set_opacity(fade * thumb_t);
-            paint_thumb(ui, tex, Rect::from_center_size(icon_center, Vec2::splat(32.0)), radius_sm());
+            paint_thumb(ui, tex, Rect::from_center_size(icon_center, Vec2::splat((row_height - 6.0).clamp(20.0, 32.0))), radius_sm());
         });
     }
     if cut_t > 0.01 {
-        paint_cut_badge(ui.painter(), Pos2::new(icon_center.x + 11.0, icon_center.y + 9.0), 16.0, cut_t, theme);
+        paint_cut_badge(ui.painter(), Pos2::new(icon_center.x + 11.0 * k, icon_center.y + 9.0 * k), 16.0 * k, cut_t, theme);
     }
-    paint_item_badges(ui.painter(), item, Pos2::new(icon_center.x + 10.0, icon_center.y - 9.0), Pos2::new(icon_center.x - 10.0, icon_center.y - 9.0), 13.0, theme, fade);
+    paint_item_badges(ui.painter(), item, Pos2::new(icon_center.x + 10.0 * k, icon_center.y - 9.0 * k), Pos2::new(icon_center.x - 10.0 * k, icon_center.y - 9.0 * k), 13.0 * k, theme, fade);
 
     let mut right = r.right() - ROW_PAD_RIGHT;
     let subtext_color = theme.subtext1.gamma_multiply(fade);
     let fitting = fitting_columns(columns, widths, r.width());
     for (column, edge) in column_edges(&fitting, widths, r) {
         let width = column.width(widths);
-        paint_label(ui, edge - width + 10.0, r.center().y, &column.value(item), FONT_CAPTION, subtext_color, width - 14.0);
+        paint_label(ui, edge - width + 10.0, r.center().y, &column.value(item), FONT_BODY - 0.5, subtext_color, width - 14.0);
     }
     right -= fitting.iter().map(|c| c.width(widths)).sum::<f32>();
     // A search result also says which folder it is in, between its name and the columns

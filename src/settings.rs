@@ -133,9 +133,9 @@ impl Density {
 
     pub fn row_height(self) -> f32 {
         match self {
-            Density::Compact => 34.0,
-            Density::Comfortable => 44.0,
-            Density::Spacious => 54.0,
+            Density::Compact => 30.0,
+            Density::Comfortable => 38.0,
+            Density::Spacious => 48.0,
         }
     }
 }
