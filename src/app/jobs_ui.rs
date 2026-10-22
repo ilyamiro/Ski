@@ -58,6 +58,7 @@ impl SkiApp {
                         self.history_job = None;
                     }
                     self.finish_job(outcome);
+                    self.report_removals(job);
                 }
             }
         }

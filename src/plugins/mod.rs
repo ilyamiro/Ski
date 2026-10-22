@@ -11,6 +11,7 @@ use crate::ui::theme::SerpantinumTheme;
 
 pub mod actions;
 pub mod checksum;
+pub mod duplicates;
 pub mod git;
 pub mod quick_look;
 pub mod tags;
@@ -68,6 +69,20 @@ impl MenuItem {
 pub struct Job {
     pub title: String,
     pub work: Box<dyn FnOnce(&mut Worker) -> Outcome + Send>,
+    /// Paths the job takes away. Once it has finished, those that are gone are reported to plugins
+    /// as removed and drop out of the folder sizes.
+    pub removes: Vec<PathBuf>,
+}
+
+impl Job {
+    pub fn new(title: String, work: impl FnOnce(&mut Worker) -> Outcome + Send + 'static) -> Self {
+        Self { title, work: Box::new(work), removes: Vec::new() }
+    }
+
+    pub fn removing(mut self, paths: Vec<PathBuf>) -> Self {
+        self.removes = paths;
+        self
+    }
 }
 
 /// What the app does after a plugin ran an entry or handled a click.
@@ -141,6 +156,15 @@ pub trait Plugin {
     fn menu_items(&self, _selection: &[FileItem]) -> Vec<MenuItem> {
         Vec::new()
     }
+    /// Entries for the menu of the open folder and the main menu. `others` holds the folder of the
+    /// other tab when exactly two tabs are open. `run` receives `[here, others...]` as its paths.
+    fn folder_menu_items(&self, _here: &Path, _others: &[PathBuf]) -> Vec<MenuItem> {
+        Vec::new()
+    }
+    /// Work the plugin started from its own window (a button there), taken once.
+    fn reaction(&mut self) -> Reaction {
+        Reaction::None
+    }
     /// Runs the menu entry `id` on `paths`, from the folder `dir`.
     fn run(&mut self, _id: &str, _paths: &[PathBuf], _dir: &Path) -> Reaction {
         Reaction::None
@@ -207,6 +231,7 @@ impl Plugins {
             list: vec![
                 Box::new(git::Git::default()),
                 Box::new(checksum::Checksum::default()),
+                Box::new(duplicates::Duplicates::default()),
                 Box::new(actions::Actions::load()),
                 Box::new(quick_look::QuickLook),
                 Box::new(tags::Tags::load()),
@@ -270,6 +295,15 @@ impl Plugins {
     /// Menu entries for the selection, with the id of the plugin each one belongs to.
     pub fn menu_items(&self, selection: &[FileItem]) -> Vec<(&'static str, MenuItem)> {
         self.active().flat_map(|p| p.menu_items(selection).into_iter().map(|item| (p.id(), item))).collect()
+    }
+
+    pub fn folder_menu_items(&self, here: &Path, others: &[PathBuf]) -> Vec<(&'static str, MenuItem)> {
+        self.active().flat_map(|p| p.folder_menu_items(here, others).into_iter().map(|item| (p.id(), item))).collect()
+    }
+
+    /// What plugins want done after something in their window.
+    pub fn reactions(&mut self) -> Vec<Reaction> {
+        self.active_mut().map(|p| p.reaction()).filter(|r| !matches!(r, Reaction::None)).collect()
     }
 
     pub fn run(&mut self, plugin: &str, id: &str, paths: &[PathBuf], dir: &Path) -> Reaction {

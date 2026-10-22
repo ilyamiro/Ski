@@ -116,6 +116,15 @@ impl SkiApp {
         }
     }
 
+    /// The folder of the other tab when exactly two tabs are open.
+    pub(super) fn other_tab_folders(&self) -> Vec<PathBuf> {
+        if self.tabs.len() != 2 {
+            return Vec::new();
+        }
+        let other = &self.tabs[1 - self.active_tab];
+        other.saved.as_ref().map(|s| s.current_path.clone()).filter(|p| !is_virtual(p) && p.is_dir()).into_iter().collect()
+    }
+
     /// The folder of every tab in order, and the index of the one on screen. Places that are not
     /// folders (Recent, Bookmarks) are left out, since they can't be opened at startup.
     pub(super) fn session(&self) -> (Vec<PathBuf>, usize) {

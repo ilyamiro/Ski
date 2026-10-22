@@ -298,6 +298,8 @@ pub struct SkiApp {
     history: History,
     /// The undo or redo that is running, so a second one waits for it.
     history_job: Option<u64>,
+    /// Files plugin jobs were started to remove, by job.
+    job_removals: HashMap<u64, Vec<PathBuf>>,
     pending_conflicts: VecDeque<ConflictRequest>,
     jobs_popover: bool,
     jobs_button_rect: egui::Rect,
@@ -452,6 +454,7 @@ impl SkiApp {
             engine: Engine::new(ctx),
             history: History::default(),
             history_job: None,
+            job_removals: HashMap::new(),
             pending_conflicts: VecDeque::new(),
             jobs_popover: false,
             jobs_button_rect: egui::Rect::NOTHING,
@@ -1761,6 +1764,9 @@ impl eframe::App for SkiApp {
         }
         for message in self.plugins.messages() {
             self.set_toast(message);
+        }
+        for reaction in self.plugins.reactions() {
+            self.apply_reaction(&ctx, reaction);
         }
         self.open_plugin_dialog();
         self.tick_folder_sizes(&ctx);
@@ -3727,6 +3733,7 @@ impl SkiApp {
                     (icons::FILE_PLUS, tr("New file"), MenuAction::NewFile),
                     (icons::FOLDER_PLUS, tr("New folder"), MenuAction::NewFolder),
                 ],
+                self.plugin_folder_group().unwrap_or_default(),
                 self.history_entries(),
                 {
                     let mut edit = Vec::new();
@@ -3758,6 +3765,7 @@ impl SkiApp {
             MenuTarget::Main => vec![
                 vec![(icons::NEW_WINDOW, tr("New window"), MenuAction::NewWindow), (icons::NEW_TAB, tr("New tab"), MenuAction::NewTab)],
                 self.history_entries(),
+                self.plugin_folder_group().filter(|_| !self.in_recent() && !self.in_trash() && !self.in_bookmarks()).unwrap_or_default(),
                 vec![
                     (icons::REFRESH, tr("Refresh"), MenuAction::Refresh),
                     (icons::COG, tr("Settings"), MenuAction::OpenSettings),
@@ -4099,7 +4107,7 @@ impl SkiApp {
             Dialog::OpenWith { .. } => 480.0,
             Dialog::BatchRename { .. } => 560.0,
             Dialog::QuickLook { .. } => 720.0,
-            Dialog::Plugin(_) => 640.0,
+            Dialog::Plugin(_) => 720.0,
             Dialog::Confirm { .. } | Dialog::Alert { .. } => 400.0,
             _ => 440.0,
         };

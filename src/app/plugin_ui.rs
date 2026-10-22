@@ -63,7 +63,10 @@ impl SkiApp {
         match reaction {
             Reaction::None => {}
             Reaction::Job(job) => {
-                self.engine.spawn(crate::fs::engine::JobKind::Other, job.title, String::new(), job.work);
+                let id = self.engine.spawn(crate::fs::engine::JobKind::Other, job.title, String::new(), job.work);
+                if !job.removes.is_empty() {
+                    self.job_removals.insert(id, job.removes);
+                }
             }
             Reaction::Search(query) => {
                 self.show_search = true;
@@ -89,6 +92,31 @@ impl SkiApp {
         let mut close = material::dialog_header(ui, title, None, &theme, "plugin_close");
         close |= !self.plugins.window(id, ui, &theme);
         close
+    }
+
+    /// A job that was to remove files has finished: tell plugins which are gone and drop their sizes.
+    pub(super) fn report_removals(&mut self, job: u64) {
+        let Some(paths) = self.job_removals.remove(&job) else { return };
+        let gone: Vec<std::path::PathBuf> = paths.into_iter().filter(|p| p.symlink_metadata().is_err()).collect();
+        if gone.is_empty() {
+            return;
+        }
+        self.forget_sizes(&gone);
+        self.plugins.file_op_done(&FileOpEvent::Removed(gone));
+    }
+
+    /// The entries plugins add for the open folder (and the main menu); `None` when there are none.
+    pub(super) fn plugin_folder_group(&self) -> Option<Vec<super::MenuEntry>> {
+        let others = self.other_tab_folders();
+        let mut paths = vec![self.current_path.clone()];
+        paths.extend(others.iter().cloned());
+        let entries: Vec<super::MenuEntry> = self
+            .plugins
+            .folder_menu_items(&self.current_path, &others)
+            .into_iter()
+            .map(|(plugin, entry)| (entry.icon, entry.label, super::MenuAction::Plugin(plugin, entry.id, paths.clone(), entry.confirm)))
+            .collect();
+        (!entries.is_empty()).then_some(entries)
     }
 
     /// Tells plugins about the moves an undoable change made (the entry lists how to take them back).
