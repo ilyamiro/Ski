@@ -365,7 +365,7 @@ impl SkiApp {
             _ => row.detail.clone(),
         };
         let sub_color = if row.state == JobState::Failed { theme.red } else { theme.subtext1 };
-        material::paint_label(ui, text_left, rect.top() + 24.0 + 9.0, &sub, material::FONT_CAPTION, sub_color, rect.right() - text_left - 14.0);
+        material::paint_label(ui, text_left, rect.top() + 24.0 + 9.0, &sub, material::FONT_CAPTION, sub_color, text_width);
         if running {
             let bar = egui::Rect::from_min_size(egui::pos2(text_left, rect.bottom() - 20.0), egui::vec2(rect.right() - text_left - 14.0, 6.0));
             ui.scope_builder(egui::UiBuilder::new().max_rect(bar), |ui| {
