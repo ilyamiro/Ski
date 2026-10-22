@@ -162,11 +162,21 @@ impl SkiApp {
 
     /// Bring back the tab that was closed last.
     pub(super) fn reopen_tab(&mut self) {
-        while let Some(path) = self.closed_tabs.pop() {
-            if path.is_dir() {
-                self.new_tab(path);
-                return;
+        while let Some((index, state)) = self.closed_tabs.pop() {
+            if !state.current_path.is_dir() {
+                continue;
             }
+            let parked = self.take_tab_state();
+            self.tabs[self.active_tab].saved = Some(parked);
+            let id = self.next_tab_id;
+            self.next_tab_id += 1;
+            let at = index.min(self.tabs.len());
+            self.tabs.insert(at, TabSlot::live(id));
+            self.active_tab = at;
+            recent::record(&state.current_path);
+            self.put_tab_state(state);
+            self.tab_enter = Some(id);
+            return;
         }
         self.set_toast(tr("No closed tab to reopen"));
     }
@@ -202,9 +212,10 @@ impl SkiApp {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             return;
         }
-        let closing = self.tabs[idx].saved.as_ref().map_or(&self.current_path, |s| &s.current_path);
-        if !is_virtual(closing) {
-            self.closed_tabs.push(closing.clone());
+        // The tab on screen has no parked state; its fields are about to be replaced by a neighbour's
+        let closing = if idx == self.active_tab { Some(self.take_tab_state()) } else { self.tabs[idx].saved.take() };
+        if let Some(closing) = closing.filter(|s| !is_virtual(&s.current_path)) {
+            self.closed_tabs.push((idx, closing));
             if self.closed_tabs.len() > CLOSED_TABS_KEPT {
                 self.closed_tabs.remove(0);
             }

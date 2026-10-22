@@ -129,15 +129,20 @@ impl SkiApp {
     /// Tells plugins about the moves an undoable change made (the entry lists how to take them back).
     pub(super) fn report_moves(&mut self, entry: &UndoEntry) {
         let mut moved = Vec::new();
+        let mut created = Vec::new();
         for edit in &entry.edits {
             match edit {
                 Edit::Move { from, to } => moved.push((to.clone(), from.clone())),
                 Edit::Renames(back) => moved.extend(back.iter().map(|(new, old)| (old.clone(), new.clone()))),
+                Edit::Trash(path) => created.push(path.clone()),
                 _ => {}
             }
         }
         if !moved.is_empty() {
             self.plugins.file_op_done(&FileOpEvent::Moved(moved));
+        }
+        if !created.is_empty() {
+            self.plugins.file_op_done(&FileOpEvent::Created(created));
         }
     }
 }

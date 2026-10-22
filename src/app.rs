@@ -385,6 +385,8 @@ pub struct SkiApp {
     /// The selection summary the pill still shows while it fades out.
     pill_text: String,
     sizes: folder_sizes::SizeScheduler,
+    /// Rows of `items` on screen after the last frame, so their folders are measured first.
+    visible_rows: std::ops::Range<usize>,
     /// Set when Ski runs as the open / save dialog of other programs.
     pub(crate) chooser: Option<crate::chooser::Chooser>,
     pub(crate) closing_dialog: Option<Dialog>,
@@ -412,8 +414,8 @@ pub struct SkiApp {
     // Tabs: the one on screen is the app itself, the others are parked in their slot
     tabs: Vec<TabSlot>,
     active_tab: usize,
-    /// Folders of tabs that were closed, the latest last, for "Reopen closed tab".
-    closed_tabs: Vec<PathBuf>,
+    /// Tabs that were closed with the place they had, the latest last, for "Reopen closed tab".
+    closed_tabs: Vec<(usize, tabs::TabState)>,
     next_tab_id: u64,
     /// A tab that was just opened, so it grows in.
     tab_enter: Option<u64>,
@@ -514,6 +516,7 @@ impl SkiApp {
             picker: None,
             pill_text: String::new(),
             sizes: Default::default(),
+            visible_rows: 0..0,
             chooser: None,
             closing_dialog: None,
             dialog_kind: None,
@@ -2593,6 +2596,7 @@ impl SkiApp {
         });
 
         self.last_item_rects = item_rects.clone();
+        self.visible_rows = folder_sizes::visible_rows(&item_rects, scroll_out.inner_rect);
         let drag_consumed = self.handle_drag_select(ui, scroll_out.inner_rect, scroll_out.state.clamped_offset().y, scroll_delta, &item_rects);
 
         if !drag_consumed {
@@ -2688,6 +2692,7 @@ impl SkiApp {
         });
 
         self.last_item_rects = item_rects.clone();
+        self.visible_rows = folder_sizes::visible_rows(&item_rects, scroll_out.inner_rect);
         let drag_consumed = self.handle_drag_select(ui, scroll_out.inner_rect, scroll_out.state.clamped_offset().y, scroll_delta, &item_rects);
 
         if !drag_consumed {
@@ -5514,6 +5519,40 @@ mod tests {
         std::fs::remove_dir_all(&c).unwrap();
         again.reopen_tab();
         assert_eq!(again.tabs.len(), 1, "a folder that is gone is not reopened");
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn a_reopened_tab_keeps_its_place_history_and_selection() {
+        let base = std::env::temp_dir().join(format!("ski_reopen_test_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let (a, b, c) = (base.join("a"), base.join("b"), base.join("c"));
+        std::fs::create_dir_all(b.join("inner")).unwrap();
+        std::fs::create_dir_all(&a).unwrap();
+        std::fs::create_dir_all(&c).unwrap();
+        std::fs::write(b.join("x.txt"), "x").unwrap();
+        std::fs::write(b.join("y.txt"), "y").unwrap();
+
+        let ctx = egui::Context::default();
+        let mut app = SkiApp::new(a.clone(), SerpantinumTheme::default(), Settings::default(), &ctx);
+        app.new_tab(b.clone());
+        app.new_tab(c.clone());
+        app.switch_tab(1);
+        app.navigate_to(b.join("inner"));
+        app.navigate_to(b.clone());
+        let selected = app.items.iter().position(|i| i.path.ends_with("y.txt")).unwrap();
+        app.selection = BTreeSet::from([selected]);
+        app.selected_index = Some(selected);
+        let history = app.back_history.len();
+        assert!(history > 0);
+
+        app.close_tab(&ctx, 1);
+        assert_eq!(app.tabs.len(), 2);
+        app.reopen_tab();
+        assert_eq!((app.tabs.len(), app.active_tab), (3, 1), "back in its slot, not after the active tab");
+        assert_eq!(app.current_path, b.canonicalize().unwrap());
+        assert_eq!(app.back_history.len(), history);
+        assert!(app.selected_paths().iter().any(|p| p.ends_with("y.txt")));
         std::fs::remove_dir_all(&base).unwrap();
     }
 

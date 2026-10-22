@@ -115,6 +115,8 @@ pub enum FileOpEvent {
     /// `(from, to)` for each renamed or moved path.
     Moved(Vec<(PathBuf, PathBuf)>),
     Removed(Vec<PathBuf>),
+    /// New files and folders (copies, extractions); a folder's contents are new too.
+    Created(Vec<PathBuf>),
 }
 
 /// One line of status a plugin wants shown over the listing.

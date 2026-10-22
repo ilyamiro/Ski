@@ -205,6 +205,19 @@ fn read_folder(dir: &Path, previous: &HashMap<PathBuf, Entry>) -> HashMap<PathBu
     out
 }
 
+/// The tagged items at `path`: itself, and everything below it when it is a folder.
+fn tagged_in(path: &Path) -> Vec<Tagged> {
+    let mut found = scan_tree(path);
+    if let Ok(meta) = path.symlink_metadata()
+        && !meta.file_type().is_symlink()
+        && let Ok(tags) = read_tags(path)
+        && !tags.is_empty()
+    {
+        found.push((path.to_path_buf(), tags));
+    }
+    found
+}
+
 /// Walks `dir` and returns every file with tags.
 fn scan_tree(dir: &Path) -> Vec<Tagged> {
     let mut found = Vec::new();
@@ -567,6 +580,13 @@ impl Plugin for Tags {
                     self.cache.retain(|p, _| !p.starts_with(path));
                 }
             }
+            FileOpEvent::Created(paths) => {
+                for path in paths {
+                    for (file, tags) in tagged_in(path) {
+                        dirty |= self.registry.record(&file, &tags);
+                    }
+                }
+            }
         }
         if dirty {
             self.registry.save();
@@ -738,6 +758,16 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(20));
         write_tags(&file, &["work".to_owned(), "new".to_owned()]).unwrap();
         assert_eq!(read_folder(&dir, &cached)[&file].tags, vec!["work", "new"]);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn created_items_enter_the_registry() {
+        let Some((dir, file)) = scratch_file("created") else { return };
+        write_tags(&file, &["work".to_owned()]).unwrap();
+        let mut tags = Tags::with(Registry::default(), BTreeMap::new());
+        tags.file_op_done(&FileOpEvent::Created(vec![file.clone(), dir.clone()]));
+        assert_eq!(tags.registry.with_tag("work"), vec![file]);
         std::fs::remove_dir_all(dir).unwrap();
     }
 

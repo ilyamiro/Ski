@@ -13,7 +13,7 @@ use crate::settings::FolderSizeMode;
 
 /// Folders measured at the same time: more only makes a spinning disk seek.
 const MAX_RUNNING: usize = 2;
-/// With "Always", this many rows from the top are measured; the rest wait until they scroll up.
+/// With "Always", this many folders are measured, starting with the rows on screen; the rest wait until they scroll into view.
 const AUTO_ROWS: usize = 120;
 
 #[derive(Default)]
@@ -31,6 +31,21 @@ impl SizeScheduler {
         }
         dirsize::mark_pending(path);
         self.queue.push_back(path.to_path_buf());
+    }
+
+    /// `request`, but ahead of everything that waits: what scrolled into view is measured next.
+    pub(super) fn prioritize(&mut self, path: &Path) {
+        if dirsize::totals(path).is_some() {
+            return;
+        }
+        if !dirsize::is_pending(path) {
+            dirsize::mark_pending(path);
+        } else if let Some(at) = self.queue.iter().position(|p| p == path) {
+            self.queue.remove(at);
+        } else {
+            return; // already being measured
+        }
+        self.queue.push_front(path.to_path_buf());
     }
 
     /// Leaving the folder: stop everything and forget what was waiting.
@@ -70,19 +85,40 @@ impl SizeScheduler {
     }
 }
 
+/// The rows whose rectangle is in `viewport`, as a range (the rows are in order).
+pub(super) fn visible_rows(rects: &[(usize, egui::Rect)], viewport: egui::Rect) -> std::ops::Range<usize> {
+    let mut seen = rects.iter().filter(|(_, r)| r.intersects(viewport)).map(|(i, _)| *i);
+    match seen.next() {
+        Some(first) => first..seen.next_back().unwrap_or(first) + 1,
+        None => 0..0,
+    }
+}
+
 impl SkiApp {
+    /// The listing with the rows on screen first, then the ones above them, then the ones below.
+    fn visible_first(&self) -> impl Iterator<Item = &FileItem> {
+        let end = self.visible_rows.end.min(self.items.len());
+        let start = self.visible_rows.start.min(end);
+        self.items[start..end].iter().chain(&self.items[..start]).chain(&self.items[end..])
+    }
+
     /// Once per frame: queue the folders that should be measured, start the scans, and sort again
     /// when sizes arrived and the listing is ordered by size.
     pub(super) fn tick_folder_sizes(&mut self, ctx: &egui::Context) {
         dirsize::set_size_on_disk(self.settings.size_on_disk);
         if !self.in_recent() && !self.sizes.counting.load(Ordering::Relaxed) {
-            let missing: Vec<PathBuf> = self.items.iter().filter(|i| i.is_dir && !dirsize::has_count(&i.path)).take(400).map(|i| i.path.clone()).collect();
+            let missing: Vec<PathBuf> = self.visible_first().filter(|i| i.is_dir && !dirsize::has_count(&i.path)).take(400).map(|i| i.path.clone()).collect();
             if !missing.is_empty() {
                 dirsize::count_in_background(missing, Arc::clone(&self.sizes.counting));
             }
         }
         if self.settings.folder_sizes == FolderSizeMode::Always {
-            let wanted: Vec<PathBuf> = self.items.iter().filter(|i| i.is_dir).take(AUTO_ROWS).map(|i| i.path.clone()).collect();
+            let wanted: Vec<PathBuf> = self.visible_first().filter(|i| i.is_dir).take(AUTO_ROWS).map(|i| i.path.clone()).collect();
+            // Scrolling reorders what waits: the last one pushed to the front ends up first, so go backwards
+            let end = self.visible_rows.end.min(self.items.len());
+            for item in self.items[self.visible_rows.start.min(end)..end].iter().rev().filter(|i| i.is_dir) {
+                self.sizes.prioritize(&item.path);
+            }
             // The selection feeds the status line
             let selected: Vec<PathBuf> = self.selection.iter().filter_map(|&i| self.items.get(i)).filter(|i| i.is_dir).map(|i| i.path.clone()).collect();
             for path in wanted.into_iter().chain(selected) {
@@ -155,5 +191,32 @@ impl SkiApp {
             return None;
         }
         Some((bytes, waiting, partial))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rows_on_screen_become_a_range() {
+        let rect = |y: f32| egui::Rect::from_min_size(egui::pos2(0.0, y), egui::vec2(100.0, 10.0));
+        let rects: Vec<(usize, egui::Rect)> = (0..10).map(|i| (i, rect(i as f32 * 10.0))).collect();
+        let viewport = egui::Rect::from_min_size(egui::pos2(0.0, 35.0), egui::vec2(100.0, 30.0));
+        assert_eq!(visible_rows(&rects, viewport), 3..7);
+        assert_eq!(visible_rows(&rects, egui::Rect::from_min_size(egui::pos2(0.0, 500.0), egui::vec2(1.0, 1.0))), 0..0);
+    }
+
+    #[test]
+    fn scrolled_to_folders_jump_the_queue() {
+        let (a, b, c) = (Path::new("/ski-test/queue/a"), Path::new("/ski-test/queue/b"), Path::new("/ski-test/queue/c"));
+        let mut scheduler = SizeScheduler::default();
+        scheduler.request(a);
+        scheduler.request(b);
+        scheduler.request(c);
+        scheduler.prioritize(c);
+        scheduler.prioritize(b);
+        assert_eq!(scheduler.queue, VecDeque::from([b.to_path_buf(), c.to_path_buf(), a.to_path_buf()]));
+        scheduler.cancel_all();
     }
 }
