@@ -329,6 +329,11 @@ impl SkiApp {
                 self.settings.confirm_delete = !self.settings.confirm_delete;
                 self.persist_settings();
             }
+            let desc = Some(tr("Copies and moves to the same disk wait for each other instead of slowing each other down"));
+            if switch_row_with(ui, "queue_copies", icons::HISTORY, tr("Run copies to the same disk one at a time"), desc, &theme, self.settings.queue_copies).clicked() {
+                self.settings.queue_copies = !self.settings.queue_copies;
+                self.persist_settings();
+            }
         });
     }
 

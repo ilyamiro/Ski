@@ -47,6 +47,8 @@ pub struct Settings {
     /// Stay running after the window closes, so the next one opens at once.
     pub run_in_background: bool,
     pub confirm_delete: bool,
+    /// Copies to the same disk run one after the other.
+    pub queue_copies: bool,
     /// Command that opens a terminal; `{}` stands for the folder. Empty finds one by itself.
     pub terminal: String,
     /// Folder whose files are offered as templates for new files; `None` is the desktop's own.
@@ -236,6 +238,7 @@ impl Default for Settings {
             open_in_new_window: false,
             run_in_background: true,
             confirm_delete: true,
+            queue_copies: true,
             type_to_filter: false,
             type_ahead: true,
             swipe_navigation: false,

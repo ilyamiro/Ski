@@ -177,6 +177,8 @@ pub enum Event {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum JobState {
+    /// Queued behind another job that writes to the same disk.
+    Waiting,
     Running,
     Done,
     Failed,
@@ -190,6 +192,8 @@ pub struct Job {
     pub detail: String,
     pub shared: Arc<Shared>,
     pub state: JobState,
+    /// Jobs with the same key run one at a time (the disk they write to).
+    pub queue_key: Option<u64>,
     pub message: String,
     pub finished: Option<Instant>,
     /// Bytes per second, smoothed.
@@ -271,32 +275,57 @@ impl Worker {
     }
 }
 
+type Work = Box<dyn FnOnce(&mut Worker) -> Outcome + Send>;
+
 pub struct Engine {
     ctx: egui::Context,
     tx: mpsc::Sender<Event>,
     rx: mpsc::Receiver<Event>,
     next: u64,
     pub jobs: Vec<Job>,
+    /// The work of the jobs in the `Waiting` state, in the order they will start.
+    waiting: Vec<(u64, Work)>,
 }
 
 impl Engine {
     pub fn new(ctx: &egui::Context) -> Self {
         let (tx, rx) = mpsc::channel();
-        Self { ctx: ctx.clone(), tx, rx, next: 1, jobs: Vec::new() }
+        Self { ctx: ctx.clone(), tx, rx, next: 1, jobs: Vec::new(), waiting: Vec::new() }
     }
 
+    /// Something is running, or waits for its turn.
     pub fn running(&self) -> bool {
-        self.jobs.iter().any(|j| j.state == JobState::Running)
+        self.jobs.iter().any(|j| matches!(j.state, JobState::Running | JobState::Waiting))
     }
 
     /// Start `work` on a thread of its own. `title` names it in the popover, `detail` says where to.
     pub fn spawn(&mut self, kind: JobKind, title: String, detail: String, work: impl FnOnce(&mut Worker) -> Outcome + Send + 'static) -> u64 {
+        self.spawn_queued(kind, title, detail, None, work)
+    }
+
+    /// Like `spawn`, but a job with a `queue_key` waits while another job with the same key is
+    /// running: copies to one spinning disk go faster one after the other than all at once.
+    pub fn spawn_queued(&mut self, kind: JobKind, title: String, detail: String, queue_key: Option<u64>, work: impl FnOnce(&mut Worker) -> Outcome + Send + 'static) -> u64 {
         let id = self.next;
         self.next += 1;
         let shared = Arc::new(Shared::default());
         let now = Instant::now();
-        self.jobs.push(Job { id, kind, title, detail, shared: shared.clone(), state: JobState::Running, message: String::new(), finished: None, speed: 0.0, sample: (now, 0) });
-        let mut worker = Worker { shared, events: self.tx.clone(), ctx: self.ctx.clone(), job: id, remembered: None };
+        let must_wait = queue_key.is_some_and(|key| self.jobs.iter().any(|j| j.queue_key == Some(key) && j.state == JobState::Running));
+        let state = if must_wait { JobState::Waiting } else { JobState::Running };
+        self.jobs.push(Job { id, kind, title, detail, shared, state, queue_key, message: String::new(), finished: None, speed: 0.0, sample: (now, 0) });
+        if must_wait {
+            self.waiting.push((id, Box::new(work)));
+        } else {
+            self.launch(id, Box::new(work));
+        }
+        id
+    }
+
+    /// Runs the work of job `id` on a thread.
+    fn launch(&mut self, id: u64, work: Work) {
+        let Some(job) = self.jobs.iter_mut().find(|j| j.id == id) else { return };
+        job.state = JobState::Running;
+        let mut worker = Worker { shared: job.shared.clone(), events: self.tx.clone(), ctx: self.ctx.clone(), job: id, remembered: None };
         let tx = self.tx.clone();
         let ctx = self.ctx.clone();
         std::thread::spawn(move || {
@@ -307,12 +336,51 @@ impl Engine {
             let _ = tx.send(Event::Done { job: id, outcome });
             ctx.request_repaint();
         });
-        id
+    }
+
+    /// The job that was next in line for `key` starts, if the key is free.
+    fn start_next(&mut self, key: u64) {
+        if self.jobs.iter().any(|j| j.queue_key == Some(key) && j.state == JobState::Running) {
+            return;
+        }
+        let next = self.waiting.iter().position(|(id, _)| self.jobs.iter().any(|j| j.id == *id && j.queue_key == Some(key)));
+        if let Some(at) = next {
+            let (id, work) = self.waiting.remove(at);
+            self.launch(id, work);
+        }
+    }
+
+    /// Start a waiting job now, next to the one that holds its disk.
+    pub fn start_now(&mut self, id: u64) {
+        if let Some(at) = self.waiting.iter().position(|(w, _)| *w == id) {
+            let (id, work) = self.waiting.remove(at);
+            self.launch(id, work);
+        }
+    }
+
+    /// Where a waiting job stands among those waiting for the same disk: `(index, how many)`.
+    pub fn queue_position(&self, id: u64) -> Option<(usize, usize)> {
+        let key = self.jobs.iter().find(|j| j.id == id && j.state == JobState::Waiting)?.queue_key;
+        let same: Vec<u64> = self.waiting.iter().map(|(w, _)| *w).filter(|w| self.jobs.iter().any(|j| j.id == *w && j.queue_key == key)).collect();
+        same.iter().position(|w| *w == id).map(|at| (at, same.len()))
+    }
+
+    /// Moves a waiting job one place earlier (`-1`) or later (`1`) in its queue.
+    pub fn move_waiting(&mut self, id: u64, delta: i32) {
+        let Some((at, total)) = self.queue_position(id) else { return };
+        let target = at as i32 + delta;
+        if target < 0 || target >= total as i32 {
+            return;
+        }
+        let key = self.jobs.iter().find(|j| j.id == id).and_then(|j| j.queue_key);
+        let slots: Vec<usize> = self.waiting.iter().enumerate().filter(|(_, (w, _))| self.jobs.iter().any(|j| j.id == *w && j.queue_key == key)).map(|(i, _)| i).collect();
+        self.waiting.swap(slots[at], slots[target as usize]);
     }
 
     /// Collect what the jobs reported since the last call.
     pub fn poll(&mut self) -> Vec<Event> {
         let events: Vec<Event> = self.rx.try_iter().collect();
+        let mut freed = Vec::new();
         for event in &events {
             if let Event::Done { job, outcome } = event
                 && let Some(job) = self.jobs.iter_mut().find(|j| j.id == *job)
@@ -326,7 +394,12 @@ impl Engine {
                 };
                 job.message = outcome.message.clone();
                 job.finished = Some(Instant::now());
+                freed.extend(job.queue_key);
             }
+        }
+        // The disk is free again: the next job waiting for it starts
+        for key in freed {
+            self.start_next(key);
         }
         events
     }
@@ -350,10 +423,20 @@ impl Engine {
 
     /// Forget finished jobs that have been on show long enough.
     pub fn prune(&mut self, keep: Duration) {
-        self.jobs.retain(|j| j.state == JobState::Running || j.finished.is_some_and(|f| f.elapsed() < keep));
+        self.jobs.retain(|j| matches!(j.state, JobState::Running | JobState::Waiting) || j.finished.is_some_and(|f| f.elapsed() < keep));
     }
 
     pub fn cancel(&mut self, id: u64) {
+        // A job that never started has nothing to stop: it just leaves the queue
+        if let Some(at) = self.waiting.iter().position(|(w, _)| *w == id) {
+            drop(self.waiting.remove(at));
+            if let Some(job) = self.jobs.iter_mut().find(|j| j.id == id) {
+                job.state = JobState::Cancelled;
+                job.message = tr("Cancelled").to_owned();
+                job.finished = Some(Instant::now());
+            }
+            return;
+        }
         if let Some(job) = self.jobs.iter().find(|j| j.id == id) {
             job.shared.cancel.store(true, Relaxed);
         }
@@ -556,6 +639,17 @@ fn transfer_one(w: &mut Worker, op: Op, src: &Path, target: &Path, known: Option
         },
     }
     Ok(())
+}
+
+/// The disk a copy or move writes to, for `Engine::spawn_queued`. A move that stays on one file
+/// system is a rename and finishes at once, so it is never queued.
+pub fn queue_key(op: Op, sources: &[PathBuf], dest_dir: &Path) -> Option<u64> {
+    use std::os::unix::fs::MetadataExt;
+    let dest = std::fs::metadata(dest_dir).ok()?.dev();
+    match op {
+        Op::Copy => Some(dest),
+        Op::Move => sources.iter().any(|s| s.symlink_metadata().map_or(true, |m| m.dev() != dest)).then_some(dest),
+    }
 }
 
 /// Copy or move every `(source, target)` pair. A taken target name is a question for the window.
@@ -804,6 +898,108 @@ mod tests {
         }
         assert!(dir.join("x/a/new.txt").exists() && dir.join("x/a/old.txt").exists());
         assert!(!dir.join("a").exists());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A job that runs until `release` is set, and records that it started.
+    fn blocker(started: Arc<AtomicBool>, release: Arc<AtomicBool>) -> impl FnOnce(&mut Worker) -> Outcome + Send + 'static {
+        move |_| {
+            started.store(true, Relaxed);
+            while !release.load(Relaxed) {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            Outcome::done("done".into())
+        }
+    }
+
+    fn pause_a_little(engine: &mut Engine) {
+        for _ in 0..10 {
+            engine.poll();
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn jobs_for_one_disk_take_turns_and_other_disks_overlap() {
+        let mut e = engine();
+        let flags = || (Arc::new(AtomicBool::new(false)), Arc::new(AtomicBool::new(false)));
+        let ((s1, r1), (s2, r2), (s3, r3)) = (flags(), flags(), flags());
+        let first = e.spawn_queued(JobKind::Copy, "one".into(), String::new(), Some(7), blocker(s1.clone(), r1.clone()));
+        let second = e.spawn_queued(JobKind::Copy, "two".into(), String::new(), Some(7), blocker(s2.clone(), r2.clone()));
+        let other_disk = e.spawn_queued(JobKind::Copy, "three".into(), String::new(), Some(8), blocker(s3.clone(), r3.clone()));
+        pause_a_little(&mut e);
+        let state = |e: &Engine, id| e.jobs.iter().find(|j| j.id == id).unwrap().state;
+        assert_eq!(state(&e, first), JobState::Running);
+        assert_eq!(state(&e, second), JobState::Waiting);
+        assert!(!s2.load(Relaxed), "a queued job does not start");
+        assert_eq!(state(&e, other_disk), JobState::Running, "another disk is not held up");
+        assert!(s3.load(Relaxed));
+        assert!(e.running());
+
+        r1.store(true, Relaxed);
+        for _ in 0..300 {
+            e.poll();
+            if s2.load(Relaxed) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(s2.load(Relaxed), "the next job starts when the disk is free");
+        assert_eq!(state(&e, second), JobState::Running);
+        r2.store(true, Relaxed);
+        r3.store(true, Relaxed);
+        wait(&mut e);
+        assert!(e.jobs.iter().all(|j| j.state == JobState::Done));
+    }
+
+    #[test]
+    fn a_cancelled_queued_job_never_starts_and_start_now_jumps_the_queue() {
+        let mut e = engine();
+        let flags = || (Arc::new(AtomicBool::new(false)), Arc::new(AtomicBool::new(false)));
+        let ((s1, r1), (s2, r2), (s3, r3), (s4, r4)) = (flags(), flags(), flags(), flags());
+        e.spawn_queued(JobKind::Copy, "holds the disk".into(), String::new(), Some(1), blocker(s1.clone(), r1.clone()));
+        let doomed = e.spawn_queued(JobKind::Copy, "cancelled".into(), String::new(), Some(1), blocker(s2.clone(), r2.clone()));
+        let eager = e.spawn_queued(JobKind::Copy, "start now".into(), String::new(), Some(1), blocker(s3.clone(), r3.clone()));
+        let last = e.spawn_queued(JobKind::Copy, "last".into(), String::new(), Some(1), blocker(s4.clone(), r4.clone()));
+        pause_a_little(&mut e);
+        assert_eq!(e.queue_position(doomed), Some((0, 3)));
+        assert_eq!(e.queue_position(last), Some((2, 3)));
+
+        e.cancel(doomed);
+        assert_eq!(e.jobs.iter().find(|j| j.id == doomed).unwrap().state, JobState::Cancelled);
+        assert_eq!(e.queue_position(last), Some((1, 2)));
+        // Order can be changed while waiting
+        e.move_waiting(last, -1);
+        assert_eq!(e.queue_position(last), Some((0, 2)));
+        e.move_waiting(last, -1);
+        assert_eq!(e.queue_position(last), Some((0, 2)), "already first");
+        e.move_waiting(last, 1);
+
+        e.start_now(eager);
+        pause_a_little(&mut e);
+        assert!(s3.load(Relaxed), "start now does not wait for the disk");
+        assert!(!s2.load(Relaxed) && !s4.load(Relaxed));
+
+        r1.store(true, Relaxed);
+        r2.store(true, Relaxed);
+        r3.store(true, Relaxed);
+        r4.store(true, Relaxed);
+        // The disk is still held by the job that jumped the queue, so "last" waits for it
+        wait(&mut e);
+        assert!(s4.load(Relaxed), "the rest of the queue still runs");
+        assert!(!s2.load(Relaxed), "the cancelled job never ran");
+    }
+
+    #[test]
+    fn only_copies_across_disks_and_writes_are_queued() {
+        use std::os::unix::fs::MetadataExt;
+        let dir = sandbox("queue_key");
+        std::fs::write(dir.join("f"), "x").unwrap();
+        let dev = std::fs::metadata(&dir).unwrap().dev();
+        assert_eq!(queue_key(Op::Copy, &[dir.join("f")], &dir), Some(dev));
+        // A move inside one file system is a rename
+        assert_eq!(queue_key(Op::Move, &[dir.join("f")], &dir), None);
+        assert_eq!(queue_key(Op::Copy, &[], &dir.join("missing")), None);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

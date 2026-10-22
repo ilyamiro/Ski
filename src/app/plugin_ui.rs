@@ -63,7 +63,8 @@ impl SkiApp {
         match reaction {
             Reaction::None => {}
             Reaction::Job(job) => {
-                let id = self.engine.spawn(crate::fs::engine::JobKind::Other, job.title, String::new(), job.work);
+                let key = job.writes_to.as_deref().and_then(|dir| self.queue_key(crate::fs::engine::Op::Copy, &[], dir));
+                let id = self.engine.spawn_queued(crate::fs::engine::JobKind::Other, job.title, String::new(), key, job.work);
                 if !job.removes.is_empty() {
                     self.job_removals.insert(id, job.removes);
                 }

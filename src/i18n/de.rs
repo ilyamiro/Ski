@@ -658,4 +658,10 @@ pub const CATALOG: &[(&str, &str)] = &[
     ("Copy to the left", "Nach links kopieren"),
     ("Trash the left copy", "Linke Kopie in den Papierkorb"),
     ("Trash the right copy", "Rechte Kopie in den Papierkorb"),
+    ("Waiting for the disk", "Wartet auf den Datenträger"),
+    ("Start now", "Jetzt starten"),
+    ("Move up", "Nach oben"),
+    ("Move down", "Nach unten"),
+    ("Copies and moves to the same disk wait for each other instead of slowing each other down", "Kopieren und Verschieben auf denselben Datenträger warten aufeinander, statt sich gegenseitig auszubremsen"),
+    ("Run copies to the same disk one at a time", "Kopien auf denselben Datenträger nacheinander ausführen"),
 ];

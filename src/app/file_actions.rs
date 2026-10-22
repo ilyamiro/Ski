@@ -21,7 +21,13 @@ impl SkiApp {
         }
         let label = Self::describe_count(&paths);
         let title = trf("Duplicating {}", &[&label]);
-        self.engine.spawn(JobKind::Copy, title, String::new(), move |w| engine::transfer(w, Op::Copy, pairs));
+        let key = paths.first().and_then(|p| p.parent()).and_then(|dir| self.queue_key(Op::Copy, &paths, dir));
+        self.engine.spawn_queued(JobKind::Copy, title, String::new(), key, move |w| engine::transfer(w, Op::Copy, pairs));
+    }
+
+    /// The disk a copy or move writes to, when the setting asks such jobs to take turns.
+    pub(super) fn queue_key(&self, op: Op, sources: &[PathBuf], dest_dir: &Path) -> Option<u64> {
+        if self.settings.queue_copies { engine::queue_key(op, sources, dest_dir) } else { None }
     }
 
     /// A symbolic link to each item, next to it, named "Link to …".

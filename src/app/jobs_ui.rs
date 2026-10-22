@@ -20,6 +20,16 @@ struct JobRow {
     paused: bool,
     waiting: bool,
     controllable: bool,
+    /// For a job queued behind another: its place among those waiting for the same disk.
+    queue: Option<(usize, usize)>,
+}
+
+/// What a click in the list of operations asks for.
+enum JobAction {
+    TogglePause(u64),
+    Cancel(u64),
+    StartNow(u64),
+    Move(u64, i32),
 }
 
 fn job_icon(kind: JobKind) -> &'static str {
@@ -186,6 +196,7 @@ impl SkiApp {
                     paused: job.paused(),
                     waiting: s.waiting.load(Relaxed),
                     controllable: job.controllable(),
+                    queue: self.engine.queue_position(job.id),
                 }
             })
             .collect()
@@ -239,7 +250,7 @@ impl SkiApp {
         }
         let theme = self.theme;
         let rows = self.job_rows();
-        let (mut toggle, mut cancel) = (None, None);
+        let mut action = None;
         let screen = ctx.content_rect();
         let width = POPOVER_WIDTH.min(screen.width() - 24.0);
         let anchor = self.jobs_button_rect;
@@ -261,9 +272,9 @@ impl SkiApp {
                         egui::ScrollArea::vertical().max_height((screen.height() - 120.0).max(120.0)).auto_shrink([false, true]).show(ui, |ui| {
                             ui.spacing_mut().item_spacing.y = 6.0;
                             for row in &rows {
-                                let (t_, c_) = Self::job_row(ui, &theme, row);
-                                toggle = toggle.or(t_);
-                                cancel = cancel.or(c_);
+                                if let Some(a) = Self::job_row(ui, &theme, row) {
+                                    action.get_or_insert(a);
+                                }
                             }
                         });
                     });
@@ -276,23 +287,25 @@ impl SkiApp {
                 self.jobs_popover = false;
             }
         }
-        if let Some(id) = toggle {
-            self.engine.toggle_pause(id);
-        }
-        if let Some(id) = cancel {
-            self.engine.cancel(id);
+        match action {
+            Some(JobAction::TogglePause(id)) => self.engine.toggle_pause(id),
+            Some(JobAction::Cancel(id)) => self.engine.cancel(id),
+            Some(JobAction::StartNow(id)) => self.engine.start_now(id),
+            Some(JobAction::Move(id, delta)) => self.engine.move_waiting(id, delta),
+            None => {}
         }
     }
 
     /// One operation as a card: icon, name, status line, progress bar and its controls.
-    fn job_row(ui: &mut egui::Ui, theme: &SerpantinumTheme, row: &JobRow) -> (Option<u64>, Option<u64>) {
-        let (mut toggle, mut cancel) = (None, None);
+    fn job_row(ui: &mut egui::Ui, theme: &SerpantinumTheme, row: &JobRow) -> Option<JobAction> {
+        let mut action = None;
         let running = row.state == JobState::Running;
         let height = if running { 76.0 } else { 56.0 };
         let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), height), egui::Sense::hover());
         ui.painter().rect_filled(material::snap(ui.painter(), rect), egui::CornerRadius::same(material::radius_md()), theme.surface1);
 
         let (icon, tint) = match row.state {
+            JobState::Waiting => (icons::HISTORY, theme.subtext1),
             JobState::Running => (job_icon(row.kind), theme.mauve),
             JobState::Done => (icons::CHECK, theme.green),
             JobState::Cancelled => (icons::CANCEL, theme.subtext1),
@@ -302,17 +315,38 @@ impl SkiApp {
 
         // Controls at the right edge
         let mut right = rect.right() - 10.0;
+        if row.state == JobState::Waiting {
+            let mut button = |ui: &mut egui::Ui, id: &str, glyph: &'static str, tip: &'static str, tint: Option<egui::Color32>| {
+                let at = egui::Rect::from_center_size(egui::pos2(right - 13.0, rect.top() + 24.0), egui::vec2(26.0, 26.0));
+                right -= 32.0;
+                ui.put(at, |ui: &mut egui::Ui| material::filled_icon_button(ui, (id, row.id), glyph, theme, 26.0, tip, tint)).clicked()
+            };
+            if button(ui, "job_cancel", icons::CLOSE, tr("Cancel"), Some(theme.red)) {
+                action = Some(JobAction::Cancel(row.id));
+            }
+            if button(ui, "job_start", icons::PLAY, tr("Start now"), None) {
+                action = Some(JobAction::StartNow(row.id));
+            }
+            if let Some((at, total)) = row.queue {
+                if at + 1 < total && button(ui, "job_down", icons::CHEVRON_DOWN, tr("Move down"), None) {
+                    action = Some(JobAction::Move(row.id, 1));
+                }
+                if at > 0 && button(ui, "job_up", icons::ARROW_UP, tr("Move up"), None) {
+                    action = Some(JobAction::Move(row.id, -1));
+                }
+            }
+        }
         if running && row.controllable {
             let cancel_rect = egui::Rect::from_center_size(egui::pos2(right - 13.0, rect.top() + 24.0), egui::vec2(26.0, 26.0));
             if ui.put(cancel_rect, |ui: &mut egui::Ui| material::filled_icon_button(ui, ("job_cancel", row.id), icons::CLOSE, theme, 26.0, tr("Cancel"), Some(theme.red))).clicked() {
-                cancel = Some(row.id);
+                action = Some(JobAction::Cancel(row.id));
             }
             right -= 32.0;
             if row.kind != JobKind::Delete {
                 let pause_rect = egui::Rect::from_center_size(egui::pos2(right - 13.0, rect.top() + 24.0), egui::vec2(26.0, 26.0));
                 let (glyph, tip) = if row.paused { (icons::PLAY, tr("Resume")) } else { (icons::PAUSE, tr("Pause")) };
                 if ui.put(pause_rect, |ui: &mut egui::Ui| material::filled_icon_button(ui, ("job_pause", row.id), glyph, theme, 26.0, tip, None)).clicked() {
-                    toggle = Some(row.id);
+                    action = Some(JobAction::TogglePause(row.id));
                 }
                 right -= 32.0;
             }
@@ -322,6 +356,7 @@ impl SkiApp {
         let text_width = (right - text_left - 6.0).max(40.0);
         material::paint_label(ui, text_left, rect.top() + 24.0 - 8.0, &row.title, material::FONT_BODY, theme.text, text_width);
         let sub = match row.state {
+            JobState::Waiting => tr("Waiting for the disk").to_owned(),
             JobState::Running if row.waiting => tr("Waiting for your answer").to_owned(),
             JobState::Running if row.paused => tr("Paused").to_owned(),
             JobState::Running => row.status.clone(),
@@ -338,7 +373,7 @@ impl SkiApp {
                 material::progress_bar(ui, ("job_bar", row.id), bar.width(), if row.waiting { None } else { row.fraction }, theme, color);
             });
         }
-        (toggle, cancel)
+        action
     }
 
     /// "Replace or skip?" — the question a copy or move asks when a name is already taken.

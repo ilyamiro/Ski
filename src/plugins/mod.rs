@@ -74,11 +74,13 @@ pub struct Job {
     /// Paths the job takes away. Once it has finished, those that are gone are reported to plugins
     /// as removed and drop out of the folder sizes.
     pub removes: Vec<PathBuf>,
+    /// A folder the job writes into; jobs for the same disk take turns (see the setting).
+    pub writes_to: Option<PathBuf>,
 }
 
 impl Job {
     pub fn new(title: String, work: impl FnOnce(&mut Worker) -> Outcome + Send + 'static) -> Self {
-        Self { title, work: Box::new(work), removes: Vec::new() }
+        Self { title, work: Box::new(work), removes: Vec::new(), writes_to: None }
     }
 
     pub fn removing(mut self, paths: Vec<PathBuf>) -> Self {

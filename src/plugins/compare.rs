@@ -397,12 +397,15 @@ impl Compare {
             return;
         }
         let (tx, generation) = (self.tx.clone(), view.generation);
+        let target = view.scanned.as_ref().map(|(l, r)| if from_left { r.clone() } else { l.clone() });
         let title = trn(pairs.len(), "Copying {} item to the other folder", "Copying {} items to the other folder");
-        self.jobs.push(AppJob::new(title, move |w| {
+        let mut job = AppJob::new(title, move |w| {
             let outcome = engine::transfer(w, Op::Copy, pairs);
             let _ = tx.send(Msg::Refresh { generation });
             outcome
-        }));
+        });
+        job.writes_to = target;
+        self.jobs.push(job);
     }
 
     fn trash(&mut self, left: bool) {

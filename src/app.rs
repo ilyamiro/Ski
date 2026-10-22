@@ -920,7 +920,8 @@ impl SkiApp {
                 } else {
                     (JobKind::Move, Op::Move, trf("Moving {}", &[&label]))
                 };
-                self.engine.spawn(kind, title, detail, move |w| engine::transfer(w, engine_op, pairs));
+                let key = self.queue_key(engine_op, &items, &dest);
+                self.engine.spawn_queued(kind, title, detail, key, move |w| engine::transfer(w, engine_op, pairs));
             }
         }
     }
