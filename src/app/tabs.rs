@@ -147,7 +147,7 @@ impl SkiApp {
     /// show the tab that was active. `Settings::restorable_session` gives the arguments.
     pub fn restore_tabs(&mut self, paths: &[PathBuf], active: usize) {
         for path in paths.iter().skip(1) {
-            self.new_tab(path.clone());
+            self.open_tab(path.clone(), false);
         }
         self.switch_tab(active);
     }
@@ -155,7 +155,7 @@ impl SkiApp {
     /// Open the tabs of a saved session after the first tab, which shows a folder the launch asked for.
     pub fn add_session_tabs(&mut self, paths: &[PathBuf]) {
         for path in paths {
-            self.new_tab(path.clone());
+            self.open_tab(path.clone(), false);
         }
         self.switch_tab(0);
     }
@@ -172,6 +172,11 @@ impl SkiApp {
 
     /// Open `path` in a new tab next to the current one and show it.
     pub(super) fn new_tab(&mut self, path: PathBuf) {
+        self.open_tab(path, true);
+    }
+
+    /// `new_tab`, with the choice of listing the folder in Recent; a restored session is not a visit.
+    fn open_tab(&mut self, path: PathBuf, record: bool) {
         let path = if is_virtual(&path) { path } else { path.canonicalize().unwrap_or(path) };
         let state = self.take_tab_state();
         self.tabs[self.active_tab].saved = Some(state);
@@ -180,7 +185,7 @@ impl SkiApp {
         let at = self.active_tab + 1;
         self.tabs.insert(at, TabSlot::live(id));
         self.active_tab = at;
-        if !path.as_os_str().is_empty() && !is_virtual(&path) {
+        if record && !path.as_os_str().is_empty() && !is_virtual(&path) {
             recent::record(&path);
         }
         self.put_tab_state(TabState::fresh(path, self.sort_by, self.sort_order));
