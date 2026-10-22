@@ -57,6 +57,8 @@ fn open_window(mut request: instance::Request) -> eframe::Result {
 
     // A file given instead of a folder (a browser's "Show in folder") opens its folder with the file selected
     let mut select = None;
+    // Tabs of the last session, which only a normal launch without a folder argument brings back
+    let mut session = None;
     let given = if chooser.is_some() { None } else { args.first().filter(|a| !a.starts_with("--")).cloned() };
     let initial_path = if let Some(arg) = given {
         let path = PathBuf::from(arg);
@@ -80,6 +82,16 @@ fn open_window(mut request: instance::Request) -> eframe::Result {
                 .clone()
                 .filter(|p| p.is_dir())
                 .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"))),
+            settings::StartLocation::RestoreTabs => {
+                let (paths, active) = settings.restorable_session();
+                match paths.first().cloned() {
+                    Some(first) => {
+                        session = Some((paths, active));
+                        first
+                    }
+                    None => request.cwd.clone(),
+                }
+            }
             settings::StartLocation::Custom => settings
                 .start_path
                 .clone()
@@ -120,6 +132,9 @@ fn open_window(mut request: instance::Request) -> eframe::Result {
             let mut app = SkiApp::new(initial_path, theme, settings, &cc.egui_ctx);
             if fs::admin::is_admin() {
                 app.set_toast(i18n::tr("Running as administrator. Changes to settings are not saved."));
+            }
+            if let Some((paths, active)) = session.filter(|_| chooser.is_none()) {
+                app.restore_tabs(&paths, active);
             }
             if let Some(path) = select {
                 app.select_path(&path);

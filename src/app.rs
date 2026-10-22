@@ -403,6 +403,8 @@ pub struct SkiApp {
     // Tabs: the one on screen is the app itself, the others are parked in their slot
     tabs: Vec<TabSlot>,
     active_tab: usize,
+    /// Folders of tabs that were closed, the latest last, for "Reopen closed tab".
+    closed_tabs: Vec<PathBuf>,
     next_tab_id: u64,
     /// A tab that was just opened, so it grows in.
     tab_enter: Option<u64>,
@@ -515,6 +517,7 @@ impl SkiApp {
             capturing_key: false,
             tabs: vec![TabSlot::live(0)],
             active_tab: 0,
+            closed_tabs: Vec::new(),
             next_tab_id: 1,
             tab_enter: None,
             restart_search: false,
@@ -1081,6 +1084,11 @@ impl SkiApp {
             self.settings.folder_views.insert(self.current_path.clone(), self.view_mode);
         }
 
+        if self.chooser.is_none() {
+            let (paths, active) = self.session();
+            self.settings.session_tabs = paths;
+            self.settings.session_active = active;
+        }
         let current = Settings {
             view_mode: self.view_mode,
             sort_by: self.sort_by,
@@ -1536,6 +1544,10 @@ impl SkiApp {
         }
         if self.is_act_pressed(ctx, crate::keymap::Action::CloseTab) {
             self.close_tab(ctx, self.active_tab);
+            handled = true;
+        }
+        if self.is_act_pressed(ctx, crate::keymap::Action::ReopenTab) {
+            self.reopen_tab();
             handled = true;
         }
         if self.is_act_pressed(ctx, crate::keymap::Action::NextTab) {
@@ -5409,6 +5421,47 @@ mod tests {
         app.close_tab(&ctx, 0);
         assert_eq!((app.tabs.len(), app.active_tab), (1, 0));
         assert_eq!(app.current_path, two.canonicalize().unwrap());
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn tabs_are_saved_restored_and_reopened() {
+        let base = std::env::temp_dir().join(format!("ski_session_test_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let (a, b, c) = (base.join("a"), base.join("b"), base.join("c"));
+        for d in [&a, &b, &c] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        let ctx = egui::Context::default();
+        let mut app = SkiApp::new(a.clone(), SerpantinumTheme::default(), Settings::default(), &ctx);
+        app.new_tab(b.clone());
+        app.new_tab(c.clone());
+        app.switch_tab(1);
+        let (paths, active) = app.session();
+        let canon = |p: &PathBuf| p.canonicalize().unwrap();
+        assert_eq!(paths, vec![canon(&a), canon(&b), canon(&c)]);
+        assert_eq!(active, 1);
+
+        // A new run: one folder is gone, the active tab moves with the others
+        std::fs::remove_dir_all(&a).unwrap();
+        let settings = Settings { session_tabs: paths, session_active: active, ..Settings::default() };
+        let (kept, shown) = settings.restorable_session();
+        assert_eq!(kept, vec![canon(&b), canon(&c)]);
+        assert_eq!(shown, 0);
+        let mut again = SkiApp::new(kept[0].clone(), SerpantinumTheme::default(), Settings::default(), &ctx);
+        again.restore_tabs(&kept, shown);
+        assert_eq!((again.tabs.len(), again.active_tab), (2, 0));
+        assert_eq!(again.session().0, kept);
+
+        // Closing a tab can be undone, once per tab, and a folder that vanished is skipped
+        again.close_tab(&ctx, 1);
+        assert_eq!(again.tabs.len(), 1);
+        again.reopen_tab();
+        assert_eq!((again.tabs.len(), again.current_path.clone()), (2, canon(&c)));
+        again.close_tab(&ctx, 1);
+        std::fs::remove_dir_all(&c).unwrap();
+        again.reopen_tab();
+        assert_eq!(again.tabs.len(), 1, "a folder that is gone is not reopened");
         std::fs::remove_dir_all(&base).unwrap();
     }
 

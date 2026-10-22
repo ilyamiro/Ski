@@ -596,4 +596,6 @@ pub const CATALOG: &[(&str, &str)] = &[
     ("These files can't be used:", "Эти файлы использовать нельзя:"),
     ("New action", "Новое действие"),
     ("Couldn't create the action: {}", "Не удалось создать действие: {}"),
+    ("Restore last tabs", "Восстановить прошлые вкладки"),
+    ("Reopen closed tab", "Открыть закрытую вкладку"),
 ];

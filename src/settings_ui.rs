@@ -278,8 +278,8 @@ impl SkiApp {
 
         material::section_label(ui, tr("Startup"), &theme);
         group_card(ui, &theme, |ui| {
-            let locations = [StartLocation::Launch, StartLocation::Home, StartLocation::LastVisited, StartLocation::Custom];
-            let labels = [tr("Launch folder"), tr("Home"), tr("Last visited"), tr("Custom")];
+            let locations = [StartLocation::Launch, StartLocation::Home, StartLocation::LastVisited, StartLocation::RestoreTabs, StartLocation::Custom];
+            let labels = [tr("Launch folder"), tr("Home"), tr("Last visited"), tr("Restore last tabs"), tr("Custom")];
             let current = locations.iter().position(|l| *l == self.settings.start_location).unwrap_or(0);
             if let Some(i) = choice_row(ui, "start_loc", icons::HOME, tr("Open Ski in"), &labels, current, &theme) {
                 self.settings.start_location = locations[i];

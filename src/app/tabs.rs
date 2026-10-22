@@ -49,6 +49,8 @@ const TAB_MIN_W: f32 = 96.0;
 const TAB_MAX_W: f32 = 220.0;
 pub(super) const TAB_BAR_HEIGHT: f32 = 40.0;
 const TAB_HEIGHT: f32 = 32.0;
+/// How many closed tabs "Reopen closed tab" remembers.
+const CLOSED_TABS_KEPT: usize = 20;
 
 impl SkiApp {
     /// Park the tab on screen so another can take its place.
@@ -114,6 +116,43 @@ impl SkiApp {
         }
     }
 
+    /// The folder of every tab in order, and the index of the one on screen. Places that are not
+    /// folders (Recent, Bookmarks) are left out, since they can't be opened at startup.
+    pub(super) fn session(&self) -> (Vec<PathBuf>, usize) {
+        let mut paths = Vec::new();
+        let mut active = 0;
+        for (idx, slot) in self.tabs.iter().enumerate() {
+            let path = slot.saved.as_ref().map_or(&self.current_path, |s| &s.current_path);
+            if is_virtual(path) || path.as_os_str().is_empty() {
+                continue;
+            }
+            if idx == self.active_tab {
+                active = paths.len();
+            }
+            paths.push(path.clone());
+        }
+        (paths, active)
+    }
+
+    /// Open the rest of a saved session beside the first tab, which already shows `paths[0]`, and
+    /// show the tab that was active. `Settings::restorable_session` gives the arguments.
+    pub fn restore_tabs(&mut self, paths: &[PathBuf], active: usize) {
+        for path in paths.iter().skip(1) {
+            self.new_tab(path.clone());
+        }
+        self.switch_tab(active);
+    }
+
+    /// Bring back the tab that was closed last.
+    pub(super) fn reopen_tab(&mut self) {
+        while let Some(path) = self.closed_tabs.pop() {
+            if path.is_dir() {
+                self.new_tab(path);
+                return;
+            }
+        }
+    }
+
     /// Open `path` in a new tab next to the current one and show it.
     pub(super) fn new_tab(&mut self, path: PathBuf) {
         let path = if is_virtual(&path) { path } else { path.canonicalize().unwrap_or(path) };
@@ -139,6 +178,13 @@ impl SkiApp {
         if self.tabs.len() == 1 {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             return;
+        }
+        let closing = self.tabs[idx].saved.as_ref().map_or(&self.current_path, |s| &s.current_path);
+        if !is_virtual(closing) {
+            self.closed_tabs.push(closing.clone());
+            if self.closed_tabs.len() > CLOSED_TABS_KEPT {
+                self.closed_tabs.remove(0);
+            }
         }
         if idx == self.active_tab {
             // Show the neighbour that takes its place

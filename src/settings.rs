@@ -37,6 +37,9 @@ pub struct Settings {
     pub start_location: StartLocation,
     pub start_path: Option<PathBuf>,
     pub last_dir: Option<PathBuf>,
+    /// The folders of the open tabs and which one was shown, kept for `StartLocation::RestoreTabs`.
+    pub session_tabs: Vec<PathBuf>,
+    pub session_active: usize,
     // Behavior
     pub single_click_open: bool,
     pub vim_keys: bool,
@@ -84,6 +87,8 @@ pub enum StartLocation {
     Home,
     LastVisited,
     Custom,
+    /// Every tab that was open when Ski closed.
+    RestoreTabs,
 }
 
 /// When folders get a size in the listing.
@@ -222,6 +227,8 @@ impl Default for Settings {
             start_location: StartLocation::Launch,
             start_path: None,
             last_dir: None,
+            session_tabs: Vec::new(),
+            session_active: 0,
             single_click_open: false,
             vim_keys: true,
             open_in_new_window: false,
@@ -262,6 +269,16 @@ impl Settings {
             .and_then(|f| std::fs::read_to_string(f).ok())
             .and_then(|s| serde_json::from_str(&s).ok())
             .unwrap_or_default()
+    }
+
+    /// The tabs of the last session that can still be opened, and the position of the one that was
+    /// shown among them. Folders that no longer exist are dropped.
+    pub fn restorable_session(&self) -> (Vec<PathBuf>, usize) {
+        let kept: Vec<PathBuf> = self.session_tabs.iter().filter(|p| p.is_dir()).cloned().collect();
+        let active = self.session_tabs.get(self.session_active).filter(|p| p.is_dir());
+        let shown = active.map_or(0, |_| self.session_tabs[..self.session_active].iter().filter(|p| p.is_dir()).count());
+        let shown = shown.min(kept.len().saturating_sub(1));
+        (kept, shown)
     }
 
     pub fn save(&self) {

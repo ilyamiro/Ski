@@ -137,7 +137,7 @@ ski ~/Downloads  # open a specific folder
 | Search | `/`, then type a name. `Esc` leaves the results. |
 | Pin a folder or file to the sidebar | Select it and press `Ctrl+D` (with nothing selected: the open folder). Drag pinned rows to reorder. |
 | Move or copy by dragging | Drag items onto a folder, sidebar place, breadcrumb or tab. Hold `Ctrl` to copy. |
-| Open a folder in a tab | Middle-click it, or `Ctrl+T` for a new tab |
+| Open a folder in a tab | Middle-click it, or `Ctrl+T` for a new tab. Settings → General → Open Ski in → Restore last tabs brings back the tabs of the last session. |
 | Eject a drive | Hover it in the sidebar and click the eject button |
 | Switch list and grid | `Ctrl+1` and `Ctrl+2` |
 | Settings | `Ctrl+,` |
@@ -171,6 +171,7 @@ Right-click anything for a menu that shows the shortcut of each action.
 | `F5` | Refresh |
 | `Ctrl+N` | New window |
 | `Ctrl+T` / `Ctrl+W` | New tab / close tab (closes the window on the last tab) |
+| `Ctrl+Shift+T` | Reopen the last closed tab |
 | `Ctrl+Tab` / `Ctrl+Shift+Tab`, `Ctrl+PageDown` / `Ctrl+PageUp` | Next / previous tab |
 | `Ctrl+Z` | Undo the last file operation |
 | `Ctrl+Shift+Z` / `Ctrl+Y` | Redo |
@@ -223,7 +224,7 @@ Ski bundles a few optional features as plugins. Switch them on or off in Setting
 - **Checksums** adds MD5, SHA-1, SHA-256 and SHA-512 to Properties and says whether one of them matches a hash on the clipboard or the checksum file next to the download (`name.sha256`, `name.sha1`, `name.md5`, `SHA256SUMS`, `sha256sums.txt`, `MD5SUMS` and similar, in the GNU or BSD format). On a checksum file, "Verify files listed" checks every file it names as a file operation (progress, pause, cancel) and reports how many are OK, failed or missing. Names that point outside the folder are refused.
 - **Tags** puts coloured labels on files. Right-click → Tags (or `Alt+T`) adds a tag; the colours show as dots on the icon, and Settings → Plugins lets you pick them. The names are stored in the extended attribute `user.xdg.tags`, the one Dolphin reads, so both managers show them; the colours are Ski's own (`~/.config/ski/tags.json`). Copies and cross-disk moves keep the tags; archives do not. The sidebar lists the tags Ski has seen, and `tag:work` in the search finds them (Ski remembers paths it tagged or saw tagged; "Find tags in this folder" rebuilds that list after other programs moved files). File systems without extended attributes (FAT, exFAT, some network shares) can't store tags, and links can't carry them.
 - **Quick Look** previews the selected file when you press Space: text and code with line numbers, pictures and documents (not folders). Up and Down browse, Space or Esc closes.
-- **Custom actions** adds your own commands to the context menu. Put a `.json` file or an executable script in `~/.config/ski/actions/` (restart Ski to load changes):
+- **Custom actions** adds your own commands to the context menu. Put a `.json` file or an executable script in `~/.config/ski/actions/`; changes are picked up while Ski runs, and Settings → Plugins lists the files that failed to load:
 
   ```json
   { "name": "Convert to WebP", "command": "for f in \"$@\"; do cwebp \"$f\" -o \"${f%.*}.webp\"; done", "extensions": ["jpg", "png"] }
