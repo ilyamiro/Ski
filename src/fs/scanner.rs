@@ -200,6 +200,10 @@ fn effective_size(item: &FileItem) -> u64 {
     if item.is_dir { super::dirsize::known_bytes(&item.path).unwrap_or(0) } else { item.size }
 }
 
+fn unmeasured(item: &FileItem) -> bool {
+    item.is_dir && super::dirsize::known_bytes(&item.path).is_none()
+}
+
 pub fn sort_items(items: &mut [FileItem], opts: &ListOptions) {
     let (sort_by, sort_order) = (opts.sort_by, opts.sort_order);
     let owners: std::collections::HashMap<u32, String> = if sort_by == SortBy::Owner {
@@ -219,17 +223,16 @@ pub fn sort_items(items: &mut [FileItem], opts: &ListOptions) {
 
         let ordering = match sort_by {
             SortBy::Name => name_cmp(a, b),
-            SortBy::Size => match (a.is_dir, b.is_dir) {
-                // Measured folders by size; the ones not measured yet follow, whichever way the column is ordered
-                (true, true) => match (super::dirsize::known_bytes(&a.path), super::dirsize::known_bytes(&b.path)) {
-                    (Some(x), Some(y)) => x.cmp(&y),
-                    (None, None) => Ordering::Equal,
-                    (Some(_), None) => if sort_order == SortOrder::Ascending { Ordering::Less } else { Ordering::Greater },
-                    (None, Some(_)) => if sort_order == SortOrder::Ascending { Ordering::Greater } else { Ordering::Less },
-                },
-                // Files and folders mixed (folders first is off): a folder counts by its size, or as empty
-                _ => effective_size(a).cmp(&effective_size(b)),
-            },
+            SortBy::Size => {
+                // Folders not measured yet follow everything with a size, whichever way the column is ordered
+                let asc = sort_order == SortOrder::Ascending;
+                match (unmeasured(a), unmeasured(b)) {
+                    (false, false) => effective_size(a).cmp(&effective_size(b)),
+                    (true, true) => Ordering::Equal,
+                    (false, true) => if asc { Ordering::Less } else { Ordering::Greater },
+                    (true, false) => if asc { Ordering::Greater } else { Ordering::Less },
+                }
+            }
             SortBy::Type => extension_of(a).cmp(&extension_of(b)),
             SortBy::Modified => a.modified.cmp(&b.modified),
             SortBy::Created => a.created.cmp(&b.created),
