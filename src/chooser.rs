@@ -358,6 +358,13 @@ mod tests {
     }
 
     #[test]
+    fn plain_paths_and_other_schemes_in_from_uri() {
+        assert_eq!(from_uri("file:///home/a%20b"), Some(PathBuf::from("/home/a b")));
+        assert_eq!(from_uri("rel/dir"), Some(PathBuf::from("rel/dir")));
+        assert_eq!(from_uri("https://x/y"), None);
+    }
+
+    #[test]
     fn file_names_cannot_leave_the_folder() {
         let args: Vec<String> = ["--chooser", "--mode", "save-files", "--file", "../../etc/passwd", "--file", "/abs/x.txt", "--file", "..", "--file", "ok"]
             .iter()

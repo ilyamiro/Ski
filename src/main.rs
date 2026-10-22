@@ -60,13 +60,20 @@ fn open_window(mut request: instance::Request) -> eframe::Result {
     // Tabs of the last session, which only a normal launch without a folder argument brings back
     let mut session = None;
     let given = if chooser.is_some() { None } else { args.first().filter(|a| !a.starts_with("--")).cloned() };
+    // Several items dropped on the launcher at once: the first fills this window, each other gets its own
+    if chooser.is_none() {
+        for extra in args.iter().skip(1).filter(|a| !a.starts_with("--")) {
+            let _ = std::env::current_exe().and_then(|exe| std::process::Command::new(exe).arg(extra).current_dir(&request.cwd).spawn());
+        }
+    }
     // Tabs to keep beside a folder given on the command line, so that launch does not replace the saved session
     let mut kept_session = None;
     let initial_path = if let Some(arg) = given {
         if chooser.is_none() && settings.start_location == settings::StartLocation::RestoreTabs {
             kept_session = Some(settings.restorable_session().0);
         }
-        let path = PathBuf::from(arg);
+        // A launcher passes what was dropped on it as `file://` URIs
+        let path = chooser::from_uri(&arg).unwrap_or_else(|| PathBuf::from(arg));
         // Relative to where the launch was made, which a resident process does not share
         let path = if fs::places::is_virtual(&path) { path } else { request.cwd.join(path) };
         match path.parent() {
@@ -158,6 +165,10 @@ fn open_window(mut request: instance::Request) -> eframe::Result {
                 chooser.parent = parent;
                 chooser
             });
+            // The folder was listed before the chooser existed, and the chooser's filter applies to it
+            if app.chooser.is_some() {
+                app.reload_items();
+            }
             request.shown();
             Ok(Box::new(app))
         }),
