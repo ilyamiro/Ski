@@ -11,8 +11,10 @@ use crate::ui::theme::SerpantinumTheme;
 
 pub mod actions;
 pub mod checksum;
+pub mod compare;
 pub mod duplicates;
 pub mod git;
+pub mod progress;
 pub mod quick_look;
 pub mod tags;
 
@@ -232,6 +234,7 @@ impl Plugins {
                 Box::new(git::Git::default()),
                 Box::new(checksum::Checksum::default()),
                 Box::new(duplicates::Duplicates::default()),
+                Box::new(compare::Compare::default()),
                 Box::new(actions::Actions::load()),
                 Box::new(quick_look::QuickLook),
                 Box::new(tags::Tags::load()),
