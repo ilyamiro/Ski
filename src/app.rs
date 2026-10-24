@@ -1047,6 +1047,7 @@ impl SkiApp {
             }
         }
         theme.border_radius = crate::ui::theme::BASE_RADIUS * self.settings.corner_scale;
+        theme.backdrop_opacity = crate::ui::theme::backdrop_opacity(self.settings.background_opacity);
         if theme != self.target_theme {
             self.from_theme = self.theme;
             self.target_theme = theme;
@@ -1753,6 +1754,10 @@ const CRUMB_INSET: f32 = (material::CONTROL_HEIGHT - CRUMB_HEIGHT) / 2.0;
 const CRUMB_ICON_STEP: f32 = material::INSET_LABEL - material::INSET_ICON + 8.0;
 
 impl eframe::App for SkiApp {
+    fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
+        egui::Color32::TRANSPARENT.to_normalized_gamma_f32()
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         self.resume_search(&ctx);
@@ -1830,7 +1835,7 @@ impl eframe::App for SkiApp {
                 .resizable(false)
                 .frame(
                     egui::Frame::new()
-                        .fill(self.theme.mantle)
+                        .fill(self.theme.backdrop(self.theme.mantle))
                         .inner_margin(egui::Margin::symmetric(PAGE_MARGIN, 8)),
                 )
                 .show(ui, |ui| {
@@ -1842,7 +1847,7 @@ impl eframe::App for SkiApp {
         egui::Panel::top("top_navigation")
             .frame(
                 egui::Frame::new()
-                    .fill(self.theme.base)
+                    .fill(self.theme.backdrop(self.theme.base))
                     .inner_margin(egui::Margin::symmetric(HEADER_MARGIN, 8)),
             )
             .show(ui, |ui| self.render_top_bar(ui, sidebar_visible));
@@ -1853,7 +1858,7 @@ impl eframe::App for SkiApp {
         let central = egui::CentralPanel::default()
             .frame(
                 egui::Frame::new()
-                    .fill(self.theme.base)
+                    .fill(self.theme.backdrop(self.theme.base))
                     .inner_margin(egui::Margin { left: PAGE_MARGIN, right: PAGE_MARGIN, top: 0, bottom: 6 }),
             )
             .show(ui, |ui| {
@@ -1995,7 +2000,7 @@ impl SkiApp {
                 let pill_hover = material::animate(ui.ctx(), title_resp.id.with("hover"), !editing_top_pill && title_resp.hovered());
                 let pill_edit = material::animate(ui.ctx(), egui::Id::unique("top_pill_edit"), editing_top_pill);
                 let pill_fill = material::lerp_color(
-                    material::lerp_color(self.theme.surface0, self.theme.surface1, pill_hover),
+                    material::lerp_color(self.theme.backdrop(self.theme.surface0), self.theme.surface1, pill_hover),
                     self.theme.surface2,
                     pill_edit,
                 );

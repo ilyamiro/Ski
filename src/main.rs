@@ -115,7 +115,9 @@ fn open_window(mut request: instance::Request) -> eframe::Result {
     let mut viewport = egui::ViewportBuilder::default()
         .with_title(chooser.as_ref().and_then(|c| c.title.clone()).unwrap_or_else(|| if fs::admin::is_admin() { format!("Ski ({})", i18n::tr("Administrator")) } else { "Ski".to_owned() }))
         .with_inner_size([1080.0, 720.0])
-        .with_min_inner_size([360.0, 420.0]);
+        .with_min_inner_size([360.0, 420.0])
+        // The panels paint the background, so a lowered background opacity shows the desktop
+        .with_transparent(true);
     if let Some(spec) = &chooser {
         viewport = viewport.with_inner_size(chooser::saved_size().unwrap_or(chooser::DEFAULT_SIZE)).with_app_id("ski-chooser");
         // Tied to its requester (see wayland_parent.rs) it is floated and centered as a dialog and can

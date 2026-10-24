@@ -424,6 +424,22 @@ impl SkiApp {
                 self.rebuild_theme();
                 self.persist_settings();
             }
+            // While it follows the system the slider shows the system's value; moving it sets one of its own
+            let following = self.settings.background_opacity.is_none();
+            let shown = crate::ui::theme::backdrop_opacity(self.settings.background_opacity);
+            let slider = material::slider_row(ui, "background_opacity", icons::OPACITY, tr("Background"), shown, Some((tr("System"), following)), &theme);
+            if slider.chip_clicked && !following {
+                self.settings.background_opacity = None;
+                self.rebuild_theme();
+                self.persist_settings();
+            }
+            if let Some(v) = slider.value {
+                self.settings.background_opacity = Some(v);
+                self.rebuild_theme();
+            }
+            if slider.released {
+                self.persist_settings();
+            }
             if switch_row_with(ui, "app_animations", icons::ANIMATION, tr("Animations"), None, &theme, self.settings.animations).clicked() {
                 self.settings.animations = !self.settings.animations;
                 self.persist_settings();

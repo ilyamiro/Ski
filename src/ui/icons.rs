@@ -48,6 +48,7 @@ pub const VIEW_LIST: &str = "\u{f0572}";
 pub const GRID_VIEW: &str = "\u{f0570}";
 pub const SORT_VARIANT: &str = "\u{f04bf}";
 pub const ROUNDED_CORNER: &str = "\u{f0607}";
+pub const OPACITY: &str = "\u{f05cc}";
 pub const SIDEBAR: &str = "\u{f06fd}";
 pub const STATUS_BAR: &str = "\u{f06fb}";
 pub const ANIMATION: &str = "\u{f093a}";
