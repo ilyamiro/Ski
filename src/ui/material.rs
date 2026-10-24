@@ -639,7 +639,7 @@ pub fn split_icon_button(
         };
         // Rests on the same fill as the address pill next to it, and follows it on hover
         let hovered = lerp_color(theme.surface1, theme.surface2, fx.press);
-        paint_fill(ui.painter(), r, corners, lerp_color(theme.surface0, hovered, fx.hover.max(fx.press)), &fx);
+        paint_fill(ui.painter(), r, corners, lerp_color(theme.backdrop(theme.surface0), hovered, fx.hover.max(fx.press)), &fx);
         let color = lerp_color(theme.subtext1, theme.text, fx.hover.max(fx.press));
         paint_icon(ui.painter(), rect.center(), glyph, if left { (size * 0.5).round() } else { 14.0 }, color);
         if tip.is_empty() { response } else { response.on_hover_text(tip) }
@@ -1687,6 +1687,86 @@ pub fn setting_stepper_row(
     stepper_row_with(ui, id_source, Some(icon), label, theme, value, can_dec, can_inc)
 }
 
+/// What a `slider_row` did this frame.
+pub struct SliderOutcome {
+    /// New value while the handle moves.
+    pub value: Option<f32>,
+    /// The drag or click ended: the moment to save.
+    pub released: bool,
+    /// The chip next to the slider was clicked.
+    pub chip_clicked: bool,
+}
+
+/// Settings row with a 0-100 % slider, like Serpantinum's: click or drag the track, or use the
+/// arrow keys when focused. `toggle` is an optional toggle chip (label, selected) before the slider.
+pub fn slider_row(
+    ui: &mut egui::Ui,
+    id_source: impl std::hash::Hash + std::fmt::Debug,
+    icon: &str,
+    label: &str,
+    value: f32,
+    toggle: Option<(&str, bool)>,
+    theme: &SerpantinumTheme,
+) -> SliderOutcome {
+    const TRACK_W: f32 = 160.0;
+    const TRACK_H: f32 = 6.0;
+    const HANDLE_R: f32 = 8.0;
+    const VALUE_W: f32 = 40.0;
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), SETTING_HEIGHT), egui::Sense::hover());
+    let id = ui.make_persistent_id(id_source);
+    paint_icon(ui.painter(), Pos2::new(rect.left() + INSET_ICON + 2.0, rect.center().y), icon, ICON_MD, theme.subtext0);
+
+    let value_right = rect.right() - 12.0;
+    let track = Rect::from_min_size(
+        Pos2::new(value_right - VALUE_W - TRACK_W - HANDLE_R, rect.center().y - TRACK_H / 2.0),
+        Vec2::new(TRACK_W, TRACK_H),
+    );
+    let mut out = SliderOutcome { value: None, released: false, chip_clicked: false };
+    let mut controls_left = track.left() - HANDLE_R;
+    if let Some((chip_label, selected)) = toggle {
+        let w = chip_natural_width(ui, None, chip_label, theme);
+        let chip_rect = Rect::from_min_size(Pos2::new(controls_left - 12.0 - w, rect.center().y - 16.0), Vec2::new(w, 32.0));
+        out.chip_clicked = ui.put(chip_rect, |ui: &mut egui::Ui| chip(ui, id.with("chip"), None, chip_label, theme, selected)).clicked();
+        controls_left = chip_rect.left();
+    }
+    paint_label(ui, rect.left() + INSET_LABEL + 2.0, rect.center().y, label, FONT_BODY, theme.text, controls_left - rect.left() - INSET_LABEL - 12.0);
+
+    let hit = track.expand2(Vec2::new(HANDLE_R, (SETTING_HEIGHT - TRACK_H) / 2.0 - 4.0));
+    let resp = ui.interact(hit, id.with("track"), egui::Sense::click_and_drag());
+    let mut shown = value.clamp(0.0, 1.0);
+    if let Some(pos) = resp.interact_pointer_pos()
+        && (resp.is_pointer_button_down_on() || resp.clicked())
+    {
+        let t = ((pos.x - track.left()) / track.width()).clamp(0.0, 1.0);
+        shown = (t * 100.0).round() / 100.0;
+    }
+    if resp.has_focus() {
+        let step = ui.input(|i| {
+            if i.key_pressed(egui::Key::ArrowLeft) { -0.05 } else if i.key_pressed(egui::Key::ArrowRight) { 0.05 } else { 0.0 }
+        });
+        if step != 0.0 {
+            shown = ((shown + step) * 100.0).round().clamp(0.0, 100.0) / 100.0;
+            out.released = true;
+        }
+    }
+    if (shown - value).abs() > 1e-4 {
+        out.value = Some(shown);
+    }
+    out.released |= resp.drag_stopped() || (resp.clicked() && !resp.dragged());
+
+    let hover = animate(ui.ctx(), id.with("hover"), resp.hovered() || resp.dragged());
+    let painter = ui.painter();
+    painter.rect_filled(track, pill(track), theme.surface0);
+    let filled = Rect::from_min_max(track.min, Pos2::new(track.left() + track.width() * shown, track.bottom()));
+    painter.rect_filled(filled, pill(track), theme.mauve);
+    let handle = Pos2::new(filled.right(), track.center().y);
+    painter.circle(handle, HANDLE_R + hover, theme.text, egui::Stroke::new(2.0, theme.mantle));
+    let text = format!("{}%", (shown * 100.0).round() as u32);
+    let galley = painter.layout_no_wrap(text, egui::FontId::proportional(FONT_CAPTION), theme.subtext1);
+    painter.galley(Pos2::new(value_right - galley.size().x, rect.center().y - galley.size().y / 2.0), galley, theme.subtext1);
+    out
+}
+
 #[allow(clippy::too_many_arguments)]
 fn stepper_row_with(
     ui: &mut egui::Ui,
@@ -1743,7 +1823,7 @@ pub fn nav_pair(ui: &mut egui::Ui, theme: &SerpantinumTheme, can_back: bool, can
     const W: f32 = CONTROL_HEIGHT;
     const H: f32 = CONTROL_HEIGHT;
     let (body, _) = ui.allocate_exact_size(Vec2::new(W * 2.0, H), egui::Sense::hover());
-    ui.painter().rect_filled(snap(ui.painter(), body), pill(body), theme.surface0);
+    ui.painter().rect_filled(snap(ui.painter(), body), pill(body), theme.backdrop(theme.surface0));
     let id = ui.make_persistent_id("nav_pair");
     let mut responses = Vec::with_capacity(2);
     for (i, (icon, enabled, tip)) in [(icons::CHEVRON_LEFT, can_back, tr("Back")), (icons::CHEVRON_RIGHT, can_forward, tr("Forward"))].into_iter().enumerate() {

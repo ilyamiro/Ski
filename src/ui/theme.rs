@@ -39,6 +39,8 @@ pub struct SerpantinumTheme {
     pub red: Color32,
     pub yellow: Color32,
     pub border_radius: f32,
+    /// Opacity of the panels behind the content, see `backdrop`.
+    pub backdrop_opacity: f32,
     pub light: bool,
 }
 
@@ -61,9 +63,26 @@ impl Default for SerpantinumTheme {
             red: parse_hex("#ffb4ab").unwrap_or(Color32::from_rgb(255, 180, 171)),
             yellow: parse_hex("#f5d76e").unwrap_or(Color32::from_rgb(245, 215, 110)),
             border_radius: 16.0,
+            backdrop_opacity: 1.0,
             light: false,
         }
     }
+}
+
+/// A number from the `theme` section of `~/.config/serpantinum/settings.json`.
+fn serpantinum_theme_value(key: &str) -> Option<f64> {
+    let content = fs::read_to_string(dirs::home_dir()?.join(".config/serpantinum/settings.json")).ok()?;
+    let val = serde_json::from_str::<serde_json::Value>(&content).ok()?;
+    val.get("theme")?.get(key)?.as_f64()
+}
+
+/// Background opacity from the setting, or with `None` the one Serpantinum gives its own panels
+/// (`elementOpacity`, 0-100); opaque without Serpantinum.
+pub fn backdrop_opacity(setting: Option<f32>) -> f32 {
+    setting
+        .or_else(|| serpantinum_theme_value("elementOpacity").map(|o| o as f32 / 100.0))
+        .unwrap_or(1.0)
+        .clamp(0.0, 1.0)
 }
 
 /// The `border_radius` of the unchanged Material look; the corner setting scales it.
@@ -109,6 +128,7 @@ impl SerpantinumTheme {
             theme.blue = accent;
         }
         theme.border_radius = BASE_RADIUS * settings.corner_scale;
+        theme.backdrop_opacity = backdrop_opacity(settings.background_opacity);
         theme.ensure_readable();
         theme
     }
@@ -171,13 +191,8 @@ impl SerpantinumTheme {
         }
 
         // 2. Try to read borderRadius from ~/.config/serpantinum/settings.json
-        if let Some(home) = dirs::home_dir() {
-            let settings_path = home.join(".config/serpantinum/settings.json");
-            if let Ok(content) = fs::read_to_string(settings_path)
-                && let Ok(val) = serde_json::from_str::<serde_json::Value>(&content)
-                    && let Some(r) = val.get("theme").and_then(|t| t.get("borderRadius")).and_then(|b| b.as_f64()) {
-                        theme.border_radius = r as f32;
-                    }
+        if let Some(r) = serpantinum_theme_value("borderRadius") {
+            theme.border_radius = r as f32;
         }
 
         theme
@@ -187,6 +202,12 @@ impl SerpantinumTheme {
     /// same calm shade everywhere instead of the full accent at several strengths.
     pub fn tint(&self, alpha: u8) -> Color32 {
         self.with_alpha(super::material::lerp_color(self.mauve, self.text, 0.22), alpha)
+    }
+
+    /// Fill of a window-sized panel: lets the desktop show through when the background
+    /// opacity is lowered. Menus and dialogs keep their solid fills.
+    pub fn backdrop(&self, color: Color32) -> Color32 {
+        self.with_alpha(color, (self.backdrop_opacity.clamp(0.0, 1.0) * 255.0).round() as u8)
     }
 
     /// Semi-transparent color
@@ -215,6 +236,7 @@ impl SerpantinumTheme {
             red: lerp_color(self.red, other.red, t),
             yellow: lerp_color(self.yellow, other.yellow, t),
             border_radius: lerp(self.border_radius, other.border_radius, t),
+            backdrop_opacity: lerp(self.backdrop_opacity, other.backdrop_opacity, t),
             light: if t < 0.5 { self.light } else { other.light },
         }
     }

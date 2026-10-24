@@ -23,6 +23,9 @@ pub struct Settings {
     pub scale: f32,
     /// How round the corners are, relative to the default: 1.0 is the Material look, 0.0 square.
     pub corner_scale: f32,
+    /// Opacity of the window background, 1.0 opaque; text and icons stay opaque.
+    /// `None` follows Serpantinum.
+    pub background_opacity: Option<f32>,
 
     pub view_mode: ViewMode,
     pub sort_by: SortBy,
@@ -221,6 +224,7 @@ impl Default for Settings {
             font_name: None,
             scale: 1.0,
             corner_scale: 1.0,
+            background_opacity: None,
             view_mode: ViewMode::List,
             sort_by: SortBy::Name,
             sort_order: SortOrder::Ascending,

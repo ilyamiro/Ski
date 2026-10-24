@@ -492,6 +492,7 @@ pub const CATALOG: &[(&str, &str)] = &[
     ("Corners", "Углы"),
     ("Soft", "Мягкие"),
     ("Round", "Круглые"),
+    ("Background", "Фон"),
     ("Bookmarks", "Закладки"),
     ("No bookmarks yet", "Закладок пока нет"),
     ("Mark files and folders with a heart to find them here", "Отмечайте файлы и папки сердечком, и они появятся здесь"),

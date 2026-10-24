@@ -159,7 +159,7 @@ impl SkiApp {
             (None, Mode::Open) => tr("Open").to_owned(),
         };
         egui::Panel::bottom("chooser_bar")
-            .frame(egui::Frame::new().fill(theme.mantle).inner_margin(egui::Margin::symmetric(CONTENT_INSET, 10)))
+            .frame(egui::Frame::new().fill(theme.backdrop(theme.mantle)).inner_margin(egui::Margin::symmetric(CONTENT_INSET, 10)))
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 10.0;

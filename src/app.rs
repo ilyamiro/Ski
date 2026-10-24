@@ -1047,6 +1047,7 @@ impl SkiApp {
             }
         }
         theme.border_radius = crate::ui::theme::BASE_RADIUS * self.settings.corner_scale;
+        theme.backdrop_opacity = crate::ui::theme::backdrop_opacity(self.settings.background_opacity);
         if theme != self.target_theme {
             self.from_theme = self.theme;
             self.target_theme = theme;
@@ -1755,6 +1756,10 @@ const CRUMB_INSET: f32 = (material::CONTROL_HEIGHT - CRUMB_HEIGHT) / 2.0;
 const CRUMB_ICON_STEP: f32 = material::INSET_LABEL - material::INSET_ICON + 8.0;
 
 impl eframe::App for SkiApp {
+    fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
+        egui::Color32::TRANSPARENT.to_normalized_gamma_f32()
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         self.resume_search(&ctx);
@@ -1832,7 +1837,7 @@ impl eframe::App for SkiApp {
                 .resizable(false)
                 .frame(
                     egui::Frame::new()
-                        .fill(self.theme.mantle)
+                        .fill(self.theme.backdrop(self.theme.mantle))
                         .inner_margin(egui::Margin::symmetric(PAGE_MARGIN, 8)),
                 )
                 .show(ui, |ui| {
@@ -1844,7 +1849,7 @@ impl eframe::App for SkiApp {
         egui::Panel::top("top_navigation")
             .frame(
                 egui::Frame::new()
-                    .fill(self.theme.base)
+                    .fill(self.theme.backdrop(self.theme.base))
                     .inner_margin(egui::Margin::symmetric(HEADER_MARGIN, 8)),
             )
             .show(ui, |ui| self.render_top_bar(ui, sidebar_visible));
@@ -1855,7 +1860,7 @@ impl eframe::App for SkiApp {
         let central = egui::CentralPanel::default()
             .frame(
                 egui::Frame::new()
-                    .fill(self.theme.base)
+                    .fill(self.theme.backdrop(self.theme.base))
                     .inner_margin(egui::Margin { left: PAGE_MARGIN, right: PAGE_MARGIN, top: 0, bottom: 6 }),
             )
             .show(ui, |ui| {
@@ -1997,7 +2002,7 @@ impl SkiApp {
                 let pill_hover = material::animate(ui.ctx(), title_resp.id.with("hover"), !editing_top_pill && title_resp.hovered());
                 let pill_edit = material::animate(ui.ctx(), egui::Id::unique("top_pill_edit"), editing_top_pill);
                 let pill_fill = material::lerp_color(
-                    material::lerp_color(self.theme.surface0, self.theme.surface1, pill_hover),
+                    material::lerp_color(self.theme.backdrop(self.theme.surface0), self.theme.surface1, pill_hover),
                     self.theme.surface2,
                     pill_edit,
                 );
@@ -4617,6 +4622,8 @@ impl SkiApp {
         let mut reset = false;
         let builder = egui::ViewportBuilder::default()
             .with_title(format!("{title} — {what}"))
+            // Lets the background opacity show the desktop, as in the main window
+            .with_transparent(true)
             .with_inner_size([880.0, 600.0])
             .with_min_inner_size([560.0, 380.0]);
 
@@ -4634,7 +4641,7 @@ impl SkiApp {
             egui::Panel::left("pk_places")
                 .exact_size(212.0)
                 .resizable(false)
-                .frame(egui::Frame::new().fill(theme.mantle).inner_margin(egui::Margin::symmetric(PAGE_MARGIN, 8)))
+                .frame(egui::Frame::new().fill(theme.backdrop(theme.mantle)).inner_margin(egui::Margin::symmetric(PAGE_MARGIN, 8)))
                 .show(ui, |ui| {
                     ui.spacing_mut().item_spacing.y = 2.0;
                     egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
@@ -4659,7 +4666,7 @@ impl SkiApp {
                 });
 
             egui::Panel::top("pk_path")
-                .frame(egui::Frame::new().fill(theme.base).inner_margin(egui::Margin::symmetric(HEADER_MARGIN, 8)))
+                .frame(egui::Frame::new().fill(theme.backdrop(theme.base)).inner_margin(egui::Margin::symmetric(HEADER_MARGIN, 8)))
                 .show(ui, |ui| {
                     ui.allocate_ui_with_layout(
                         egui::vec2(ui.available_width(), CONTROL_HEIGHT),
@@ -4672,7 +4679,7 @@ impl SkiApp {
                                     goto = Some(parent.to_path_buf());
                                 }
                             let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), CONTROL_HEIGHT), egui::Sense::hover());
-                            ui.painter().rect_filled(rect, material::pill(rect), theme.surface1);
+                            ui.painter().rect_filled(rect, material::pill(rect), theme.backdrop(theme.surface1));
                             let edit_rect = egui::Rect::from_min_max(egui::pos2(rect.left() + 16.0, rect.top()), egui::pos2(rect.right() - 12.0, rect.bottom()));
                             let resp = material::put_over(
                                 ui,
@@ -4696,7 +4703,7 @@ impl SkiApp {
                 });
 
             egui::Panel::bottom("pk_footer")
-                .frame(egui::Frame::new().fill(theme.mantle).inner_margin(egui::Margin::symmetric(CONTENT_INSET, 10)))
+                .frame(egui::Frame::new().fill(theme.backdrop(theme.mantle)).inner_margin(egui::Margin::symmetric(CONTENT_INSET, 10)))
                 .show(ui, |ui| {
                     let dest = picker.chosen.as_ref().unwrap_or(&picker.dir);
                     let name = dest.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| dest.display().to_string());
@@ -4721,7 +4728,7 @@ impl SkiApp {
                 });
 
             egui::CentralPanel::default()
-                .frame(egui::Frame::new().fill(theme.base).inner_margin(egui::Margin { left: PAGE_MARGIN, right: PAGE_MARGIN, top: 0, bottom: 6 }))
+                .frame(egui::Frame::new().fill(theme.backdrop(theme.base)).inner_margin(egui::Margin { left: PAGE_MARGIN, right: PAGE_MARGIN, top: 0, bottom: 6 }))
                 .show(ui, |ui| {
                     egui::ScrollArea::vertical().auto_shrink([false, false]).id_salt("pk_scroll").show(ui, |ui| {
                         ui.spacing_mut().item_spacing.y = 2.0;
