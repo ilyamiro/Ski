@@ -234,7 +234,7 @@ impl Default for Settings {
             session_tabs: Vec::new(),
             session_active: 0,
             single_click_open: false,
-            vim_keys: true,
+            vim_keys: false,
             open_in_new_window: false,
             run_in_background: true,
             confirm_delete: true,

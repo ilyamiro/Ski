@@ -1121,7 +1121,9 @@ impl SkiApp {
     }
 
     fn is_act_pressed(&self, ctx: &egui::Context, act: crate::keymap::Action) -> bool {
-        crate::keymap::is_action_pressed(ctx, &self.settings.keybinds, act, self.settings.vim_keys)
+        // Typing to filter owns the bare letters, so the vim ones don't swallow the first letter of a name
+        let vim_keys = self.settings.vim_keys && !self.settings.type_to_filter;
+        crate::keymap::is_action_pressed(ctx, &self.settings.keybinds, act, vim_keys)
     }
 
     pub(crate) fn installed_apps(&self) -> std::sync::Arc<Vec<AppEntry>> {
@@ -5653,4 +5655,43 @@ mod tests {
 
         std::fs::remove_dir_all(&base).unwrap();
     }
+    #[test]
+    fn type_to_filter_takes_the_first_letter_even_when_it_is_a_vim_key() {
+        use eframe::App;
+        let base = std::env::temp_dir().join(format!("ski_ttf_test_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        std::fs::write(base.join("jam.txt"), "x").unwrap();
+        let ctx = egui::Context::default();
+        let mut settings = Settings::default();
+        settings.type_to_filter = true;
+        settings.vim_keys = true;
+        let mut app = SkiApp::new(base.clone(), SerpantinumTheme::default(), settings, &ctx);
+        let mut frame = |app: &mut SkiApp, key: Option<&str>| {
+            let mut raw = egui::RawInput::default();
+            raw.screen_rect = Some(egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(900.0, 600.0)));
+            if let Some(k) = key {
+                raw.events.push(egui::Event::Key {
+                    key: egui::Key::J,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers: egui::Modifiers::NONE,
+                });
+                raw.events.push(egui::Event::Text(k.to_owned()));
+            }
+            let mut out = ctx.run_ui(raw, |ui| {
+                // SAFETY: the frame is never read by `ui`
+                let mut f = unsafe { std::mem::zeroed::<eframe::Frame>() };
+                app.ui(ui, &mut f);
+                std::mem::forget(f);
+            });
+            out.textures_delta.clear();
+        };
+        frame(&mut app, None);
+        frame(&mut app, Some("j"));
+        assert_eq!(app.search_query, "j");
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
 }
