@@ -1017,6 +1017,7 @@ pub fn item_icon_animated(item: &FileItem, theme: &SerpantinumTheme, sel_t: f32)
             Tint::Green => theme.green,
             Tint::Blue => theme.blue,
             Tint::Mauve => theme.mauve,
+            Tint::Yellow => theme.yellow,
             Tint::Muted => theme.subtext0,
         };
         return (glyph, color);

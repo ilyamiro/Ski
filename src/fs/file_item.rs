@@ -51,6 +51,7 @@ pub enum Tint {
     Green,
     Blue,
     Mauve,
+    Yellow,
     Muted,
 }
 
@@ -77,9 +78,9 @@ pub fn office_kind(name: &str) -> Option<Office> {
 pub fn specific_icon(name: &str) -> Option<(&'static str, Tint)> {
     let lower = name.to_ascii_lowercase();
     match lower.as_str() {
-        "makefile" | "cmakelists.txt" | "justfile" => return Some((icons::CONFIG, Tint::Muted)),
-        "dockerfile" | "containerfile" => return Some((icons::DOCKER, Tint::Blue)),
-        ".gitignore" | ".gitattributes" | ".gitmodules" => return Some((icons::GIT, Tint::Peach)),
+        "makefile" | "cmakelists.txt" | "justfile" | "gemfile" | "procfile" | "cargo.lock" => return Some((icons::CONFIG, Tint::Muted)),
+        "dockerfile" | "containerfile" | ".dockerignore" => return Some((icons::DOCKER, Tint::Blue)),
+        ".gitignore" | ".gitattributes" | ".gitmodules" | ".gitconfig" => return Some((icons::GIT, Tint::Peach)),
         "license" | "licence" | "copying" | "readme" => return Some((icons::TEXT, Tint::Muted)),
         _ => {}
     }
@@ -95,38 +96,51 @@ pub fn specific_icon(name: &str) -> Option<(&'static str, Tint)> {
         "xls" | "xlsx" | "xlsm" | "xlsb" | "ods" | "ots" | "numbers" => (icons::EXCEL, Tint::Green),
         "csv" | "tsv" => (icons::TABLE, Tint::Green),
         "ppt" | "pptx" | "pptm" | "pps" | "ppsx" | "potx" | "odp" | "otp" => (icons::POWERPOINT, Tint::Peach),
-        "md" | "markdown" | "rst" | "adoc" => (icons::MARKDOWN, Tint::Muted),
+        "md" | "markdown" | "rst" | "adoc" => (icons::MARKDOWN, Tint::Blue),
         "txt" | "tex" | "nfo" | "org" => (icons::TEXT, Tint::Muted),
         "log" => (icons::LOG, Tint::Muted),
         "epub" | "mobi" | "azw" | "azw3" | "azw4" | "kfx" | "prc" | "fb2" | "djvu" | "djv" | "lit" | "lrf" | "chm" | "ibooks"
         | "cbz" | "cbr" | "cb7" | "cbt" => (icons::EBOOK, Tint::Peach),
-        "py" | "pyc" | "ipynb" => (icons::PYTHON, Tint::Blue),
+        "py" | "pyc" | "ipynb" | "pyw" => (icons::PYTHON, Tint::Blue),
         "rs" => (icons::RUST, Tint::Peach),
-        "js" | "mjs" | "cjs" | "jsx" => (icons::JAVASCRIPT, Tint::Peach),
-        "ts" | "tsx" => (icons::TYPESCRIPT, Tint::Blue),
+        "js" | "mjs" | "cjs" | "jsx" => (icons::JAVASCRIPT, Tint::Yellow),
+        "ts" | "cts" | "tsx" => (icons::TYPESCRIPT, Tint::Blue),
         "css" | "scss" | "sass" | "less" => (icons::CSS, Tint::Blue),
-        "json" | "jsonc" | "json5" => (icons::JSON, Tint::Peach),
+        "json" | "jsonc" | "json5" => (icons::JSON, Tint::Yellow),
         "c" | "h" => (icons::LANG_C, Tint::Blue),
-        "cpp" | "cc" | "cxx" | "hpp" | "hh" => (icons::LANG_CPP, Tint::Blue),
+        "cpp" | "cc" | "cxx" | "hpp" | "hh" | "hxx" | "c++" | "h++" => (icons::LANG_CPP, Tint::Blue),
+        "cs" | "csx" => (icons::CSHARP, Tint::Mauve),
         "go" => (icons::GO, Tint::Blue),
-        "java" | "jar" => (icons::JAVA, Tint::Red),
+        "java" | "jar" | "class" => (icons::JAVA, Tint::Red),
         "kt" | "kts" => (icons::KOTLIN, Tint::Mauve),
         "swift" => (icons::SWIFT, Tint::Peach),
         "lua" => (icons::LUA, Tint::Blue),
         "php" => (icons::PHP, Tint::Mauve),
-        "rb" => (icons::RUBY, Tint::Red),
-        "sh" | "bash" | "zsh" | "fish" => (icons::SHELL, Tint::Green),
+        "rb" | "erb" | "gemspec" => (icons::RUBY, Tint::Red),
+        "sh" | "bash" | "zsh" | "fish" | "ksh" | "csh" | "tcsh" => (icons::SHELL, Tint::Green),
+        "ps1" | "psm1" | "psd1" => (icons::POWERSHELL, Tint::Blue),
         "nix" => (icons::NIX, Tint::Blue),
-        "toml" | "yaml" | "yml" | "ini" | "conf" | "cfg" | "env" | "desktop" | "service" => (icons::CONFIG, Tint::Muted),
+        "hs" | "lhs" => (icons::HASKELL, Tint::Mauve),
+        "r" | "rmd" => (icons::LANG_R, Tint::Blue),
+        "vue" => (icons::VUE, Tint::Green),
+        "svelte" => (icons::SVELTE, Tint::Peach),
+        "dart" => (icons::DART, Tint::Blue),
+        "zig" => (icons::ZIG, Tint::Peach),
+        "ex" | "exs" => (icons::ELIXIR, Tint::Mauve),
+        "scala" | "sc" => (icons::SCALA, Tint::Red),
+        "pl" | "pm" => (icons::PERL, Tint::Blue),
+        "xml" | "xaml" | "xsl" | "xslt" | "plist" => (icons::XML, Tint::Peach),
+        "toml" | "yaml" | "yml" | "ini" | "conf" | "cfg" | "env" | "desktop" | "service" | "properties" => (icons::CONFIG, Tint::Muted),
         "sql" | "db" | "sqlite" | "sqlite3" => (icons::DATABASE, Tint::Mauve),
-        "svg" | "svgz" | "ai" | "eps" => (icons::VECTOR, Tint::Green),
-        "ttf" | "otf" | "woff" | "woff2" => (icons::FONT, Tint::Muted),
-        "pem" | "key" | "gpg" | "pub" | "asc" => (icons::KEY, Tint::Peach),
-        "crt" | "cer" | "p12" => (icons::CERTIFICATE, Tint::Peach),
+        "svg" | "svgz" | "ai" | "eps" => (icons::VECTOR, Tint::Peach),
+        "ttf" | "otf" | "woff" | "woff2" | "eot" => (icons::FONT, Tint::Muted),
+        "pem" | "key" | "gpg" | "pub" | "asc" => (icons::KEY, Tint::Yellow),
+        "crt" | "cer" | "p12" | "pfx" => (icons::CERTIFICATE, Tint::Yellow),
         "deb" | "rpm" | "apk" | "pkg" | "flatpakref" | "snap" => (icons::PACKAGE, Tint::Peach),
         "appimage" | "exe" | "msi" => (icons::APPLICATION, Tint::Green),
         "torrent" => (icons::TORRENT, Tint::Green),
-        "zip" | "tar" | "gz" | "bz2" | "xz" | "7z" | "rar" | "zst" | "tgz" | "tbz2" | "txz" | "lz" | "lzma" | "lz4" | "cab" | "cpio" | "zipx" => (icons::ZIP, Tint::Peach),
+        "zip" | "zipx" => (icons::ZIP, Tint::Peach),
+        "tar" | "gz" | "bz2" | "xz" | "7z" | "rar" | "zst" | "tgz" | "tbz2" | "txz" | "lz" | "lzma" | "lz4" | "cab" | "cpio" => (icons::ARCHIVE, Tint::Peach),
         "dxf" | "dwg" | "stl" | "obj" | "step" | "stp" | "3mf" | "blend" | "fcstd" => (icons::CAD, Tint::Mauve),
         _ => return None,
     })
@@ -361,9 +375,13 @@ fn detect_file_type(filename: &str) -> FileType {
         "mp3" | "flac" | "wav" | "ogg" | "oga" | "m4a" | "m4b" | "aac" | "opus" | "wma" | "aif" | "aiff" | "ape" | "wv" | "mid" | "midi" | "mka" | "mpc" | "dsf" | "tta" | "amr" | "ac3" | "dts" => FileType::Audio,
         "mp4" | "m4v" | "mkv" | "webm" | "avi" | "mov" | "flv" | "wmv" | "mpg" | "mpeg" | "ogv" | "3gp" | "3g2" | "m2ts" | "m2t" | "mts" | "vob" | "asf" | "rm" | "rmvb" | "divx" | "f4v" | "mxf" | "ogm" | "mpe" | "qt" | "dv" => FileType::Video,
         "zip" | "tar" | "gz" | "bz2" | "xz" | "7z" | "rar" | "zst" | "tgz" | "tbz2" | "txz" | "lz" | "lzma" | "lz4" | "cab" | "cpio" | "zipx" => FileType::Archive,
-        "rs" | "c" | "cpp" | "h" | "hpp" | "py" | "js" | "ts" | "jsx" | "tsx" | "html"
-        | "css" | "scss" | "json" | "toml" | "yaml" | "yml" | "nix" | "sh" | "bash"
-        | "lua" | "go" | "java" | "kt" | "swift" | "sql" => FileType::Code,
+        "rs" | "c" | "cpp" | "cc" | "cxx" | "h" | "hpp" | "hh" | "hxx" | "c++" | "h++"
+        | "cs" | "csx" | "py" | "pyc" | "ipynb" | "pyw" | "js" | "mjs" | "cjs" | "ts" | "cts" | "jsx" | "tsx"
+        | "html" | "htm" | "xhtml" | "css" | "scss" | "sass" | "less" | "json" | "jsonc" | "json5"
+        | "toml" | "yaml" | "yml" | "nix" | "sh" | "bash" | "zsh" | "fish" | "ksh" | "csh" | "tcsh"
+        | "ps1" | "psm1" | "psd1" | "lua" | "go" | "java" | "kt" | "kts" | "swift" | "sql"
+        | "php" | "rb" | "erb" | "gemspec" | "hs" | "lhs" | "r" | "rmd" | "vue" | "svelte" | "dart"
+        | "zig" | "ex" | "exs" | "scala" | "sc" | "pl" | "pm" | "xml" | "xaml" => FileType::Code,
         _ => FileType::Other,
     }
 }
@@ -449,5 +467,23 @@ mod tests {
         assert_eq!(FileItem::from_path(&file).unwrap().is_locked, !root);
         std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).unwrap();
         assert!(!FileItem::from_path(&file).unwrap().is_locked);
+    }
+
+    #[test]
+    fn specific_icons_and_tints_match_authentic_branding() {
+        assert_eq!(specific_icon("app.js"), Some((icons::JAVASCRIPT, Tint::Yellow)));
+        assert_eq!(specific_icon("module.mjs"), Some((icons::JAVASCRIPT, Tint::Yellow)));
+        assert_eq!(specific_icon("config.json"), Some((icons::JSON, Tint::Yellow)));
+        assert_eq!(specific_icon("id_rsa.pub"), Some((icons::KEY, Tint::Yellow)));
+        assert_eq!(specific_icon("server.crt"), Some((icons::CERTIFICATE, Tint::Yellow)));
+        assert_eq!(specific_icon("README.md"), Some((icons::MARKDOWN, Tint::Blue)));
+        assert_eq!(specific_icon("ubuntu.torrent"), Some((icons::TORRENT, Tint::Green)));
+        assert_eq!(specific_icon("backup.zip"), Some((icons::ZIP, Tint::Peach)));
+        assert_eq!(specific_icon("archive.tar.gz"), Some((icons::ARCHIVE, Tint::Peach)));
+        assert_eq!(specific_icon("main.rs"), Some((icons::RUST, Tint::Peach)));
+        assert_eq!(specific_icon("Program.cs"), Some((icons::CSHARP, Tint::Mauve)));
+        assert_eq!(specific_icon("App.vue"), Some((icons::VUE, Tint::Green)));
+        assert_eq!(specific_icon("script.ps1"), Some((icons::POWERSHELL, Tint::Blue)));
+        assert_eq!(specific_icon("logo.svg"), Some((icons::VECTOR, Tint::Peach)));
     }
 }

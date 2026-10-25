@@ -69,21 +69,21 @@ impl Default for SerpantinumTheme {
 /// The `border_radius` of the unchanged Material look; the corner setting scales it.
 pub const BASE_RADIUS: f32 = 16.0;
 
-/// Named palettes: base, mantle, crust, text, subtext0, subtext1, surface0-2, accent, peach, green, red.
-pub const PRESETS: [(&str, &str, [&str; 13], bool); 13] = [
-    ("midnight", "Midnight", ["#0b0e14", "#151a23", "#10141b", "#dfe6f3", "#b4bfd3", "#7d889c", "#181e29", "#212938", "#2b3446", "#8ab4f8", "#f2b8a2", "#9bd3a8", "#f28b82"], false),
-    ("nord", "Nord", ["#242933", "#2e3440", "#20242d", "#eceff4", "#d8dee9", "#8c95a6", "#343b49", "#3b4252", "#434c5e", "#88c0d0", "#d08770", "#a3be8c", "#bf616a"], false),
-    ("gruvbox", "Gruvbox", ["#1d2021", "#282828", "#181a1b", "#ebdbb2", "#d5c4a1", "#928374", "#32302f", "#3c3836", "#504945", "#d3869b", "#fe8019", "#b8bb26", "#fb4934"], false),
-    ("light", "Light", ["#fef7ff", "#f3edf7", "#ece6f0", "#1d1b20", "#49454f", "#79747e", "#f7f2fa", "#e7e0ec", "#ddd6e2", "#6750a4", "#7d5260", "#625b71", "#b3261e"], true),
-    ("catppuccin", "Catppuccin Mocha", ["#181825", "#1e1e2e", "#11111b", "#cdd6f4", "#bac2de", "#8087a2", "#313244", "#45475a", "#585b70", "#cba6f7", "#fab387", "#a6e3a1", "#f38ba8"], false),
-    ("dracula", "Dracula", ["#1e1f29", "#282a36", "#191a21", "#f8f8f2", "#cfcfc2", "#8a93c0", "#313442", "#3b3f51", "#464b60", "#bd93f9", "#ffb86c", "#50fa7b", "#ff5555"], false),
-    ("tokyonight", "Tokyo Night", ["#16161e", "#1a1b26", "#13131a", "#c0caf5", "#a9b1d6", "#7a82a8", "#24283b", "#2f334d", "#3b4261", "#7aa2f7", "#ff9e64", "#9ece6a", "#f7768e"], false),
-    ("rosepine", "Rosé Pine", ["#191724", "#1f1d2e", "#16141f", "#e0def4", "#c4c1dc", "#908caa", "#26233a", "#403d52", "#524f67", "#c4a7e7", "#f6c177", "#9ccfd8", "#eb6f92"], false),
-    ("onedark", "One Dark", ["#1e2227", "#282c34", "#1b1f23", "#abb2bf", "#9aa1ad", "#7f8794", "#2f343e", "#3a404c", "#454c5a", "#61afef", "#d19a66", "#98c379", "#e06c75"], false),
-    ("everforest", "Everforest", ["#272e33", "#2d353b", "#232a2e", "#d3c6aa", "#bfb49a", "#859289", "#343f44", "#3d484d", "#475258", "#a7c080", "#e69875", "#83c092", "#e67e80"], false),
-    ("solarized-dark", "Solarized Dark", ["#00212b", "#002b36", "#001e26", "#e1e5df", "#93a1a1", "#7a8b8d", "#073642", "#0f4452", "#1a5361", "#268bd2", "#e0733c", "#a1b32a", "#f0524f"], false),
-    ("latte", "Catppuccin Latte", ["#eff1f5", "#e6e9ef", "#dce0e8", "#4c4f69", "#5c5f77", "#7c7f93", "#f2f4f8", "#d9dde6", "#ccd0da", "#8839ef", "#fe640b", "#40a02b", "#d20f39"], true),
-    ("solarized-light", "Solarized Light", ["#fdf6e3", "#eee8d5", "#e6dfca", "#3b4a50", "#586e75", "#6f8184", "#f7f0dc", "#e3dcc6", "#d6cfb8", "#268bd2", "#cb4b16", "#859900", "#dc322f"], true),
+/// Named palettes: base, mantle, crust, text, subtext0, subtext1, surface0-2, accent, peach, green, red, yellow.
+pub const PRESETS: [(&str, &str, [&str; 14], bool); 13] = [
+    ("midnight", "Midnight", ["#0b0e14", "#151a23", "#10141b", "#dfe6f3", "#b4bfd3", "#7d889c", "#181e29", "#212938", "#2b3446", "#8ab4f8", "#f2b8a2", "#9bd3a8", "#f28b82", "#fdd663"], false),
+    ("nord", "Nord", ["#242933", "#2e3440", "#20242d", "#eceff4", "#d8dee9", "#8c95a6", "#343b49", "#3b4252", "#434c5e", "#88c0d0", "#d08770", "#a3be8c", "#bf616a", "#ebcb8b"], false),
+    ("gruvbox", "Gruvbox", ["#1d2021", "#282828", "#181a1b", "#ebdbb2", "#d5c4a1", "#928374", "#32302f", "#3c3836", "#504945", "#d3869b", "#fe8019", "#b8bb26", "#fb4934", "#fabd2f"], false),
+    ("light", "Light", ["#fef7ff", "#f3edf7", "#ece6f0", "#1d1b20", "#49454f", "#79747e", "#f7f2fa", "#e7e0ec", "#ddd6e2", "#6750a4", "#7d5260", "#625b71", "#b3261e", "#7d5800"], true),
+    ("catppuccin", "Catppuccin Mocha", ["#181825", "#1e1e2e", "#11111b", "#cdd6f4", "#bac2de", "#8087a2", "#313244", "#45475a", "#585b70", "#cba6f7", "#fab387", "#a6e3a1", "#f38ba8", "#f9e2af"], false),
+    ("dracula", "Dracula", ["#1e1f29", "#282a36", "#191a21", "#f8f8f2", "#cfcfc2", "#8a93c0", "#313442", "#3b3f51", "#464b60", "#bd93f9", "#ffb86c", "#50fa7b", "#ff5555", "#f1fa8c"], false),
+    ("tokyonight", "Tokyo Night", ["#16161e", "#1a1b26", "#13131a", "#c0caf5", "#a9b1d6", "#7a82a8", "#24283b", "#2f334d", "#3b4261", "#7aa2f7", "#ff9e64", "#9ece6a", "#f7768e", "#e0af68"], false),
+    ("rosepine", "Rosé Pine", ["#191724", "#1f1d2e", "#16141f", "#e0def4", "#c4c1dc", "#908caa", "#26233a", "#403d52", "#524f67", "#c4a7e7", "#f6c177", "#9ccfd8", "#eb6f92", "#f6c177"], false),
+    ("onedark", "One Dark", ["#1e2227", "#282c34", "#1b1f23", "#abb2bf", "#9aa1ad", "#7f8794", "#2f343e", "#3a404c", "#454c5a", "#61afef", "#d19a66", "#98c379", "#e06c75", "#e5c07b"], false),
+    ("everforest", "Everforest", ["#272e33", "#2d353b", "#232a2e", "#d3c6aa", "#bfb49a", "#859289", "#343f44", "#3d484d", "#475258", "#a7c080", "#e69875", "#83c092", "#e67e80", "#dbbc7f"], false),
+    ("solarized-dark", "Solarized Dark", ["#00212b", "#002b36", "#001e26", "#e1e5df", "#93a1a1", "#7a8b8d", "#073642", "#0f4452", "#1a5361", "#268bd2", "#e0733c", "#a1b32a", "#f0524f", "#b58900"], false),
+    ("latte", "Catppuccin Latte", ["#eff1f5", "#e6e9ef", "#dce0e8", "#4c4f69", "#5c5f77", "#7c7f93", "#f2f4f8", "#d9dde6", "#ccd0da", "#8839ef", "#fe640b", "#40a02b", "#d20f39", "#df8e1d"], true),
+    ("solarized-light", "Solarized Light", ["#fdf6e3", "#eee8d5", "#e6dfca", "#3b4a50", "#586e75", "#6f8184", "#f7f0dc", "#e3dcc6", "#d6cfb8", "#268bd2", "#cb4b16", "#859900", "#dc322f", "#857000"], true),
 ];
 
 /// Quick accent choices offered in the settings.
@@ -98,7 +98,7 @@ impl SerpantinumTheme {
                 Self {
                     base: col(0), mantle: col(1), crust: col(2), text: col(3), subtext0: col(4), subtext1: col(5),
                     surface0: col(6), surface1: col(7), surface2: col(8), blue: col(9), mauve: col(9),
-                    peach: col(10), green: col(11), red: col(12), light: *light,
+                    peach: col(10), green: col(11), red: col(12), yellow: col(13), light: *light,
                     ..Self::default()
                 }
             }
@@ -315,6 +315,7 @@ mod tests {
                 assert!(contrast(t.text, bg) >= 5.5, "{id} text");
                 assert!(contrast(t.subtext1, bg) >= 3.5, "{id} subtext1");
                 assert!(contrast(t.mauve, bg) >= 3.5, "{id} accent");
+                assert!(contrast(t.yellow, bg) >= 3.5, "{id} yellow");
             }
             assert!(contrast(t.text, t.surface2) >= 5.5, "{id} text on surface2");
         }
