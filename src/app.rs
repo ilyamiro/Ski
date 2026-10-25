@@ -15,6 +15,7 @@ mod perms;
 mod plugin_ui;
 mod quick_look;
 mod swipe;
+mod watching;
 mod tabs;
 use swipe::{Swipe, SwipeDetector};
 use tabs::TabSlot;
@@ -25,7 +26,7 @@ use crate::fs::{
     apps::{self, AppEntry},
     places::{load_folder_icons, save_folder_icons, Place, PlaceGroup, PlaceKind, BOOKMARKS_PATH, RECENT_PATH, is_virtual},
     props::{FolderScan, Properties},
-    scanner::{natural_cmp, read_directory, sort_items, starts_with_folded, ListOptions, TypeFilter},
+    scanner::{natural_cmp, read_folder, sort_items, starts_with_folded, ListOptions, TypeFilter},
     recent,
     search::{Search, SearchOptions, SearchScope},
     trash,
@@ -298,6 +299,14 @@ pub struct SkiApp {
     history: History,
     /// The undo or redo that is running, so a second one waits for it.
     history_job: Option<u64>,
+    /// A folder read in the background after a job finished, for the folder it was started in.
+    pending_reload: Option<(PathBuf, mpsc::Receiver<std::io::Result<Vec<FileItem>>>)>,
+    /// The folder is still being read, so there is nothing to show yet.
+    loading: bool,
+    /// What to select once the listing in the making arrives: the selected files, the focused one, and whether to scroll to it.
+    restore_selection: Option<(Vec<PathBuf>, Option<PathBuf>, bool)>,
+    /// Tells when the folders on show change on disk.
+    watching: watching::Watching,
     /// Files plugin jobs were started to remove, by job.
     job_removals: HashMap<u64, Vec<PathBuf>>,
     /// The folder size mode the View options switch went on from, which turning it off restores.
@@ -460,6 +469,10 @@ impl SkiApp {
             engine: Engine::new(ctx),
             history: History::default(),
             history_job: None,
+            pending_reload: None,
+            loading: false,
+            restore_selection: None,
+            watching: watching::Watching::new(ctx),
             job_removals: HashMap::new(),
             sizes_before_always: crate::settings::FolderSizeMode::OnDemand,
             pending_conflicts: VecDeque::new(),
@@ -569,6 +582,7 @@ impl SkiApp {
     /// Switch to `path` after the history was updated: reset everything that belonged to the old place.
     fn arrive(&mut self, path: PathBuf) {
         self.sizes.cancel_all();
+        self.restore_selection = None;
         self.current_path = path;
         if !self.in_recent() {
             self.settings.last_dir = Some(self.current_path.clone());
@@ -586,7 +600,20 @@ impl SkiApp {
         self.search.cancel();
         self.show_search = false;
         self.is_editing_path = false;
-        self.reload_items();
+        self.open_listing();
+    }
+
+    /// Read the folder just arrived at. A folder that answers at once is shown at once; a slow drive
+    /// gets "Loading…" while it is read, rather than a window that does not respond.
+    fn open_listing(&mut self) {
+        self.reload_items_later();
+        if self.take_reload(std::time::Duration::from_millis(80)) {
+            self.items.clear();
+            self.error_message = None;
+            self.loading = true;
+            self.selection.clear();
+            self.sync_selection(true);
+        }
     }
 
     /// Showing Recent or Bookmarks, which list items from many folders, rather than a folder.
@@ -660,13 +687,27 @@ impl SkiApp {
 
     /// Put the listing in the current sort order, keeping the same files selected.
     fn resort_items(&mut self) {
+        self.edit_listing(|_| {});
+    }
+
+    /// Change the listing, put it in the current sort order and keep the same files selected
+    /// (the ones `edit` removed drop out of the selection).
+    fn edit_listing(&mut self, edit: impl FnOnce(&mut Vec<FileItem>)) {
+        self.edit_listing_sorted(true, edit);
+    }
+
+    /// `edit_listing`; `sort` is false for Recent and Bookmarks, which keep their own order.
+    fn edit_listing_sorted(&mut self, sort: bool, edit: impl FnOnce(&mut Vec<FileItem>)) {
         let focus = self.selected_index.and_then(|i| self.items.get(i)).map(|i| i.path.clone());
         let selected = self.selected_paths();
-        let opts = self.list_options();
-        sort_items(&mut self.items, &opts);
-        let at = |items: &[FileItem], p: &PathBuf| items.iter().position(|i| &i.path == p);
-        self.selection = selected.iter().filter_map(|p| at(&self.items, p)).collect();
-        self.selected_index = focus.as_ref().and_then(|p| at(&self.items, p));
+        edit(&mut self.items);
+        if sort {
+            let opts = self.list_options();
+            sort_items(&mut self.items, &opts);
+        }
+        let places: HashMap<&Path, usize> = self.items.iter().enumerate().map(|(i, item)| (item.path.as_path(), i)).collect();
+        self.selection = selected.iter().filter_map(|p| places.get(p.as_path()).copied()).collect();
+        self.selected_index = focus.as_ref().and_then(|p| places.get(p.as_path()).copied());
         self.anchor = self.selected_index;
         self.last_cursor = self.selected_index;
     }
@@ -682,17 +723,63 @@ impl SkiApp {
     }
 
     pub fn reload_items(&mut self) {
+        self.pending_reload = None;
+        self.resync_watch();
         let opts = self.list_options();
-        let listing = if self.in_recent() { Ok(self.recent_items()) } else { read_directory(&self.current_path, &opts) };
+        let listing = if self.in_recent() { Ok(self.recent_items()) } else { read_folder(&self.current_path, &opts) };
+        self.show_listing(listing);
+    }
+
+    /// Read the folder again on another thread, so the window keeps answering while a slow drive replies.
+    /// The listing is swapped in by `poll_reload` once it is read.
+    pub(crate) fn reload_items_later(&mut self) {
+        if self.in_recent() {
+            return self.reload_items();
+        }
+        self.resync_watch();
+        let (path, opts) = (self.current_path.clone(), self.list_options());
+        let (tx, rx) = mpsc::channel();
+        let read = path.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(read_folder(&read, &opts));
+        });
+        self.pending_reload = Some((path, rx));
+    }
+
+    /// Once per frame: take in a folder read by `reload_items_later`. True while it is still being read.
+    pub(crate) fn poll_reload(&mut self) -> bool {
+        self.take_reload(std::time::Duration::ZERO)
+    }
+
+    /// `poll_reload`, waiting up to `wait` for the folder.
+    fn take_reload(&mut self, wait: std::time::Duration) -> bool {
+        let Some((path, rx)) = &self.pending_reload else { return false };
+        match rx.recv_timeout(wait) {
+            Ok(listing) => {
+                let same = *path == self.current_path;
+                self.pending_reload = None;
+                if same {
+                    self.show_listing(listing);
+                }
+                false
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => true,
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                self.pending_reload = None;
+                false
+            }
+        }
+    }
+
+    fn show_listing(&mut self, listing: std::io::Result<Vec<FileItem>>) {
+        self.loading = false;
         match listing {
             Ok(mut items) => {
-                if let Some(ch) = &self.chooser {
-                    items.retain(|i| if ch.spec.mode == crate::chooser::Mode::Folder { i.is_dir } else { i.is_dir || ch.accepts(&i.path) });
-                }
+                items.retain(|i| self.chooser_accepts(i));
                 self.items = items;
                 self.error_message = None;
                 if self.settings.show_thumbnails {
-                    self.thumbs.preload(self.items.iter().map(|i| i.path.as_path()));
+                    self.thumbs.preload(self.items.iter().map(|i| (i.path.as_path(), (i.modified, i.size))));
                 }
                 for item in self.items.iter().filter(|i| i.is_dir) {
                     if let Some(icon) = self.folder_icons.get(&item.path) {
@@ -713,10 +800,58 @@ impl SkiApp {
             }
         }
         self.sync_selection(true);
+        if let Some((selected, focus, scroll)) = self.restore_selection.take() {
+            let at = |p: &PathBuf| self.items.iter().position(|i| &i.path == p);
+            let selection: BTreeSet<usize> = selected.iter().filter_map(at).collect();
+            let focus = focus.as_ref().and_then(at).or_else(|| selection.iter().next().copied());
+            self.selection = selection;
+            self.selected_index = focus;
+            self.anchor = focus;
+            self.last_cursor = focus;
+            self.scroll_to_selected = scroll && focus.is_some();
+        }
         if !is_virtual(&self.current_path) {
             let here = self.current_path.clone();
             self.plugins.directory_changed(&here);
         }
+    }
+
+    /// Whether the listing of a folder shows `item`: hidden files, the type filter and the file chooser decide.
+    fn listed(&self, item: &FileItem) -> bool {
+        (self.show_hidden || !item.is_hidden) && self.type_filter.matches(item) && self.chooser_accepts(item)
+    }
+
+    /// Whether the file chooser, if this is one, offers `item`.
+    fn chooser_accepts(&self, item: &FileItem) -> bool {
+        match &self.chooser {
+            Some(ch) if ch.spec.mode == crate::chooser::Mode::Folder => item.is_dir,
+            Some(ch) => item.is_dir || ch.accepts(&item.path),
+            None => true,
+        }
+    }
+
+    /// Show a file that was just made or renamed into the open folder without reading the whole folder again,
+    /// which stalls the window on a big folder or a slow drive. Whatever the listing hides stays hidden.
+    fn add_listed(&mut self, path: &Path) {
+        let fresh = FileItem::from_path(path).filter(|item| self.listed(item));
+        if fresh.is_some() && self.settings.show_thumbnails {
+            self.thumbs.ensure(path);
+        }
+        self.edit_listing(|items| {
+            items.retain(|i| i.path != path);
+            items.extend(fresh);
+        });
+        let here = self.current_path.clone();
+        self.plugins.directory_changed(&here);
+    }
+
+    /// Take `paths` out of the open folder's listing without reading the folder again.
+    fn remove_listed(&mut self, paths: &[PathBuf]) {
+        self.edit_listing(|items| items.retain(|i| !paths.contains(&i.path)));
+        self.selected_index = None;
+        self.sync_selection(true);
+        let here = self.current_path.clone();
+        self.plugins.directory_changed(&here);
     }
 
     /// The files and folders used lately, most recent first, or the bookmarked ones in the Bookmarks view.
@@ -1829,6 +1964,10 @@ impl eframe::App for SkiApp {
         self.chooser_escape(&ctx, escape_is_taken);
         self.sync_selection(false);
         self.poll_jobs();
+        if self.poll_reload() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(30));
+        }
+        self.poll_watch(&ctx);
         self.poll_drives(&ctx);
         self.drop_zones.clear();
         self.sync_settings(&ctx);
@@ -1950,7 +2089,9 @@ impl eframe::App for SkiApp {
                 if let Some(err) = &self.error_message {
                     material::empty_state(ui, &self.theme, icons::INFO, tr("This folder can't be opened"), Some(err));
                 } else if self.items.is_empty() {
-                    let (icon, title, hint) = if !self.search_query.trim().is_empty() {
+                    let (icon, title, hint) = if self.loading {
+                        (icons::FOLDER, tr("Loading…"), None)
+                    } else if !self.search_query.trim().is_empty() {
                         if self.search.is_running() {
                             (icons::SEARCH, tr("Searching…"), None)
                         } else {
@@ -3381,7 +3522,7 @@ impl SkiApp {
             _ => err.to_string(),
         })?;
 
-        self.reload_items();
+        self.add_listed(&path);
         if let Some(idx) = self.items.iter().position(|i| i.name == name) {
             self.selected_index = Some(idx);
             self.scroll_to_selected = true;
@@ -3419,7 +3560,8 @@ impl SkiApp {
                     self.items[idx] = item;
                 }
         } else {
-            self.reload_items();
+            self.items.retain(|i| i.path != path);
+            self.add_listed(&target);
         }
         if let Some(idx) = self.items.iter().position(|i| i.path == target) {
             self.selected_index = Some(idx);
@@ -3447,8 +3589,12 @@ impl SkiApp {
                 Err(err) => failed.push(format!("{}: {err}", path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default())),
             }
         }
-        self.selected_index = None;
-        self.refresh_listing();
+        if self.is_mixed_listing() {
+            self.selected_index = None;
+            self.refresh_listing();
+        } else {
+            self.remove_listed(&removed);
+        }
         self.forget_sizes(&removed);
         self.plugins.file_op_done(&crate::plugins::FileOpEvent::Removed(removed));
         if trashed.is_empty() {
@@ -5413,6 +5559,9 @@ mod tests {
                 std::thread::sleep(std::time::Duration::from_millis(20));
             }
             app.poll_jobs();
+            while app.poll_reload() {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
         };
 
         // Trash removes it from the listing, offers Undo, and Undo brings it back
@@ -5732,6 +5881,107 @@ mod tests {
         frame(&mut app, None);
         frame(&mut app, Some("j"));
         assert_eq!(app.search_query, "j");
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    /// Files changed by another program show up without a refresh: new ones appear, edits update the
+    /// size, deletions go, and the selection stays on the same file.
+    #[test]
+    fn changes_made_outside_reach_the_listing() {
+        let work = std::env::temp_dir().join(format!("ski_app_watch_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&work);
+        std::fs::create_dir_all(&work).unwrap();
+        std::fs::write(work.join("a.txt"), "1").unwrap();
+        std::fs::write(work.join("c.txt"), "1").unwrap();
+        let ctx = egui::Context::default();
+        let mut app = SkiApp::new(work.clone(), SerpantinumTheme::default(), Settings::default(), &ctx);
+        app.selected_index = app.items.iter().position(|i| i.name == "c.txt");
+        app.sync_selection(true);
+        let names = |app: &SkiApp| app.items.iter().map(|i| i.name.clone()).collect::<Vec<_>>();
+        let settle = |app: &mut SkiApp, done: &dyn Fn(&SkiApp) -> bool| {
+            for _ in 0..200 {
+                app.poll_watch(&ctx);
+                app.poll_reload();
+                if done(app) {
+                    return true;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            false
+        };
+
+        std::fs::write(work.join("b.txt"), "22").unwrap();
+        assert!(settle(&mut app, &|a| names(a).contains(&"b.txt".to_owned())), "{:?}", names(&app));
+        assert_eq!(app.selected_index.map(|i| app.items[i].name.as_str()), Some("c.txt"), "the selection follows its file");
+
+        std::fs::write(work.join("b.txt"), "333333").unwrap();
+        assert!(settle(&mut app, &|a| a.items.iter().any(|i| i.name == "b.txt" && i.size == 6)));
+
+        std::fs::remove_file(work.join("a.txt")).unwrap();
+        assert!(settle(&mut app, &|a| !names(a).contains(&"a.txt".to_owned())));
+        assert_eq!(app.selected_index.map(|i| app.items[i].name.as_str()), Some("c.txt"));
+
+        // The open folder going away takes the window to the nearest one that is left
+        let inner = work.join("inner");
+        std::fs::create_dir_all(&inner).unwrap();
+        app.navigate_to(inner.clone());
+        std::fs::remove_dir_all(&inner).unwrap();
+        assert!(settle(&mut app, &|a| a.current_path == work.canonicalize().unwrap()));
+        std::fs::remove_dir_all(&work).unwrap();
+    }
+
+    /// A parked tab keeps following its folder, so switching back shows the current files at once,
+    /// with the selection where it was; a search follows the files it found.
+    #[test]
+    fn parked_tabs_and_search_results_follow_the_disk() {
+        let base = std::env::temp_dir().join(format!("ski_app_tabwatch_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let (a, b) = (base.join("a"), base.join("b"));
+        std::fs::create_dir_all(&a).unwrap();
+        std::fs::create_dir_all(&b).unwrap();
+        for n in ["one.txt", "two.txt", "three.txt"] {
+            std::fs::write(a.join(n), "x").unwrap();
+        }
+        let ctx = egui::Context::default();
+        let mut app = SkiApp::new(a.clone(), SerpantinumTheme::default(), Settings::default(), &ctx);
+        app.new_tab(b.clone());
+        app.switch_tab(0);
+        app.selection = app.items.iter().enumerate().filter(|(_, i)| i.name != "one.txt").map(|(n, _)| n).collect();
+        app.selected_index = app.selection.iter().next().copied();
+        app.switch_tab(1);
+        let pump = |app: &mut SkiApp, done: &dyn Fn(&SkiApp) -> bool| {
+            for _ in 0..200 {
+                app.poll_watch(&ctx);
+                app.poll_reload();
+                if done(app) {
+                    return true;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            false
+        };
+
+        // Changed while tab 0 is parked: its listing is patched without anyone looking at it
+        std::fs::write(a.join("zed.txt"), "x").unwrap();
+        std::fs::remove_file(a.join("one.txt")).unwrap();
+        let parked = |app: &SkiApp| app.tabs[0].saved.as_ref().and_then(|s| s.items.as_ref()).map(|v| v.iter().map(|i| i.name.clone()).collect::<Vec<_>>());
+        assert!(pump(&mut app, &|a| parked(a).is_some_and(|n| n.contains(&"zed.txt".to_owned()) && !n.contains(&"one.txt".to_owned()))), "{:?}", parked(&app));
+        app.switch_tab(0);
+        assert!(!app.loading && app.pending_reload.is_none(), "switching back reads nothing");
+        let names: Vec<_> = app.items.iter().map(|i| i.name.as_str()).collect();
+        assert_eq!(names, ["three.txt", "two.txt", "zed.txt"]);
+        let selected: Vec<_> = app.selection.iter().map(|&i| app.items[i].name.as_str()).collect();
+        assert_eq!(selected, ["three.txt", "two.txt"], "the selection is where it was");
+
+        // Search results: a file that goes disappears, one that changes is read again, and new files do not join
+        app.search_query = "txt".to_owned();
+        app.items = ["three.txt", "two.txt"].iter().map(|n| FileItem::from_path(&a.join(n)).unwrap()).collect();
+        app.resync_watch();
+        std::fs::remove_file(a.join("two.txt")).unwrap();
+        std::fs::write(a.join("three.txt"), "longer").unwrap();
+        std::fs::write(a.join("extra.txt"), "x").unwrap();
+        assert!(pump(&mut app, &|x| x.items.len() == 1 && x.items[0].size == 6));
+        assert_eq!(app.items[0].name, "three.txt");
         std::fs::remove_dir_all(&base).unwrap();
     }
 

@@ -8,6 +8,23 @@ fn history_file() -> Option<PathBuf> {
     dirs::data_dir().map(|d| d.join("ski").join("recent.json"))
 }
 
+fn shared_file() -> Option<PathBuf> {
+    dirs::data_dir().map(|d| d.join("recently-used.xbel"))
+}
+
+/// The files the Recent view is made from: Ski's own history and the desktop-wide list.
+pub fn sources() -> Vec<PathBuf> {
+    history_file().into_iter().chain(shared_file()).collect()
+}
+
+static LAST_OWN_WRITE: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
+
+/// Whether Ski itself wrote the history a moment ago, as opposed to another window or app: the Recent
+/// view stays put when its own click is what changed it.
+pub fn written_here_lately() -> bool {
+    LAST_OWN_WRITE.lock().ok().and_then(|t| *t).is_some_and(|t| t.elapsed() < std::time::Duration::from_secs(3))
+}
+
 #[derive(serde::Serialize, serde::Deserialize)]
 struct Entry {
     path: PathBuf,
@@ -43,6 +60,9 @@ fn load_history() -> Vec<Entry> {
 /// Remember a file that was opened or a folder that was entered (most recent first).
 pub fn record(path: &std::path::Path) {
     let Some(file) = history_file() else { return };
+    if let Ok(mut last) = LAST_OWN_WRITE.lock() {
+        *last = Some(std::time::Instant::now());
+    }
     let mut history = load_history();
     history.retain(|e| e.path != path);
     history.insert(0, Entry { path: path.to_path_buf(), at: now() });
@@ -59,7 +79,8 @@ pub fn record(path: &std::path::Path) {
 pub fn load() -> Vec<PathBuf> {
     let history = load_history().into_iter().map(|e| (e.at, e.path)).collect();
     let shared = dirs::data_dir()
-        .and_then(|d| std::fs::read_to_string(d.join("recently-used.xbel")).ok())
+        .and_then(|_| shared_file())
+        .and_then(|f| std::fs::read_to_string(f).ok())
         .map(|xml| parse_xbel(&xml))
         .unwrap_or_default();
     merge(history, shared)
@@ -136,6 +157,17 @@ mod tests {
         assert_eq!(iso_seconds("1970-01-02T00:00:01.5Z"), 86401);
         assert_eq!(iso_seconds("2024-03-01T00:00:00Z"), 1709251200);
         assert_eq!(iso_seconds("junk"), 0);
+    }
+
+    #[test]
+    fn a_write_by_ski_counts_as_ours_only_for_a_moment() {
+        *LAST_OWN_WRITE.lock().unwrap() = None;
+        assert!(!written_here_lately());
+        *LAST_OWN_WRITE.lock().unwrap() = Some(std::time::Instant::now());
+        assert!(written_here_lately());
+        *LAST_OWN_WRITE.lock().unwrap() = Some(std::time::Instant::now() - std::time::Duration::from_secs(10));
+        assert!(!written_here_lately());
+        assert!(sources().iter().all(|s| s.is_absolute()));
     }
 
     #[test]

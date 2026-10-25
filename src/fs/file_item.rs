@@ -208,8 +208,8 @@ impl FileItem {
         let symlink_meta = std::fs::symlink_metadata(path).ok();
         let is_symlink = symlink_meta.as_ref().map(|m| m.file_type().is_symlink()).unwrap_or(false);
 
-        // Follow symlink for actual metadata if possible, otherwise use symlink metadata
-        let metadata = std::fs::metadata(path).ok().or(symlink_meta);
+        // Follow a symlink for the actual metadata if possible; anything else is already read (a second stat per file is slow on network and USB drives)
+        let metadata = if is_symlink { std::fs::metadata(path).ok().or(symlink_meta) } else { symlink_meta };
 
         let (is_dir, size, modified, is_executable, created, accessed, uid, mode) = if let Some(ref meta) = metadata {
             let is_dir = meta.is_dir();

@@ -11,9 +11,17 @@ pub(super) struct TabState {
     back_history: Vec<PathBuf>,
     forward_history: Vec<PathBuf>,
     search_query: String,
-    type_filter: TypeFilter,
-    sort_by: SortBy,
-    sort_order: SortOrder,
+    pub(super) type_filter: TypeFilter,
+    pub(super) sort_by: SortBy,
+    pub(super) sort_order: SortOrder,
+    /// The folder as it was listed, kept up to date by the folder monitor while the tab is parked,
+    /// so switching back shows it at once. `None` for search results, Recent and a folder not read yet.
+    pub(super) items: Option<Vec<FileItem>>,
+    /// The listing may have missed changes (events were lost, a read was under way): read it again on return.
+    pub(super) stale: bool,
+    /// The settings the listing was made with; if they changed meanwhile it is read again.
+    show_hidden: bool,
+    folders_first: bool,
 }
 
 impl TabState {
@@ -28,14 +36,31 @@ impl TabState {
             type_filter: TypeFilter::All,
             sort_by,
             sort_order,
+            items: None,
+            stale: false,
+            show_hidden: false,
+            folders_first: true,
         }
+    }
+
+    /// Its folder was removed: the tab shows `folder` instead and reads it when it comes back.
+    pub(super) fn set_folder(&mut self, folder: PathBuf) {
+        self.current_path = folder;
+        self.items = None;
+        self.selection.clear();
+        self.focus = None;
+    }
+
+    /// The folder this parked tab keeps an up-to-date listing of, if it does.
+    pub(super) fn watched(&self) -> Option<&Path> {
+        self.items.as_ref().map(|_| self.current_path.as_path())
     }
 }
 
 pub(super) struct TabSlot {
     pub id: u64,
     /// `None` for the tab on screen, whose state is in the app itself.
-    saved: Option<TabState>,
+    pub(super) saved: Option<TabState>,
 }
 
 impl TabSlot {
@@ -52,11 +77,25 @@ const TAB_HEIGHT: f32 = 32.0;
 /// How many closed tabs "Reopen closed tab" remembers.
 const CLOSED_TABS_KEPT: usize = 20;
 
+impl TabState {
+    fn with_items(mut self, items: Option<Vec<FileItem>>) -> Self {
+        self.items = items;
+        self
+    }
+}
+
 impl SkiApp {
     /// Park the tab on screen so another can take its place.
     fn take_tab_state(&mut self) -> TabState {
         self.search.cancel();
+        // A listing that is still being read is nothing to keep; one that is being read again may miss what that read finds
+        let keep = self.search_query.trim().is_empty() && !self.in_recent() && !self.loading;
+        let stale = self.pending_reload.take().is_some();
         TabState {
+            show_hidden: self.show_hidden,
+            folders_first: self.folders_first,
+            stale,
+            items: None,
             current_path: self.current_path.clone(),
             selection: self.selected_paths(),
             focus: self.selected_index.and_then(|i| self.items.get(i)).map(|i| i.path.clone()),
@@ -67,9 +106,11 @@ impl SkiApp {
             sort_by: self.sort_by,
             sort_order: self.sort_order,
         }
+        .with_items(keep.then(|| std::mem::take(&mut self.items)))
     }
 
-    /// Show a parked tab: its folder is read again, so changes made meanwhile are visible.
+    /// Show a parked tab: its listing is shown as it is (the monitor kept it current) and read again
+    /// in the background only if it may have missed something. A tab with no listing is read now.
     fn put_tab_state(&mut self, state: TabState) {
         self.current_path = state.current_path;
         self.back_history = state.back_history;
@@ -85,20 +126,27 @@ impl SkiApp {
         self.drag_select = None;
         self.last_rubberband = None;
         self.selected_index = None;
+        self.selection.clear();
         self.items.clear();
-        if self.search_query.trim().is_empty() {
-            self.reload_items();
-        } else {
+        self.pending_reload = None;
+        self.loading = false;
+        self.restore_selection = Some((state.selection, state.focus, true));
+        if !self.search_query.trim().is_empty() {
             self.restart_search = true;
+            self.restore_selection = None;
+            self.resync_watch();
+        } else if self.in_recent() {
+            self.reload_items();
+        } else if let Some(items) = state.items {
+            self.resync_watch();
+            self.show_listing(Ok(items));
+            if state.stale || state.show_hidden != self.show_hidden || state.folders_first != self.folders_first {
+                self.keep_selection_through_reload();
+                self.reload_items_later();
+            }
+        } else {
+            self.open_listing();
         }
-        let at = |p: &PathBuf| self.items.iter().position(|i| &i.path == p);
-        let selection: BTreeSet<usize> = state.selection.iter().filter_map(at).collect();
-        let focus = state.focus.as_ref().and_then(at).or_else(|| selection.iter().next().copied());
-        self.selection = selection;
-        self.selected_index = focus;
-        self.anchor = focus;
-        self.last_cursor = focus;
-        self.scroll_to_selected = focus.is_some();
         if !self.in_recent() {
             self.settings.last_dir = Some(self.current_path.clone());
         }
@@ -214,7 +262,9 @@ impl SkiApp {
         }
         // The tab on screen has no parked state; its fields are about to be replaced by a neighbour's
         let closing = if idx == self.active_tab { Some(self.take_tab_state()) } else { self.tabs[idx].saved.take() };
-        if let Some(closing) = closing.filter(|s| !is_virtual(&s.current_path)) {
+        if let Some(mut closing) = closing.filter(|s| !is_virtual(&s.current_path)) {
+            // Nothing watches a closed tab, so what it listed goes stale
+            closing.items = None;
             self.closed_tabs.push((idx, closing));
             if self.closed_tabs.len() > CLOSED_TABS_KEPT {
                 self.closed_tabs.remove(0);
@@ -235,6 +285,7 @@ impl SkiApp {
             if idx < self.active_tab {
                 self.active_tab -= 1;
             }
+            self.resync_watch();
         }
     }
 

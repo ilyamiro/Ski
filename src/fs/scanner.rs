@@ -62,7 +62,7 @@ impl TypeFilter {
     }
 
     /// Folders stay visible under every filter except `Folders` itself, so navigation never breaks.
-    fn matches(&self, item: &FileItem) -> bool {
+    pub fn matches(&self, item: &FileItem) -> bool {
         let wanted = match self {
             TypeFilter::All => return true,
             TypeFilter::Folders => return item.is_dir,
@@ -95,6 +95,20 @@ pub struct ListOptions {
     pub sort_order: SortOrder,
     pub folders_first: bool,
     pub type_filter: TypeFilter,
+}
+
+/// The listing of a folder as shown: for the trash folder it also holds what was deleted on mounted drives.
+pub fn read_folder(path: &Path, opts: &ListOptions) -> io::Result<Vec<FileItem>> {
+    let mut items = read_directory(path, opts)?;
+    if super::trash::is_trash_folder(path) {
+        for dir in super::trash::drive_files_dirs() {
+            if let Ok(more) = read_directory(&dir, opts) {
+                items.extend(more);
+            }
+        }
+        sort_items(&mut items, opts);
+    }
+    Ok(items)
 }
 
 pub fn read_directory(path: &Path, opts: &ListOptions) -> io::Result<Vec<FileItem>> {

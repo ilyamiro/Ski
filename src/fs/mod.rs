@@ -16,5 +16,6 @@ pub mod glob;
 pub mod templates;
 pub mod drives;
 pub mod xattr;
+pub mod watch;
 pub mod dirsize;
 pub mod archive_list;

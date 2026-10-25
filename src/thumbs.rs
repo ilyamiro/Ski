@@ -26,8 +26,17 @@ const MAX_DOC_BYTES: u64 = 64 * 1024 * 1024;
 /// A PDF is read whole to find its first page, so the limit is generous but not unbounded.
 const MAX_PDF_BYTES: u64 = 1024 * 1024 * 1024;
 
+/// What a file looked like when its preview was asked for: modification time and size. A preview
+/// made for another stamp is out of date.
+pub type Stamp = (Option<std::time::SystemTime>, u64);
+
+fn stamp_of(path: &Path) -> Stamp {
+    std::fs::metadata(path).map_or((None, 0), |m| (m.modified().ok(), m.len()))
+}
+
 struct Job {
     path: PathBuf,
+    stamp: Stamp,
     generation: u64,
     tier: u32,
 }
@@ -41,16 +50,19 @@ enum Outcome {
 pub struct Thumbnails {
     /// Each texture with the tier it was rendered at.
     textures: HashMap<PathBuf, (egui::TextureHandle, u32)>,
-    queued: HashSet<PathBuf>,
+    /// The stamp each texture was made for, and the newest stamp seen for each file: a result for any other is dropped.
+    made: HashMap<PathBuf, Stamp>,
+    wanted: HashMap<PathBuf, Stamp>,
+    queued: HashMap<PathBuf, Stamp>,
     /// Resolution wanted for new and upgraded previews.
     tier: u32,
     /// Files of the open folder, and extra pictures such as folder icons, for re-queuing at a new tier.
     current: Vec<PathBuf>,
     extras: HashSet<PathBuf>,
-    /// Files that have no preview; not retried until the app restarts.
-    failed: HashSet<PathBuf>,
+    /// Files that have no preview, with the stamp they failed at; tried again once the file changes.
+    failed: HashMap<PathBuf, Stamp>,
     job_tx: mpsc::Sender<Job>,
-    result_rx: mpsc::Receiver<(PathBuf, Outcome)>,
+    result_rx: mpsc::Receiver<(PathBuf, Stamp, Outcome)>,
     generation: Arc<AtomicU64>,
 }
 
@@ -148,13 +160,13 @@ impl Thumbnails {
                 };
                 // Skip work for folders the user already left
                 if job.generation != generation.load(Ordering::Relaxed) {
-                    let _ = result_tx.send((job.path, Outcome::Cancelled));
+                    let _ = result_tx.send((job.path, job.stamp, Outcome::Cancelled));
                     continue;
                 }
                 // A malformed document must not take the worker down with it
                 let decoded = std::panic::catch_unwind(|| cached_thumbnail(&job.path, job.tier)).ok().flatten();
                 let outcome = decoded.map_or(Outcome::Failed, |img| Outcome::Ready(to_color_image(&img), job.tier));
-                let _ = result_tx.send((job.path, outcome));
+                let _ = result_tx.send((job.path, job.stamp, outcome));
                 ctx.request_repaint();
             });
         }
@@ -163,42 +175,49 @@ impl Thumbnails {
 
         Self {
             textures: HashMap::new(),
-            queued: HashSet::new(),
+            made: HashMap::new(),
+            wanted: HashMap::new(),
+            queued: HashMap::new(),
             tier: TIERS[0],
             current: Vec::new(),
             extras: HashSet::new(),
-            failed: HashSet::new(),
+            failed: HashMap::new(),
             job_tx,
             result_rx,
             generation,
         }
     }
 
-    fn enqueue(&mut self, path: &Path, generation: u64) {
-        let sharp_enough = self.textures.get(path).is_some_and(|(_, tier)| *tier >= self.tier);
-        if has_preview(path) && !sharp_enough && !self.failed.contains(path) && self.queued.insert(path.to_path_buf()) {
-            let _ = self.job_tx.send(Job { path: path.to_path_buf(), generation, tier: self.tier });
+    fn enqueue(&mut self, path: &Path, stamp: Stamp, generation: u64) {
+        self.wanted.insert(path.to_path_buf(), stamp);
+        let sharp_enough = self.textures.get(path).is_some_and(|(_, tier)| *tier >= self.tier) && self.made.get(path) == Some(&stamp);
+        let pending = self.queued.get(path) == Some(&stamp);
+        if has_preview(path) && !sharp_enough && !pending && self.failed.get(path) != Some(&stamp) {
+            self.queued.insert(path.to_path_buf(), stamp);
+            let _ = self.job_tx.send(Job { path: path.to_path_buf(), stamp, generation, tier: self.tier });
         }
     }
 
-    /// Queue every previewable file of a freshly opened folder. Cancels work queued for the previous one.
-    pub fn preload<'a>(&mut self, paths: impl Iterator<Item = &'a Path>) {
+    /// Queue every previewable file of a freshly opened folder, each with its stamp so that a picture
+    /// changed since its preview was made is drawn again. Cancels work queued for the previous folder.
+    pub fn preload<'a>(&mut self, files: impl Iterator<Item = (&'a Path, Stamp)>) {
         let generation = self.generation.fetch_add(1, Ordering::Relaxed) + 1;
         // Anything that was queued but not finished was dropped by the workers
         self.queued.clear();
-        self.current = paths.map(Path::to_path_buf).collect();
+        self.current.clear();
         self.extras.clear();
-        for path in std::mem::take(&mut self.current) {
-            self.enqueue(&path, generation);
-            self.current.push(path);
+        for (path, stamp) in files {
+            self.enqueue(path, stamp, generation);
+            self.current.push(path.to_path_buf());
         }
     }
 
     /// Queue one extra image (e.g. a custom folder icon) without cancelling the folder's own work.
+    /// Also the way to say a file changed: its preview is drawn again, the old one staying until then.
     pub fn ensure(&mut self, path: &Path) {
         let generation = self.generation.load(Ordering::Relaxed);
         self.extras.insert(path.to_path_buf());
-        self.enqueue(path, generation);
+        self.enqueue(path, stamp_of(path), generation);
     }
 
     /// Tell the loader how many physical pixels the largest preview is drawn at. Crossing into a
@@ -214,31 +233,42 @@ impl Thumbnails {
         self.queued.clear();
         let paths: Vec<PathBuf> = self.current.iter().chain(self.extras.iter()).cloned().collect();
         for path in paths {
-            self.enqueue(&path, generation);
+            let stamp = self.wanted.get(&path).copied().unwrap_or_else(|| stamp_of(&path));
+            self.enqueue(&path, stamp, generation);
         }
     }
 
     /// Upload finished thumbnails; call once per frame.
     pub fn poll(&mut self, ctx: &egui::Context) {
-        while let Ok((path, outcome)) = self.result_rx.try_recv() {
+        while let Ok((path, stamp, outcome)) = self.result_rx.try_recv() {
+            // The file changed after this job started: its result is for a picture that is gone
+            let current = self.wanted.get(&path) == Some(&stamp);
             match outcome {
                 Outcome::Ready(img, tier) => {
+                    if !current {
+                        continue;
+                    }
                     if tier >= self.tier {
                         self.queued.remove(&path);
                     }
                     // A slow low-resolution job can finish after its upgrade did
-                    if self.textures.get(&path).is_some_and(|(_, have)| *have >= tier) {
+                    if self.made.get(&path) == Some(&stamp) && self.textures.get(&path).is_some_and(|(_, have)| *have >= tier) {
                         continue;
                     }
                     let tex = ctx.load_texture(path.to_string_lossy(), img, egui::TextureOptions::LINEAR);
+                    self.made.insert(path.clone(), stamp);
                     self.textures.insert(path, (tex, tier));
                 }
                 Outcome::Cancelled => {
-                    self.queued.remove(&path);
+                    if self.queued.get(&path) == Some(&stamp) {
+                        self.queued.remove(&path);
+                    }
                 }
                 Outcome::Failed => {
-                    self.queued.remove(&path);
-                    self.failed.insert(path);
+                    if current {
+                        self.queued.remove(&path);
+                        self.failed.insert(path, stamp);
+                    }
                 }
             }
         }
@@ -898,6 +928,51 @@ mod tests {
         std::fs::write(&bare, b"not audio").unwrap();
         assert!(cached_thumbnail(&bare, 128).is_none());
         assert!(cache::known_missing(&cache::key(&bare).unwrap()));
+    }
+
+    #[test]
+    fn a_changed_file_is_drawn_again_even_when_its_old_preview_is_loaded() {
+        let ctx = egui::Context::default();
+        let mut thumbs = Thumbnails::new(&ctx);
+        let dir = std::env::temp_dir().join(format!("ski-thumb-stale-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("pic.png");
+        let broken = dir.join("later.png");
+        std::fs::write(&broken, b"not a picture yet").unwrap();
+        std::fs::write(&file, png([255, 0, 0])).unwrap();
+        let wait = |thumbs: &mut Thumbnails, done: &dyn Fn(&Thumbnails) -> bool| {
+            for _ in 0..200 {
+                thumbs.poll(&ctx);
+                if done(thumbs) {
+                    return true;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            false
+        };
+
+        let (first, bad) = (stamp_of(&file), stamp_of(&broken));
+        thumbs.preload([(file.as_path(), first), (broken.as_path(), bad)].into_iter());
+        assert!(wait(&mut thumbs, &|t| t.made.get(&file) == Some(&first) && t.failed.contains_key(&broken)));
+
+        // Changed while another folder was open: reopening the folder brings the new picture
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(&file, png([0, 0, 255])).unwrap();
+        std::fs::write(&broken, png([0, 255, 0])).unwrap();
+        let (second, fixed) = (stamp_of(&file), stamp_of(&broken));
+        assert_ne!(first, second);
+        thumbs.preload([(file.as_path(), second), (broken.as_path(), fixed)].into_iter());
+        assert!(wait(&mut thumbs, &|t| t.made.get(&file) == Some(&second) && t.made.contains_key(&broken)), "stale or failed previews are not retried");
+
+        // Changed while the folder is open: asking for it again is enough, and the old picture stays until then
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(&file, png([255, 255, 0])).unwrap();
+        thumbs.ensure(&file);
+        assert!(thumbs.get(&file).is_some());
+        let third = stamp_of(&file);
+        assert!(wait(&mut thumbs, &|t| t.made.get(&file) == Some(&third)));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

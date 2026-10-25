@@ -88,7 +88,7 @@ impl SkiApp {
             self.engine.prune(std::time::Duration::from_secs(7));
         }
         if changed && self.search_query.trim().is_empty() {
-            self.reload_items();
+            self.reload_items_later();
         } else if changed {
             self.items.retain(|i| i.path.symlink_metadata().is_ok());
         }
