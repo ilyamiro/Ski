@@ -1126,6 +1126,32 @@ impl SkiApp {
         crate::keymap::is_action_pressed(ctx, &self.settings.keybinds, act, vim_keys)
     }
 
+    /// The icon of an application, decoded on first sight. Only a few are decoded per frame so a long
+    /// list opening does not stall; the rest fade in over the next frames.
+    pub(crate) fn app_icon(&mut self, ctx: &egui::Context, app: &AppEntry) -> Option<egui::TextureHandle> {
+        const PER_PASS: u32 = 3;
+        if let Some(known) = self.app_icons.get(&app.id) {
+            return known.clone();
+        }
+        let key = egui::Id::NULL.with("app_icon_budget");
+        let pass = ctx.cumulative_pass_nr();
+        let (seen, used) = ctx.data(|d| d.get_temp::<(u64, u32)>(key)).unwrap_or((pass, 0));
+        let used = if seen == pass { used } else { 0 };
+        if used >= PER_PASS {
+            ctx.request_repaint();
+            return None;
+        }
+        ctx.data_mut(|d| d.insert_temp(key, (pass, used + 1)));
+        let tex = app
+            .icon
+            .as_deref()
+            .and_then(apps::resolve_icon)
+            .and_then(|p| apps::load_icon_image(&p, 64))
+            .map(|image| ctx.load_texture(format!("app_icon_{}", app.id), image, egui::TextureOptions::LINEAR));
+        self.app_icons.insert(app.id.clone(), tex.clone());
+        tex
+    }
+
     pub(crate) fn installed_apps(&self) -> std::sync::Arc<Vec<AppEntry>> {
         apps::installed()
     }
@@ -4910,17 +4936,7 @@ impl SkiApp {
                         let label = if is_pinned { trf("{}  ·  this file", &[&app.name]) } else { app.name.clone() };
                         // Icons are only resolved and decoded for rows that are actually on screen
                         let probe = egui::Rect::from_min_size(ui.cursor().min, egui::vec2(ui.available_width(), 44.0));
-                        let tex = if ui.is_rect_visible(probe) {
-                            self.app_icons
-                                .entry(app.id.clone())
-                                .or_insert_with(|| {
-                                    let image = app.icon.as_deref().and_then(apps::resolve_icon).and_then(|p| apps::load_icon_image(&p, 64))?;
-                                    Some(ui.ctx().load_texture(format!("app_icon_{}", app.id), image, egui::TextureOptions::LINEAR))
-                                })
-                                .clone()
-                        } else {
-                            None
-                        };
+                        let tex = if ui.is_rect_visible(probe) { self.app_icon(ui.ctx(), app) } else { None };
                         let resp = app_row(ui, ("open_with_app", idx), tex.as_ref(), &label, &theme, *selected == Some(idx));
                         if resp.clicked() {
                             *selected = Some(idx);
@@ -5255,7 +5271,7 @@ pub(crate) fn app_row(
     }
     if let Some(tex) = icon {
         ui.scope(|ui| {
-            ui.set_opacity(icon_t);
+            ui.set_opacity(ui.opacity() * icon_t);
             egui::Image::from_texture(egui::load::SizedTexture::new(tex.id(), icon_rect.size())).paint_at(ui, icon_rect);
         });
     }

@@ -255,6 +255,30 @@ pub fn default_for(mime: &str) -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
+static CATEGORY_DEFAULTS: RwLock<Option<Vec<Option<String>>>> = RwLock::new(None);
+
+/// Query the current default of every category in the background (`xdg-mime` is a slow script, and
+/// one run per category on the UI thread made the settings tab stall).
+pub fn preload_category_defaults() {
+    if let Ok(mut slot) = CATEGORY_DEFAULTS.write() {
+        *slot = None;
+    }
+    std::thread::spawn(|| {
+        let found = std::thread::scope(|s| {
+            let jobs: Vec<_> = CATEGORIES.iter().map(|c| s.spawn(|| default_for(c.mimes[0]))).collect();
+            jobs.into_iter().map(|j| j.join().ok().flatten()).collect::<Vec<_>>()
+        });
+        if let Ok(mut slot) = CATEGORY_DEFAULTS.write() {
+            *slot = Some(found);
+        }
+    });
+}
+
+/// The defaults found by `preload_category_defaults`, once they are in.
+pub fn category_defaults() -> Option<Vec<Option<String>>> {
+    CATEGORY_DEFAULTS.read().ok().and_then(|d| d.clone())
+}
+
 /// Make `app_id` the system-wide default for `mime` (writes `~/.config/mimeapps.list`).
 pub fn set_default(mime: &str, app_id: &str) -> bool {
     Command::new("xdg-mime")

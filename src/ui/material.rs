@@ -1287,7 +1287,7 @@ pub fn file_row(
     }
     if let Some(tex) = thumb {
         ui.scope(|ui| {
-            ui.set_opacity(fade * thumb_t);
+            ui.set_opacity(ui.opacity() * fade * thumb_t);
             paint_thumb(ui, tex, Rect::from_center_size(icon_center, Vec2::splat((row_height - 6.0).clamp(20.0, 32.0))), radius_sm());
         });
     }
@@ -1496,7 +1496,7 @@ pub fn file_tile(
     }
     if let Some(tex) = thumb {
         ui.scope(|ui| {
-            ui.set_opacity(fade * thumb_t);
+            ui.set_opacity(ui.opacity() * fade * thumb_t);
             paint_thumb(ui, tex, scaled_picture, radius_sm());
         });
     }

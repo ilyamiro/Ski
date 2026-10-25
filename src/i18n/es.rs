@@ -256,6 +256,7 @@ pub const CATALOG: &[(&str, &str)] = &[
     ("Recommended", "Recomendadas"),
     ("Other applications", "Otras aplicaciones"),
     ("No applications found", "No se encontraron aplicaciones"),
+    ("Loading…", "Cargando…"),
     ("Always for this file", "Siempre para este archivo"),
     ("Always for this file type", "Siempre para este tipo de archivo"),
     ("Forget file choice", "Olvidar la elección del archivo"),

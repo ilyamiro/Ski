@@ -59,6 +59,7 @@ fn chip_rows(ui: &mut egui::Ui, id: &str, labels: &[&str], on: impl Fn(usize) ->
 impl SkiApp {
     pub(crate) fn open_settings_dialog(&mut self) {
         self.capturing_key = false;
+        apps::preload_category_defaults();
         self.dialog = Some(Dialog::Settings {
             tab: 0,
             font_query: String::new(),
@@ -1119,10 +1120,17 @@ impl SkiApp {
     }
 
     fn applications_tab(&mut self, ui: &mut egui::Ui, picking: &mut Option<usize>, defaults: &mut Vec<Option<String>>) {
-        if defaults.is_empty() {
-            *defaults = apps::CATEGORIES.iter().map(|c| apps::default_for(c.mimes[0])).collect();
-        }
         let theme = self.theme;
+        if defaults.is_empty() {
+            match apps::category_defaults() {
+                Some(found) => *defaults = found,
+                None => {
+                    material::hint_label(ui, tr("Loading…"), &theme);
+                    ui.ctx().request_repaint_after(std::time::Duration::from_millis(50));
+                    return;
+                }
+            }
+        }
         material::section_label(ui, tr("Default applications"), &theme);
         material::hint_label(ui, tr("The application that opens each kind of file. This changes the system-wide defaults."), &theme);
         ui.spacing_mut().item_spacing.y = 2.0;
@@ -1140,17 +1148,7 @@ impl SkiApp {
                 let mut chosen: Option<&AppEntry> = None;
                 for app in &candidates {
                     let probe = egui::Rect::from_min_size(ui.cursor().min, egui::vec2(ui.available_width(), 44.0));
-                    let tex = if ui.is_rect_visible(probe) {
-                        self.app_icons
-                            .entry(app.id.clone())
-                            .or_insert_with(|| {
-                                let image = app.icon.as_deref().and_then(apps::resolve_icon).and_then(|p| apps::load_icon_image(&p, 64))?;
-                                Some(ui.ctx().load_texture(format!("app_icon_{}", app.id), image, egui::TextureOptions::LINEAR))
-                            })
-                            .clone()
-                    } else {
-                        None
-                    };
+                    let tex = if ui.is_rect_visible(probe) { self.app_icon(ui.ctx(), app) } else { None };
                     let on = defaults[idx].as_deref() == Some(app.id.as_str());
                     if app_row(ui, ("cat_app", idx, &app.id), tex.as_ref(), &app.name, &theme, on).clicked() {
                         chosen = Some(app);
