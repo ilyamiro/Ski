@@ -387,6 +387,8 @@ pub struct SkiApp {
     sizes: folder_sizes::SizeScheduler,
     /// Rows of `items` on screen after the last frame, so their folders are measured first.
     visible_rows: std::ops::Range<usize>,
+    /// Tiles per row in the grid view, so the vertical arrows move by a whole row.
+    grid_cols: usize,
     /// Set when Ski runs as the open / save dialog of other programs.
     pub(crate) chooser: Option<crate::chooser::Chooser>,
     pub(crate) closing_dialog: Option<Dialog>,
@@ -517,6 +519,7 @@ impl SkiApp {
             pill_text: String::new(),
             sizes: Default::default(),
             visible_rows: 0..0,
+            grid_cols: 1,
             chooser: None,
             closing_dialog: None,
             dialog_kind: None,
@@ -1429,14 +1432,35 @@ impl SkiApp {
         }
 
         let shift = ctx.input(|i| i.modifiers.shift);
+        let grid = self.view_mode == ViewMode::Grid;
+        let row_step = if grid { self.grid_cols.max(1) as isize } else { 1 };
         if self.is_act_pressed(ctx, crate::keymap::Action::MoveDown) {
-            self.move_selection(1, shift);
+            self.move_selection(row_step, shift);
             handled = true;
         }
 
         if self.is_act_pressed(ctx, crate::keymap::Action::MoveUp) {
-            self.move_selection(-1, shift);
+            self.move_selection(-row_step, shift);
             handled = true;
+        }
+
+        if grid {
+            // Sideways arrows walk the tiles of a row; they stay free in the list
+            let side = ctx.input_mut(|i| {
+                let mut step = 0;
+                for mods in [egui::Modifiers::NONE, egui::Modifiers::SHIFT] {
+                    if i.consume_key(mods, egui::Key::ArrowRight) {
+                        step = 1;
+                    } else if i.consume_key(mods, egui::Key::ArrowLeft) {
+                        step = -1;
+                    }
+                }
+                step
+            });
+            if side != 0 {
+                self.move_selection(side, shift);
+                handled = true;
+            }
         }
 
         if self.is_act_pressed(ctx, crate::keymap::Action::Open) {
@@ -2697,6 +2721,7 @@ impl SkiApp {
             // Leftover width is shared between the columns, so the grid fills the view like Nautilus does
             let gap = ((ui.available_width() - cols as f32 * cell.x) / cols as f32).max(spacing);
             // Every tile sits at a position computed from its row and column, never from its neighbours
+            self.grid_cols = cols;
             let rows = self.items.len().div_ceil(cols);
             let (_, area) = ui.allocate_space(egui::vec2(ui.available_width(), rows as f32 * (cell.y + spacing)));
 
