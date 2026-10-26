@@ -165,10 +165,15 @@ impl SkiApp {
                     ui.spacing_mut().item_spacing.x = 10.0;
                     // Items centre on the row's height, which is only as tall as the label until the
                     // field and buttons widen it: fix it up front so the label lines up with the field
-                    ui.set_min_height(40.0);
+                    ui.set_min_height(material::BUTTON_HEIGHT);
                     if ch.takes_name() {
                         ui.label(egui::RichText::new(tr("File name")).size(material::FONT_CAPTION).color(theme.subtext1));
+                        // A frame is placed at the row's top rather than centred, so give it the row's
+                        // exact height through its margin instead of leaving it to the text's height
+                        let text_h = ui.fonts_mut(|f| f.row_height(&egui::FontId::proportional(material::FONT_BODY)));
+                        let pad = ((material::BUTTON_HEIGHT - text_h) / 2.0).max(0.0).round() as i8;
                         let field = material::input_frame(&theme)
+                            .inner_margin(egui::Margin::symmetric(14, pad))
                             .show(ui, |ui| {
                                 egui::TextEdit::singleline(&mut ch.name_input)
                                     .frame(egui::Frame::NONE)
