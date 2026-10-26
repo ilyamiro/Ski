@@ -163,6 +163,9 @@ impl SkiApp {
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 10.0;
+                    // Items centre on the row's height, which is only as tall as the label until the
+                    // field and buttons widen it: fix it up front so the label lines up with the field
+                    ui.set_min_height(40.0);
                     if ch.takes_name() {
                         ui.label(egui::RichText::new(tr("File name")).size(material::FONT_CAPTION).color(theme.subtext1));
                         let field = material::input_frame(&theme)
