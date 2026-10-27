@@ -590,7 +590,7 @@ impl SkiApp {
             if switch_row_with(ui, "fv_folders_first", icons::FOLDER, tr("Folders first"), None, &theme, self.folders_first).clicked() {
                 self.folders_first = !self.folders_first;
                 self.settings.folders_first = self.folders_first;
-                self.reload_items();
+                self.apply_sort();
                 self.persist_settings();
             }
             if switch_row_with(ui, "fv_show_sidebar", icons::SIDEBAR, tr("Sidebar"), None, &theme, self.settings.show_sidebar).clicked() {

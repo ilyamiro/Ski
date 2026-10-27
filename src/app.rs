@@ -725,10 +725,11 @@ impl SkiApp {
         self.last_cursor = self.selected_index;
     }
 
-    /// The sort changed: search results are reordered where they are (the search keeps running),
-    /// a folder is read again.
+    /// The sort changed: the listing is reordered where it is, keeping the same files selected.
+    /// Reading the folder again would stall on a big folder or a slow drive for no new information;
+    /// the monitors already keep the listing current. Recent and Bookmarks keep their own order.
     pub(crate) fn apply_sort(&mut self) {
-        if self.search_query.trim().is_empty() {
+        if self.in_recent() && self.search_query.trim().is_empty() {
             self.reload_items();
         } else {
             self.resort_items();
@@ -3489,7 +3490,7 @@ impl SkiApp {
         }
         if material::toggle_row(ui, "vo_folders_first", tr("Folders first"), None, &theme, self.folders_first).clicked() {
             self.folders_first = !self.folders_first;
-            reload = true;
+            self.apply_sort();
         }
 
         material::collapsible(ui, "vo_list_columns", self.view_mode == ViewMode::List, |ui| {

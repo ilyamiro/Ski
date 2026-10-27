@@ -168,32 +168,44 @@ pub fn starts_with_folded(name: &str, prefix: &str) -> bool {
 /// so `file2` sorts before `file10` and `école` among the `e`s. Decomposed accents (as macOS
 /// writes them) sort the same as composed ones.
 pub fn natural_cmp(a: &str, b: &str) -> Ordering {
-    let keys = |s: &str| s.chars().filter_map(|c| collation_key(c).map(|k| (k, c))).collect::<Vec<_>>();
-    let (a, b) = (keys(a), keys(b));
-    let (mut i, mut j) = (0, 0);
-    while i < a.len() && j < b.len() {
-        let (x, y) = (a[i].0, b[j].0);
+    // Walks both names in place: sorting a big folder compares names millions of times, so nothing is allocated here
+    let mut a = a.chars().filter_map(collation_key).peekable();
+    let mut b = b.chars().filter_map(collation_key).peekable();
+    loop {
+        let (x, y) = match (a.peek().copied(), b.peek().copied()) {
+            (Some(x), Some(y)) => (x, y),
+            (None, None) => return Ordering::Equal,
+            (None, Some(_)) => return Ordering::Less,
+            (Some(_), None) => return Ordering::Greater,
+        };
         if x.is_ascii_digit() && y.is_ascii_digit() {
-            let run = |v: &[(char, char)], at: usize| v[at..].iter().take_while(|k| k.0.is_ascii_digit()).count();
-            let (la, lb) = (run(&a, i), run(&b, j));
-            let digits = |v: &[(char, char)], at: usize, len: usize| v[at..at + len].iter().map(|k| k.0).collect::<String>();
-            let (da, db) = (digits(&a, i, la), digits(&b, j, lb));
-            let (ta, tb) = (da.trim_start_matches('0'), db.trim_start_matches('0'));
-            let ord = ta.len().cmp(&tb.len()).then_with(|| ta.cmp(tb));
-            if ord != Ordering::Equal {
-                return ord;
+            // Leading zeros carry no value; then the longer run is the bigger number, and runs of one length differ at their first unequal digit
+            while a.next_if_eq(&'0').is_some() {}
+            while b.next_if_eq(&'0').is_some() {}
+            let mut first_difference = Ordering::Equal;
+            loop {
+                match (a.next_if(char::is_ascii_digit), b.next_if(char::is_ascii_digit)) {
+                    (Some(x), Some(y)) => {
+                        if first_difference == Ordering::Equal {
+                            first_difference = x.cmp(&y);
+                        }
+                    }
+                    (None, None) => break,
+                    (None, Some(_)) => return Ordering::Less,
+                    (Some(_), None) => return Ordering::Greater,
+                }
             }
-            i += la;
-            j += lb;
+            if first_difference != Ordering::Equal {
+                return first_difference;
+            }
         } else {
             if x != y {
                 return x.cmp(&y);
             }
-            i += 1;
-            j += 1;
+            a.next();
+            b.next();
         }
     }
-    (a.len() - i).cmp(&(b.len() - j))
 }
 
 fn extension_of(item: &FileItem) -> String {
@@ -210,22 +222,30 @@ fn name_cmp(a: &FileItem, b: &FileItem) -> Ordering {
         .then_with(|| a.name.cmp(&b.name))
 }
 
-fn effective_size(item: &FileItem) -> u64 {
-    if item.is_dir { super::dirsize::known_bytes(&item.path).unwrap_or(0) } else { item.size }
+/// What an item is sorted by besides its name, looked up once per item instead of on every comparison.
+enum SortKey {
+    None,
+    /// `None` for a folder not measured yet.
+    Size(Option<u64>),
+    Text(String),
 }
 
-fn unmeasured(item: &FileItem) -> bool {
-    item.is_dir && super::dirsize::known_bytes(&item.path).is_none()
+fn sort_key(item: &FileItem, sort_by: SortBy) -> SortKey {
+    match sort_by {
+        SortBy::Size if item.is_dir => SortKey::Size(super::dirsize::known_bytes(&item.path)),
+        SortBy::Size => SortKey::Size(Some(item.size)),
+        SortBy::Type => SortKey::Text(extension_of(item)),
+        SortBy::Owner => SortKey::Text(item.owner()),
+        _ => SortKey::None,
+    }
 }
 
 pub fn sort_items(items: &mut [FileItem], opts: &ListOptions) {
     let (sort_by, sort_order) = (opts.sort_by, opts.sort_order);
-    let owners: std::collections::HashMap<u32, String> = if sort_by == SortBy::Owner {
-        items.iter().map(|i| (i.uid, i.owner())).collect()
-    } else {
-        Default::default()
-    };
-    items.sort_by(|a, b| {
+    let keys: Vec<SortKey> = items.iter().map(|i| sort_key(i, sort_by)).collect();
+    let mut order: Vec<usize> = (0..items.len()).collect();
+    order.sort_by(|&x, &y| {
+        let (a, b) = (&items[x], &items[y]);
         // Group directories first when enabled
         if opts.folders_first && a.is_dir != b.is_dir {
             return if a.is_dir {
@@ -235,24 +255,26 @@ pub fn sort_items(items: &mut [FileItem], opts: &ListOptions) {
             };
         }
 
-        let ordering = match sort_by {
-            SortBy::Name => name_cmp(a, b),
-            SortBy::Size => {
+        let ordering = match (&keys[x], &keys[y]) {
+            (SortKey::Size(sa), SortKey::Size(sb)) => {
                 // Folders not measured yet follow everything with a size, whichever way the column is ordered
                 let asc = sort_order == SortOrder::Ascending;
-                match (unmeasured(a), unmeasured(b)) {
-                    (false, false) => effective_size(a).cmp(&effective_size(b)),
-                    (true, true) => Ordering::Equal,
-                    (false, true) => if asc { Ordering::Less } else { Ordering::Greater },
-                    (true, false) => if asc { Ordering::Greater } else { Ordering::Less },
+                match (sa, sb) {
+                    (Some(sa), Some(sb)) => sa.cmp(sb),
+                    (None, None) => Ordering::Equal,
+                    (Some(_), None) => if asc { Ordering::Less } else { Ordering::Greater },
+                    (None, Some(_)) => if asc { Ordering::Greater } else { Ordering::Less },
                 }
             }
-            SortBy::Type => extension_of(a).cmp(&extension_of(b)),
-            SortBy::Modified => a.modified.cmp(&b.modified),
-            SortBy::Created => a.created.cmp(&b.created),
-            SortBy::Accessed => a.accessed.cmp(&b.accessed),
-            SortBy::Owner => natural_cmp(&owners[&a.uid], &owners[&b.uid]),
-            SortBy::Permissions => (a.mode & 0o7777).cmp(&(b.mode & 0o7777)),
+            (SortKey::Text(ta), SortKey::Text(tb)) if sort_by == SortBy::Owner => natural_cmp(ta, tb),
+            (SortKey::Text(ta), SortKey::Text(tb)) => ta.cmp(tb),
+            _ => match sort_by {
+                SortBy::Modified => a.modified.cmp(&b.modified),
+                SortBy::Created => a.created.cmp(&b.created),
+                SortBy::Accessed => a.accessed.cmp(&b.accessed),
+                SortBy::Permissions => (a.mode & 0o7777).cmp(&(b.mode & 0o7777)),
+                _ => name_cmp(a, b),
+            },
         };
 
         // Ties on any column fall back to name, ascending whichever way the column is ordered
@@ -262,6 +284,19 @@ pub fn sort_items(items: &mut [FileItem], opts: &ListOptions) {
         }
         .then_with(|| name_cmp(a, b))
     });
+    // Put the items where the sorted order says, following each cycle of the permutation with swaps
+    for start in 0..order.len() {
+        let mut at = start;
+        while order[at] != usize::MAX {
+            let from = order[at];
+            order[at] = usize::MAX;
+            if from == start {
+                break;
+            }
+            items.swap(at, from);
+            at = from;
+        }
+    }
 }
 
 #[cfg(test)]
