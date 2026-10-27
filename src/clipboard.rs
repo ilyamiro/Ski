@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 const URI_LIST: &str = "text/uri-list";
 const GNOME_FILES: &str = "x-special/gnome-copied-files";
 
-fn percent_encode(path: &Path) -> String {
+pub(crate) fn percent_encode(path: &Path) -> String {
     use std::os::unix::ffi::OsStrExt;
     let mut out = String::from("file://");
     for &b in path.as_os_str().as_bytes() {
@@ -23,7 +23,7 @@ fn percent_encode(path: &Path) -> String {
     out
 }
 
-fn percent_decode(text: &str) -> Option<PathBuf> {
+pub(crate) fn percent_decode(text: &str) -> Option<PathBuf> {
     use std::os::unix::ffi::OsStringExt;
     let rest = text.strip_prefix("file://")?;
     // `file://host/path` carries a host before the first slash

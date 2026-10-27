@@ -90,6 +90,19 @@ impl SkiApp {
             return;
         }
         let items = dnd.items.clone();
+        // Past the window's edge the drag goes on as a real one, which other windows can take
+        if !ctx.content_rect().shrink(1.0).contains(pos) {
+            let argb = |c: egui::Color32, a: u32| a << 24 | (c.r() as u32) << 16 | (c.g() as u32) << 8 | c.b() as u32;
+            let style = crate::wayland_dnd::IconStyle {
+                background: argb(self.theme.mauve, 0xE6),
+                text: argb(self.theme.base, 0xFF),
+                scale: ctx.input(|i| i.viewport().native_pixels_per_point).unwrap_or(1.0).ceil().max(1.0) as i32,
+            };
+            if let Some(wl) = &mut self.wl_dnd && wl.start_drag(&items, style) {
+                self.dnd = None;
+                return;
+            }
+        }
         let target = self.drop_target(pos, &items);
         let theme = self.theme;
         ctx.set_cursor_icon(egui::CursorIcon::Grabbing);
@@ -122,6 +135,43 @@ impl SkiApp {
             self.dnd = None;
             if let Some((dest, _)) = target {
                 self.drop_items(items, dest, copy);
+            }
+        }
+    }
+
+    /// Where a drop at `pos` lands: a folder or place under it, else the folder being shown.
+    fn system_drop_target(&self, pos: egui::Pos2, items: &[PathBuf]) -> Option<(PathBuf, Option<egui::Rect>)> {
+        if let Some((dest, rect)) = self.drop_target(pos, items) {
+            return Some((dest, Some(rect)));
+        }
+        (self.dnd_view.contains(pos) && self.can_modify_here() && self.accepts(&self.current_path, items)).then(|| (self.current_path.clone(), None))
+    }
+
+    /// Drags coming from other windows (or back from this one): highlight the target under the
+    /// pointer and carry out the drop.
+    pub(super) fn update_system_dnd(&mut self, ctx: &egui::Context) {
+        let Some(wl) = &mut self.wl_dnd else { return };
+        let poll = wl.poll();
+        let scale = ctx.input(|i| i.viewport().native_pixels_per_point).unwrap_or(1.0) / ctx.pixels_per_point();
+        let to_ui = |(x, y): (f64, f64)| egui::pos2(x as f32 * scale, y as f32 * scale);
+        if poll.busy || poll.hover.is_some() {
+            ctx.request_repaint();
+        }
+        if let Some(hover) = poll.hover {
+            let target = self.system_drop_target(to_ui(hover.pos), &hover.paths);
+            // The files are not known until they have been read; until then the spot counts as fine
+            let ok = target.is_some() || hover.paths.is_empty();
+            if let Some(wl) = &mut self.wl_dnd {
+                wl.set_accepting(ok);
+            }
+            if let Some((_, Some(rect))) = target {
+                let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::unique("item_drag")));
+                painter.rect_filled(rect, egui::CornerRadius::same(material::radius_md()), self.theme.tint(34));
+            }
+        }
+        if let Some(drop) = poll.dropped {
+            if let Some((dest, _)) = self.system_drop_target(to_ui(drop.pos), &drop.paths) {
+                self.drop_items(drop.paths, dest, drop.copy);
             }
         }
     }

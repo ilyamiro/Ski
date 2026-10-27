@@ -324,6 +324,8 @@ pub struct SkiApp {
     /// Where each pinned row was drawn last frame, for reordering by dragging.
     pin_rects: Vec<egui::Rect>,
     dnd: Option<dnd::Dnd>,
+    /// Drags to and from other windows, where the platform allows (see wayland_dnd.rs).
+    pub(crate) wl_dnd: Option<crate::wayland_dnd::WaylandDnd>,
     drop_zones: Vec<dnd::DropZone>,
     /// The part of the window the listing fills (drops on items must land inside it).
     dnd_view: egui::Rect,
@@ -352,6 +354,12 @@ pub struct SkiApp {
     /// The path field has been on screen since editing began.
     path_field_open: bool,
     path_input: String,
+    /// Folders that continue the typed path, with the one picked by the arrow keys.
+    path_suggestions: Vec<String>,
+    path_suggestions_for: String,
+    path_suggestion_sel: Option<usize>,
+    /// Where the suggestion list was drawn last frame, so a click on it doesn't end editing.
+    path_popup_rect: Option<egui::Rect>,
 
     thumbs: Thumbnails,
     search: Search,
@@ -486,6 +494,7 @@ impl SkiApp {
             dnd: None,
             drop_zones: Vec::new(),
             dnd_view: egui::Rect::NOTHING,
+            wl_dnd: None,
             error_message: None,
             theme,
             back_history: Vec::new(),
@@ -500,6 +509,10 @@ impl SkiApp {
             sort_order: settings.sort_order,
             is_editing_path: false,
             path_field_open: false,
+            path_suggestions: Vec::new(),
+            path_suggestions_for: String::new(),
+            path_suggestion_sel: None,
+            path_popup_rect: None,
             path_input: canonical_path.to_string_lossy().to_string(),
             thumbs: Thumbnails::new(ctx),
             search: Search::new(),
@@ -2126,6 +2139,7 @@ impl eframe::App for SkiApp {
         self.render_picker(&ctx);
         self.render_toast(&ctx);
         self.render_drop_overlay(&ctx);
+        self.update_system_dnd(&ctx);
         self.update_item_drag(&ctx);
     }
 }
@@ -2312,6 +2326,25 @@ impl SkiApp {
             egui::pos2(rect.left() + 16.0, rect.top()),
             egui::pos2(rect.right() - 12.0, rect.bottom()),
         );
+        // Taken before the field sees them: Tab would move focus and the arrows would move the cursor
+        let mut accepted = None;
+        if !self.path_suggestions.is_empty() {
+            let (tab, down, up) = ui.input_mut(|i| {
+                let none = egui::Modifiers::NONE;
+                (i.consume_key(none, egui::Key::Tab), i.consume_key(none, egui::Key::ArrowDown), i.consume_key(none, egui::Key::ArrowUp))
+            });
+            let n = self.path_suggestions.len();
+            if down {
+                self.path_suggestion_sel = Some(self.path_suggestion_sel.map_or(0, |i| (i + 1) % n));
+            } else if up {
+                self.path_suggestion_sel = Some(self.path_suggestion_sel.map_or(n - 1, |i| (i + n - 1) % n));
+            } else if tab {
+                accepted = match self.path_suggestion_sel {
+                    Some(i) => Some(format!("{}/", self.path_suggestions[i])),
+                    None => crate::fs::complete::extend(&self.path_input, &self.path_suggestions),
+                };
+            }
+        }
         let resp = material::put_over(
             ui,
             edit_rect,
@@ -2321,6 +2354,28 @@ impl SkiApp {
                 .font(egui::FontId::proportional(material::FONT_BODY))
                 .hint_text(tr("Type a path and press Enter")),
         );
+        if let Some(clicked) = self.path_suggestion_popup(ui.ctx(), edit_rect) {
+            accepted = Some(format!("{clicked}/"));
+        }
+        if let Some(text) = accepted {
+            self.path_input = text;
+            self.path_suggestion_sel = None;
+            if let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), resp.id) {
+                let end = egui::text::CCursor::new(self.path_input.chars().count());
+                state.cursor.set_char_range(Some(egui::text::CCursorRange::one(end)));
+                state.store(ui.ctx(), resp.id);
+            }
+            resp.request_focus();
+        }
+        if self.path_suggestions_for != self.path_input {
+            self.path_suggestions_for.clone_from(&self.path_input);
+            self.path_suggestions = crate::fs::complete::dir_completions(&self.path_input);
+            // Nothing left to complete once the typed folder is the only match
+            if self.path_suggestions.len() == 1 && self.path_suggestions[0] == self.path_input {
+                self.path_suggestions.clear();
+            }
+            self.path_suggestion_sel = None;
+        }
         if !resp.has_focus() && !resp.lost_focus() {
             resp.request_focus();
         }
@@ -2334,14 +2389,72 @@ impl SkiApp {
             }
         }
         if resp.lost_focus() {
+            let on_popup = self.path_popup_rect.zip(ui.input(|i| i.pointer.interact_pos())).is_some_and(|(r, p)| r.contains(p));
             if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                let target = PathBuf::from(&self.path_input);
+                let target = match self.path_suggestion_sel {
+                    Some(i) => PathBuf::from(&self.path_suggestions[i]),
+                    None => PathBuf::from(&self.path_input),
+                };
                 self.is_editing_path = false;
                 self.navigate_to(target);
-            } else {
+            } else if !on_popup {
                 self.is_editing_path = false;
             }
         }
+        if !self.is_editing_path {
+            self.path_suggestions.clear();
+            self.path_suggestions_for.clear();
+            self.path_suggestion_sel = None;
+            self.path_popup_rect = None;
+        }
+    }
+
+    /// The list of folders under the path field; returns the one clicked.
+    fn path_suggestion_popup(&mut self, ctx: &egui::Context, field: egui::Rect) -> Option<String> {
+        if self.path_suggestions.is_empty() {
+            self.path_popup_rect = None;
+            return None;
+        }
+        let theme = self.theme;
+        let mut clicked = None;
+        let area = egui::Area::new(egui::Id::unique("path_suggestions"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(egui::pos2(field.left() - 8.0, field.bottom() + 8.0))
+            .show(ctx, |ui| {
+                egui::Frame::new()
+                    .fill(theme.surface1)
+                    .corner_radius(egui::CornerRadius::same(material::radius_md()))
+                    .shadow(ctx.global_style().visuals.popup_shadow)
+                    .inner_margin(egui::Margin::symmetric(6, 6))
+                    .show(ui, |ui| {
+                        ui.set_width((field.width() - 16.0).max(200.0));
+                        egui::ScrollArea::vertical().max_height(260.0).show(ui, |ui| {
+                            for (i, full) in self.path_suggestions.iter().enumerate() {
+                                let name = full.rsplit('/').next().unwrap_or(full);
+                                let selected = self.path_suggestion_sel == Some(i);
+                                let (rect, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 28.0), egui::Sense::click());
+                                if selected || resp.hovered() {
+                                    ui.painter().rect_filled(rect, egui::CornerRadius::same(material::radius_md()), theme.surface2);
+                                }
+                                if selected {
+                                    resp.scroll_to_me(None);
+                                }
+                                ui.painter().text(
+                                    rect.left_center() + egui::vec2(10.0, 0.0),
+                                    egui::Align2::LEFT_CENTER,
+                                    name,
+                                    egui::FontId::proportional(material::FONT_BODY),
+                                    theme.text,
+                                );
+                                if resp.clicked() {
+                                    clicked = Some(full.clone());
+                                }
+                            }
+                        });
+                    });
+            });
+        self.path_popup_rect = Some(area.response.rect);
+        clicked
     }
 
     fn render_title(&mut self, ui: &mut egui::Ui, rect: egui::Rect, field: &egui::Response) {
@@ -5275,9 +5388,11 @@ impl SkiApp {
             ui.painter().rect_filled(tile, egui::CornerRadius::same(material::radius_window()), theme.surface1);
             match thumb_for(&self.thumbs, &self.folder_icons, item, self.settings.show_thumbnails) {
                 Some(tex) => {
-                    egui::Image::from_texture(egui::load::SizedTexture::new(tex.id(), egui::vec2(64.0, 64.0)))
+                    let size = tex.size_vec2();
+                    let shown = size * (64.0 / size.x).min(64.0 / size.y);
+                    egui::Image::from_texture(egui::load::SizedTexture::new(tex.id(), shown))
                         .corner_radius(egui::CornerRadius::same(material::radius_md()))
-                        .paint_at(ui, egui::Rect::from_center_size(tile.center(), egui::vec2(64.0, 64.0)));
+                        .paint_at(ui, egui::Rect::from_center_size(tile.center(), shown));
                 }
                 None => {
                     let color = if item.is_dir { theme.blue } else { theme.subtext0 };

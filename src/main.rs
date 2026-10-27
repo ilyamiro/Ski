@@ -11,6 +11,7 @@ mod settings;
 mod settings_ui;
 mod thumbs;
 mod ui;
+mod wayland_dnd;
 mod wayland_parent;
 mod x11_parent;
 
@@ -168,6 +169,9 @@ fn open_window(mut request: instance::Request) -> eframe::Result {
             // The folder was listed before the chooser existed, and the chooser's filter applies to it
             if app.chooser.is_some() {
                 app.reload_items();
+            }
+            if app.chooser.is_none() {
+                app.wl_dnd = wayland_dnd::WaylandDnd::new(cc, &cc.egui_ctx);
             }
             request.shown();
             Ok(Box::new(app))

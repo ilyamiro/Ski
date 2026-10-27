@@ -28,6 +28,7 @@ wayland-protocols = { version = "0.32", features = ["client", "unstable"] }
 wayland-client = "0.31"
 raw-window-handle = "0.6"
 x11-dl = "2.21"
+ab_glyph = "0.2"
 wayland-backend = { version = "0.3", features = ["client_system"] }
 
 # Thin LTO and 16 codegen units compile much faster than fat LTO in one unit, at about the same run-time speed
