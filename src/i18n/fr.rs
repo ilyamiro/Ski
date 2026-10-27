@@ -295,6 +295,7 @@ pub const CATALOG: &[(&str, &str)] = &[
     ("“{}” already exists", "« {} » existe déjà"),
     ("Creation of {}", "Création de {}"),
     ("Created {}", "{} créé"),
+    ("Pasted {}", "{} collé"),
     ("Renaming of {}", "Renommage de {}"),
     ("Renamed to “{}”", "Renommé en « {} »"),
     ("Could not move to trash: {}", "Impossible de mettre à la corbeille : {}"),

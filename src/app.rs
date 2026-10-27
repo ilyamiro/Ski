@@ -1019,11 +1019,35 @@ impl SkiApp {
         self.set_toast(message);
     }
 
+    /// Saves an image from the clipboard into the current folder as `Pasted image.png`.
+    fn paste_image(&mut self, png: &[u8]) {
+        let path = ops::unique_path(&self.current_path, std::ffi::OsStr::new("Pasted image.png"), "copy");
+        let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        if let Err(err) = std::fs::write(&path, png) {
+            self.set_toast(err.to_string());
+            return;
+        }
+        self.add_listed(&path);
+        if let Some(idx) = self.items.iter().position(|i| i.name == name) {
+            self.selection = std::iter::once(idx).collect();
+            self.selected_index = Some(idx);
+            self.anchor = Some(idx);
+            self.last_cursor = Some(idx);
+            self.scroll_to_selected = true;
+        }
+        self.history.record(UndoEntry::new(trf("Creation of {}", &[&name]), vec![Edit::Trash(path)]));
+        self.set_toast_action(trf("Pasted {}", &[&name]), ToastAction::Undo);
+    }
+
     fn paste(&mut self) {
         // Files copied in another application count too, and win when they are newer than ours
         let external = crate::clipboard::get_files().filter(|(paths, _)| paths.iter().all(|p| p.exists()));
         let Some((paths, cut)) = external.or_else(|| self.clipboard.clone()) else {
-            self.set_toast(tr("Nothing to paste"));
+            if self.can_modify_here() && let Some(png) = crate::clipboard::get_image_png() {
+                self.paste_image(&png);
+            } else {
+                self.set_toast(tr("Nothing to paste"));
+            }
             return;
         };
         if !self.can_modify_here() {

@@ -99,6 +99,35 @@ pub fn get_text() -> Option<String> {
     }
 }
 
+/// An image on the system clipboard (a screenshot, "copy image" in a browser), as PNG bytes.
+pub fn get_image_png() -> Option<Vec<u8>> {
+    if on_wayland() {
+        use wl_clipboard_rs::paste::{ClipboardType, MimeType, Seat, get_contents, get_mime_types};
+        let offered = get_mime_types(ClipboardType::Regular, Seat::Unspecified).ok()?;
+        let mime = if offered.contains("image/png") {
+            "image/png"
+        } else {
+            offered.iter().find(|m| m.starts_with("image/") && !m.contains("svg")).map(String::as_str)?
+        };
+        let (mut pipe, _) = get_contents(ClipboardType::Regular, Seat::Unspecified, MimeType::Specific(mime)).ok()?;
+        let mut bytes = Vec::new();
+        pipe.read_to_end(&mut bytes).ok()?;
+        if mime == "image/png" {
+            return (!bytes.is_empty()).then_some(bytes);
+        }
+        let decoded = image::load_from_memory(&bytes).ok()?;
+        let mut png = std::io::Cursor::new(Vec::new());
+        decoded.write_to(&mut png, image::ImageFormat::Png).ok()?;
+        Some(png.into_inner())
+    } else {
+        let img = arboard::Clipboard::new().ok()?.get_image().ok()?;
+        let buf = image::RgbaImage::from_raw(img.width as u32, img.height as u32, img.bytes.into_owned())?;
+        let mut png = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgba8(buf).write_to(&mut png, image::ImageFormat::Png).ok()?;
+        Some(png.into_inner())
+    }
+}
+
 fn get_wayland() -> Option<(Vec<PathBuf>, bool)> {
     use wl_clipboard_rs::paste::{ClipboardType, MimeType, Seat, get_contents};
     let read = |mime: &str| -> Option<String> {
