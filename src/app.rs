@@ -324,6 +324,8 @@ pub struct SkiApp {
     /// Where each pinned row was drawn last frame, for reordering by dragging.
     pin_rects: Vec<egui::Rect>,
     dnd: Option<dnd::Dnd>,
+    /// Files dropped into the folder on show, selected as they turn up in the listing.
+    arrivals: Option<dnd::Arrivals>,
     /// Drags to and from other windows, where the platform allows (see wayland_dnd.rs).
     pub(crate) wl_dnd: Option<crate::wayland_dnd::WaylandDnd>,
     drop_zones: Vec<dnd::DropZone>,
@@ -492,6 +494,7 @@ impl SkiApp {
             drive_state: drives_ui::DriveState::new(),
             pin_rects: Vec::new(),
             dnd: None,
+            arrivals: None,
             drop_zones: Vec::new(),
             dnd_view: egui::Rect::NOTHING,
             wl_dnd: None,
@@ -723,6 +726,7 @@ impl SkiApp {
         self.selected_index = focus.as_ref().and_then(|p| places.get(p.as_path()).copied());
         self.anchor = self.selected_index;
         self.last_cursor = self.selected_index;
+        self.reveal_arrivals();
     }
 
     /// The sort changed: the listing is reordered where it is, keeping the same files selected.
@@ -836,6 +840,7 @@ impl SkiApp {
             self.last_cursor = focus;
             self.scroll_to_selected = scroll && focus.is_some();
         }
+        self.reveal_arrivals();
         if !is_virtual(&self.current_path) {
             let here = self.current_path.clone();
             self.plugins.directory_changed(&here);
@@ -5452,10 +5457,12 @@ impl SkiApp {
                 }
             }
             ui.add_space(6.0);
-            let mut job = egui::text::LayoutJob::simple_singleline(item.name.clone(), egui::FontId::proportional(17.0), theme.text);
-            job.wrap = egui::text::TextWrapping::truncate_at_width(full - 16.0);
-            ui.label(job);
-            ui.label(egui::RichText::new(subtitle).size(material::FONT_CAPTION).color(theme.subtext1));
+            // The name and the summary can be selected and copied; a long name wraps instead of being cut off
+            ui.scope(|ui| {
+                ui.set_max_width(full - 16.0);
+                ui.add(egui::Label::new(egui::RichText::new(&item.name).size(17.0).color(theme.text)).wrap().selectable(true));
+                ui.add(egui::Label::new(egui::RichText::new(subtitle).size(material::FONT_CAPTION).color(theme.subtext1)).wrap().selectable(true));
+            });
             if item.is_dir {
                 ui.add_space(6.0);
                 if material::button(ui, "props_icon", Some(icons::IMAGE), tr("Custom icon…"), &theme, ButtonKind::Tonal, true).clicked() {
@@ -5493,28 +5500,22 @@ impl SkiApp {
                     egui::Frame::new().fill(theme.surface1).corner_radius(egui::CornerRadius::same(material::radius_container())).show(ui, |ui| {
                         ui.set_width(full);
                         ui.spacing_mut().item_spacing.y = 0.0;
+                        // Each value is selectable text and wraps in full, so any part of it can be copied
                         for (idx, (label, value)) in rows.iter().enumerate() {
-                            let (rect, resp) = ui.allocate_exact_size(egui::vec2(full, 38.0), egui::Sense::click());
-                            let fx = material::fx(ui, resp.id, &resp, true, &material::FxSpec::ROW);
-                            let painter = ui.painter();
-                            let inner = rect.shrink2(egui::vec2(4.0, 2.0));
-                            material::paint_fill(painter, inner, material::pill(inner), material::row_layer(&theme, &fx), &fx);
+                            let top = ui.cursor().top();
                             if idx > 0 {
-                                let line = egui::Rect::from_min_size(egui::pos2(rect.left() + 16.0, rect.top()), egui::vec2(full - 32.0, 1.0));
-                                painter.rect_filled(material::snap(painter, line), 0, theme.with_alpha(theme.text, 14));
+                                let line = egui::Rect::from_min_size(egui::pos2(ui.min_rect().left() + 16.0, top), egui::vec2(full - 32.0, 1.0));
+                                ui.painter().rect_filled(material::snap(ui.painter(), line), 0, theme.with_alpha(theme.text, 14));
                             }
-                            painter.text(egui::pos2(rect.left() + 16.0, rect.center().y), egui::Align2::LEFT_CENTER, *label, egui::FontId::proportional(12.5), theme.subtext1);
-                            let mut job = egui::text::LayoutJob::simple_singleline(value.clone(), egui::FontId::proportional(material::FONT_BODY), theme.text);
-                            job.wrap = egui::text::TextWrapping::truncate_at_width((full - 140.0 - 36.0).max(20.0));
-                            let galley = painter.layout_job(job);
-                            painter.galley(egui::pos2(rect.left() + 118.0, rect.center().y - galley.size().y / 2.0), galley, theme.text);
-                            let copy_alpha = ((fx.hover.max(fx.press)) * 255.0).round() as u8;
-                            if copy_alpha > 0 {
-                                material::paint_icon(painter, egui::pos2(rect.right() - 22.0, rect.center().y), icons::COPY, 14.0, theme.with_alpha(theme.subtext1, copy_alpha));
-                            }
-                            if resp.on_hover_text(tr("Click to copy")).clicked() {
-                                copied = Some(value.clone());
-                            }
+                            egui::Frame::new().inner_margin(egui::Margin { left: 16, right: 16, top: 10, bottom: 10 }).show(ui, |ui| {
+                                ui.set_width(full - 32.0);
+                                ui.horizontal_top(|ui| {
+                                    ui.spacing_mut().item_spacing.x = 0.0;
+                                    let (label_rect, _) = ui.allocate_exact_size(egui::vec2(102.0, 18.0), egui::Sense::hover());
+                                    ui.painter().text(label_rect.left_center(), egui::Align2::LEFT_CENTER, *label, egui::FontId::proportional(12.5), theme.subtext1);
+                                    ui.add(egui::Label::new(egui::RichText::new(value).size(material::FONT_BODY).color(theme.text)).wrap().selectable(true));
+                                });
+                            });
                         }
                     });
                     ui.add_space(6.0);

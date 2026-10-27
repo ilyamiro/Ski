@@ -269,7 +269,6 @@ pub const CATALOG: &[(&str, &str)] = &[
     ("Reset icon", "Symbol zurücksetzen"),
     ("Permissions", "Zugriffsrechte"),
     ("Ownership", "Besitzer"),
-    ("Click to copy", "Zum Kopieren klicken"),
     ("Changing permissions…", "Zugriffsrechte werden geändert …"),
     ("Copied to clipboard", "In die Zwischenablage kopiert"),
     ("Failed to start {}: {}", "{} konnte nicht gestartet werden: {}"),

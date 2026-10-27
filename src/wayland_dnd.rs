@@ -31,7 +31,7 @@ const URI_LIST: &str = "text/uri-list";
 const PLAIN_TEXT: &str = "text/plain;charset=utf-8";
 /// Offered only by Ski, so a drag that comes back to it is known without reading the files.
 const OWN_MIME: &str = "application/x-ski-drag";
-const ICON_SIZE: i32 = 40;
+const ICON_SIZE: i32 = 64;
 
 /// A drag that is over the window.
 pub struct Hover {
@@ -286,7 +286,7 @@ impl WaylandDnd {
         let uris: String = paths.iter().map(|p| format!("{}\r\n", crate::clipboard::percent_encode(p))).collect();
         let text: String = paths.iter().map(|p| format!("{}\n", p.display())).collect();
 
-        let icon = self.drag_icon(&qh, paths.len(), style);
+        let icon = self.drag_icon(&qh, paths.len(), &style);
         self.device.start_drag(Some(&source), &self.surface, icon.as_ref().map(|i| &i.0), serial);
         if let Some((surface, buffer, _)) = &icon {
             surface.set_buffer_scale(style.scale);
@@ -300,8 +300,8 @@ impl WaylandDnd {
         true
     }
 
-    /// A rounded square carrying the number of files, drawn into a shared-memory buffer.
-    fn drag_icon(&self, qh: &QueueHandle<State>, count: usize, style: IconStyle) -> Option<(WlSurface, WlBuffer, WlShmPool)> {
+    /// The drag image, drawn into a shared-memory buffer.
+    fn drag_icon(&self, qh: &QueueHandle<State>, count: usize, style: &IconStyle) -> Option<(WlSurface, WlBuffer, WlShmPool)> {
         let shm = self.shm.as_ref()?;
         let size = (ICON_SIZE * style.scale) as usize;
         let pixels = render_icon(size, style.scale as f32, count, style);
@@ -319,73 +319,126 @@ impl WaylandDnd {
     }
 }
 
-/// Colors (`0xAARRGGBB`) of the drag icon, and the buffer scale of the output it appears on.
-#[derive(Clone, Copy)]
+/// How the drag image looks: colors (`0xAARRGGBB`), the type icons of the first few files (front
+/// first), and the buffer scale of the output it appears on.
+#[derive(Clone)]
 pub struct IconStyle {
-    pub background: u32,
-    pub text: u32,
+    pub card: u32,
+    pub badge: u32,
+    pub badge_text: u32,
+    pub icons: Vec<(&'static str, u32)>,
     pub scale: i32,
 }
 
-/// Premultiplied Argb8888 pixels: a rounded square with the file count centered in it.
-fn render_icon(size: usize, scale: f32, count: usize, style: IconStyle) -> Vec<u8> {
-    use ab_glyph::{Font, FontRef, ScaleFont};
-    let channels = |argb: u32| ((argb >> 24) as f32, (argb >> 16 & 0xff) as f32, (argb >> 8 & 0xff) as f32, (argb & 0xff) as f32);
-    let (ba, br, bg, bb) = channels(style.background);
-    let (_, tr, tg, tb) = channels(style.text);
-    let radius = 10.0 * scale;
+/// Size of a file's card in the drag image, and how far each one behind it is shifted.
+const CARD: f32 = 44.0;
+const CARD_STEP: f32 = 6.0;
 
-    // Straight-alpha color per pixel: the square first, the text over it
-    let mut rgba = vec![[br, bg, bb, 0.0f32]; size * size];
-    for y in 0..size {
-        for x in 0..size {
-            let dx = (radius - x.min(size - 1 - x) as f32 - 0.5).max(0.0);
-            let dy = (radius - y.min(size - 1 - y) as f32 - 0.5).max(0.0);
-            rgba[y * size + x][3] = ba * (radius - (dx * dx + dy * dy).sqrt() + 0.5).clamp(0.0, 1.0);
+/// Premultiplied pixels, from 0 to 1.
+struct Canvas {
+    size: usize,
+    px: Vec<[f32; 4]>,
+}
+
+impl Canvas {
+    /// Lays `argb` over the pixel at `coverage` (0 to 1).
+    fn blend(&mut self, x: i32, y: i32, argb: u32, coverage: f32) {
+        if x < 0 || y < 0 || x >= self.size as i32 || y >= self.size as i32 {
+            return;
+        }
+        let a = (argb >> 24) as f32 / 255.0 * coverage.clamp(0.0, 1.0);
+        let src = [(argb >> 16 & 0xff) as f32 / 255.0 * a, (argb >> 8 & 0xff) as f32 / 255.0 * a, (argb & 0xff) as f32 / 255.0 * a, a];
+        let dst = &mut self.px[y as usize * self.size + x as usize];
+        for i in 0..4 {
+            dst[i] = src[i] + dst[i] * (1.0 - a);
         }
     }
 
-    let label = if count > 99 { "99+".to_owned() } else { count.to_string() };
-    if let Ok(font) = FontRef::try_from_slice(include_bytes!("../assets/fonts/AdwaitaSans-Regular.ttf")) {
-        // Long numbers get smaller so that they stay inside the square
-        let px = (if label.len() > 2 { 15.0 } else if label.len() == 2 { 20.0 } else { 24.0 }) * scale;
-        let scaled = font.as_scaled(ab_glyph::PxScale::from(px));
-        let width: f32 = label.chars().map(|c| scaled.h_advance(scaled.glyph_id(c))).sum();
-        // Digits are as tall as the capital height, which is what is centered vertically
-        let cap = font.glyph_id('0');
-        let cap_height = font.outline_glyph(cap.with_scale(scaled.scale())).map_or(px * 0.7, |g| g.px_bounds().height());
-        let baseline = size as f32 / 2.0 + cap_height / 2.0;
-        let mut pen = (size as f32 - width) / 2.0;
-        for c in label.chars() {
-            let id = scaled.glyph_id(c);
-            let glyph = id.with_scale_and_position(scaled.scale(), ab_glyph::point(pen, baseline));
-            if let Some(outline) = font.outline_glyph(glyph) {
-                let bounds = outline.px_bounds();
-                outline.draw(|gx, gy, cover| {
-                    let (x, y) = (bounds.min.x as i32 + gx as i32, bounds.min.y as i32 + gy as i32);
-                    if x < 0 || y < 0 || x >= size as i32 || y >= size as i32 {
-                        return;
-                    }
-                    let px = &mut rgba[y as usize * size + x as usize];
-                    // Text over the square: coverage mixes the colors, and the square's alpha rises with it
-                    let mix = cover.clamp(0.0, 1.0);
-                    px[0] += (tr - px[0]) * mix;
-                    px[1] += (tg - px[1]) * mix;
-                    px[2] += (tb - px[2]) * mix;
-                    px[3] += (255.0 - px[3]) * mix * (px[3] / ba.max(1.0));
-                });
+    /// A rounded rectangle, with its edge smoothed.
+    fn rounded(&mut self, min: (f32, f32), size: (f32, f32), radius: f32, argb: u32) {
+        let (x0, y0) = (min.0.floor() as i32, min.1.floor() as i32);
+        let (x1, y1) = ((min.0 + size.0).ceil() as i32, (min.1 + size.1).ceil() as i32);
+        let (cx, cy) = (min.0 + size.0 / 2.0, min.1 + size.1 / 2.0);
+        let (hx, hy) = (size.0 / 2.0 - radius, size.1 / 2.0 - radius);
+        for y in y0..y1 {
+            for x in x0..x1 {
+                let dx = ((x as f32 + 0.5 - cx).abs() - hx).max(0.0);
+                let dy = ((y as f32 + 0.5 - cy).abs() - hy).max(0.0);
+                let inside_x = (x as f32 + 0.5 - min.0).min(min.0 + size.0 - x as f32 - 0.5) + 0.5;
+                let inside_y = (y as f32 + 0.5 - min.1).min(min.1 + size.1 - y as f32 - 0.5) + 0.5;
+                let edge = (radius - (dx * dx + dy * dy).sqrt() + 0.5).min(inside_x).min(inside_y);
+                self.blend(x, y, argb, edge);
             }
+        }
+    }
+
+    /// `text` in `font`, centered on `center` by its inked outline.
+    fn text(&mut self, font: &ab_glyph::FontRef, text: &str, px: f32, center: (f32, f32), argb: u32) {
+        use ab_glyph::{Font, ScaleFont};
+        let scaled = font.as_scaled(ab_glyph::PxScale::from(px));
+        let mut pen = 0.0;
+        let mut outlines = Vec::new();
+        for c in text.chars() {
+            let id = scaled.glyph_id(c);
+            outlines.extend(font.outline_glyph(id.with_scale_and_position(scaled.scale(), ab_glyph::point(pen, 0.0))));
             pen += scaled.h_advance(id);
+        }
+        let Some(first) = outlines.first() else { return };
+        let mut bounds = first.px_bounds();
+        for o in &outlines {
+            let b = o.px_bounds();
+            bounds.min.x = bounds.min.x.min(b.min.x);
+            bounds.min.y = bounds.min.y.min(b.min.y);
+            bounds.max.x = bounds.max.x.max(b.max.x);
+            bounds.max.y = bounds.max.y.max(b.max.y);
+        }
+        let shift = (center.0 - (bounds.min.x + bounds.max.x) / 2.0, center.1 - (bounds.min.y + bounds.max.y) / 2.0);
+        for outline in outlines {
+            let b = outline.px_bounds();
+            let (ox, oy) = ((b.min.x + shift.0).round() as i32, (b.min.y + shift.1).round() as i32);
+            outline.draw(|gx, gy, cover| self.blend(ox + gx as i32, oy + gy as i32, argb, cover));
+        }
+    }
+}
+
+/// Premultiplied Argb8888 pixels: a card per file with its type icon, up to three stacked like a
+/// pile, and a badge with the number of files when there is more than one.
+fn render_icon(size: usize, scale: f32, count: usize, style: &IconStyle) -> Vec<u8> {
+    let mut canvas = Canvas { size, px: vec![[0.0; 4]; size * size] };
+    let symbols = ab_glyph::FontRef::try_from_slice(include_bytes!("../assets/fonts/SymbolsNerdFontMono-Regular.ttf")).ok();
+    let sans = ab_glyph::FontRef::try_from_slice(include_bytes!("../assets/fonts/AdwaitaSans-Regular.ttf")).ok();
+    let full = size as f32;
+    let card = CARD * scale;
+    let layers = count.clamp(1, 3);
+    // The front card sits at the bottom left, those behind it up and to the right
+    for layer in (0..layers).rev() {
+        let step = layer as f32 * CARD_STEP * scale;
+        let min = (4.0 * scale + step, full - 4.0 * scale - card - step);
+        canvas.rounded((min.0, min.1 + 1.5 * scale), (card, card), 10.0 * scale, 0x40_00_00_00);
+        // A dark edge keeps the cards of the pile apart
+        canvas.rounded(min, (card, card), 10.0 * scale, style.badge_text & 0x00_FF_FF_FF | 0xC0 << 24);
+        canvas.rounded((min.0 + scale, min.1 + scale), (card - 2.0 * scale, card - 2.0 * scale), 9.0 * scale, style.card);
+        if let (Some(font), Some((glyph, color))) = (&symbols, style.icons.get(layer)) {
+            canvas.text(font, glyph, 28.0 * scale, (min.0 + card / 2.0, min.1 + card / 2.0), *color);
+        }
+    }
+    if count > 1 {
+        let label = if count > 99 { "99+".to_owned() } else { count.to_string() };
+        let height = 22.0 * scale;
+        let width = height.max((label.len() as f32 * 7.5 + 10.0) * scale);
+        let min = (full - width - 1.0 * scale, 1.0 * scale);
+        canvas.rounded(min, (width, height), height / 2.0, style.badge);
+        if let Some(font) = &sans {
+            canvas.text(font, &label, 13.0 * scale, (min.0 + width / 2.0, min.1 + height / 2.0), style.badge_text);
         }
     }
 
     let mut out = Vec::with_capacity(size * size * 4);
-    for [r, g, b, a] in rgba {
-        // Premultiplied, as Argb8888 wants it
-        for c in [b, g, r] {
-            out.push((c * a / 255.0 + 0.5) as u8);
+    for [r, g, b, a] in canvas.px {
+        // Already premultiplied, as Argb8888 wants it
+        for c in [b, g, r, a] {
+            out.push((c * 255.0 + 0.5) as u8);
         }
-        out.push((a + 0.5) as u8);
     }
     out
 }
@@ -466,7 +519,9 @@ impl Dispatch<WlDataDevice, ()> for State {
                 }
                 let Some(offer) = id else { return };
                 let Some(info) = state.offers.get(&offer.id()) else { return };
-                let own = info.mimes.iter().any(|m| m == OWN_MIME);
+                // Every Ski offers its own type; only a drag this window started has its files at hand.
+                // One from another Ski window (a process of its own) is read like any other program's
+                let own = info.mimes.iter().any(|m| m == OWN_MIME) && state.out.is_some();
                 let has_files = info.mimes.iter().any(|m| m == URI_LIST);
                 let mut reader = Reader::default();
                 if has_files && !own && Some(surface.id()) == state.surface {
@@ -556,14 +611,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn icon_shows_the_count() {
-        let style = IconStyle { background: 0xE6_C0_A0_FF, text: 0xFF_1C_1B_22, scale: 2 };
-        let plain = render_icon(80, 2.0, 0, style);
-        let three = render_icon(80, 2.0, 3, style);
-        assert_eq!(three.len(), 80 * 80 * 4);
-        assert_ne!(plain, three);
-        // The corner stays transparent, the middle is covered
-        assert_eq!(three[3], 0);
-        assert!(three[(40 * 80 + 4) * 4 + 3] > 200);
+    fn icon_stacks_the_files_and_shows_the_count() {
+        let style = IconStyle { card: 0xFF_30_30_40, badge: 0xFF_C0_A0_FF, badge_text: 0xFF_1C_1B_22, icons: vec![(crate::ui::icons::FILE, 0xFF_FF_FF_FF); 3], scale: 2 };
+        let size = (ICON_SIZE * 2) as usize;
+        let alpha = |px: &[u8], x: usize, y: usize| px[(y * size + x) * 4 + 3];
+        let one = render_icon(size, 2.0, 1, &style);
+        let three = render_icon(size, 2.0, 3, &style);
+        assert_eq!(three.len(), size * size * 4);
+        // The front card is covered and its corner rounded off
+        assert!(alpha(&one, 8 + 44, size - 8 - 44) > 200);
+        assert_eq!(alpha(&one, 0, size - 1), 0);
+        // Only several files carry the badge in the top right corner, and a pile behind the front card
+        assert_eq!(alpha(&one, size - 12, 12), 0);
+        assert!(alpha(&three, size - 12, 12) > 200);
+        assert_eq!(alpha(&one, 114, 60), 0);
+        assert!(alpha(&three, 114, 60) > 200);
     }
 }

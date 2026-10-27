@@ -269,7 +269,6 @@ pub const CATALOG: &[(&str, &str)] = &[
     ("Reset icon", "Restablecer icono"),
     ("Permissions", "Permisos"),
     ("Ownership", "Propiedad"),
-    ("Click to copy", "Haz clic para copiar"),
     ("Changing permissions…", "Cambiando permisos…"),
     ("Copied to clipboard", "Copiado al portapapeles"),
     ("Failed to start {}: {}", "No se pudo iniciar {}: {}"),
