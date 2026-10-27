@@ -1,4 +1,4 @@
-use std::collections::{BTreeSet, HashMap, VecDeque};
+use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use eframe::egui;
@@ -861,7 +861,8 @@ impl SkiApp {
 
     /// Take `paths` out of the open folder's listing without reading the folder again.
     fn remove_listed(&mut self, paths: &[PathBuf]) {
-        self.edit_listing(|items| items.retain(|i| !paths.contains(&i.path)));
+        let paths: HashSet<&Path> = paths.iter().map(PathBuf::as_path).collect();
+        self.edit_listing(|items| items.retain(|i| !paths.contains(i.path.as_path())));
         self.selected_index = None;
         self.sync_selection(true);
         let here = self.current_path.clone();

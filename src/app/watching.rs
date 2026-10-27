@@ -4,7 +4,7 @@
 //! is a burst of those, so they are collected until things go quiet and then applied together:
 //! changed files are read again, new ones appear, removed ones go, and a preview that no longer
 //! matches its file is drawn again.
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::time::{Duration, Instant};
 
 use super::*;
@@ -208,6 +208,7 @@ impl SkiApp {
         if touched.is_empty() {
             return;
         }
+        let touched: HashSet<PathBuf> = touched.into_iter().collect();
         self.edit_listing(|items| {
             items.retain(|i| !touched.contains(&i.path));
             items.extend(fresh);
@@ -247,11 +248,13 @@ impl SkiApp {
         // Recent and Bookmarks have an order of their own; search results are sorted
         let sort = !self.in_recent();
         self.edit_listing_sorted(sort, |items| {
-            for item in fresh {
-                if let Some(slot) = items.iter_mut().find(|i| i.path == item.path) {
+            let mut fresh: HashMap<PathBuf, FileItem> = fresh.into_iter().map(|i| (i.path.clone(), i)).collect();
+            for slot in items.iter_mut() {
+                if let Some(item) = fresh.remove(&slot.path) {
                     *slot = item;
                 }
             }
+            let gone: HashSet<&PathBuf> = gone.iter().collect();
             items.retain(|i| !gone.contains(&i.path));
         });
     }
@@ -298,8 +301,9 @@ impl SkiApp {
                 .filter(|i| (show_hidden || !i.is_hidden) && type_filter.matches(i) && self.chooser_accepts(i))
                 .collect();
             let opts = ListOptions { show_hidden, sort_by, sort_order, folders_first, type_filter };
+            let mine: HashSet<&PathBuf> = mine.into_iter().collect();
             if let Some(items) = self.tabs[idx].saved.as_mut().and_then(|s| s.items.as_mut()) {
-                items.retain(|i| !mine.contains(&&i.path));
+                items.retain(|i| !mine.contains(&i.path));
                 items.extend(fresh);
                 sort_items(items, &opts);
             }
