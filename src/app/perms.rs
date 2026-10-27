@@ -105,7 +105,7 @@ impl SkiApp {
                     props.item.file_type
                 };
                 self.history.record(UndoEntry::new(trf("Permissions of {}", &[&props.item.name]), vec![Edit::Chmod { path, mode: old }]));
-                self.reload_items();
+                self.reread_items();
             }
             Err(err) => self.set_toast(trf("Could not change permissions: {}", &[&err])),
         }

@@ -684,7 +684,7 @@ impl SkiApp {
         self.rebuild_theme();
         self.sizes.cancel_all();
         crate::fs::dirsize::clear();
-        self.reload_items();
+        self.reread_items();
         self.set_toast(tr("Refreshed"));
     }
 
@@ -742,6 +742,18 @@ impl SkiApp {
         let opts = self.list_options();
         let listing = if self.in_recent() { Ok(self.recent_items()) } else { read_folder(&self.current_path, &opts) };
         self.show_listing(listing);
+    }
+
+    /// Read the listing again after an option changed (hidden files, the type filter, the end of a search),
+    /// keeping the same files selected. A folder that answers at once is swapped in at once; a slow drive
+    /// keeps the old listing on show until it replies, instead of freezing the window.
+    pub(crate) fn reread_items(&mut self) {
+        self.keep_selection_through_reload();
+        if self.in_recent() {
+            return self.reload_items();
+        }
+        self.reload_items_later();
+        self.take_reload(std::time::Duration::from_millis(80));
     }
 
     /// Read the folder again on another thread, so the window keeps answering while a slow drive replies.
@@ -1346,7 +1358,7 @@ impl SkiApp {
             self.search_query.clear();
             self.search_root = None;
             self.search.cancel();
-            self.reload_items();
+            self.reread_items();
         }
     }
 
@@ -1355,7 +1367,7 @@ impl SkiApp {
         if self.search_query.trim().is_empty() {
             self.search_root = None;
             self.search.cancel();
-            self.reload_items();
+            self.reread_items();
         } else {
             if self.search_root.is_none() {
                 self.search_root = Some(self.current_path.clone());
@@ -1668,7 +1680,7 @@ impl SkiApp {
 
         if self.is_act_pressed(ctx, crate::keymap::Action::ToggleHidden) {
             self.show_hidden = !self.show_hidden;
-            self.reload_items();
+            self.reread_items();
             handled = true;
         }
 
@@ -2602,7 +2614,7 @@ impl SkiApp {
         if let Some(filter) = picked {
             self.type_filter = filter;
             if self.search_query.trim().is_empty() {
-                self.reload_items();
+                self.reread_items();
             } else {
                 let ctx = ui.ctx().clone();
                 self.on_query_changed(&ctx);
@@ -3432,7 +3444,7 @@ impl SkiApp {
         }
         if reload {
             if self.search_query.trim().is_empty() {
-                self.reload_items();
+                self.reread_items();
             } else {
                 self.on_query_changed(ctx);
             }

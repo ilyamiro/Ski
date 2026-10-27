@@ -584,7 +584,7 @@ impl SkiApp {
             if switch_row_with(ui, "fv_show_hidden", icons::VISIBILITY, tr("Hidden files"), None, &theme, self.show_hidden).clicked() {
                 self.show_hidden = !self.show_hidden;
                 self.settings.show_hidden = self.show_hidden;
-                self.reload_items();
+                self.reread_items();
                 self.persist_settings();
             }
             if switch_row_with(ui, "fv_folders_first", icons::FOLDER, tr("Folders first"), None, &theme, self.folders_first).clicked() {
@@ -788,7 +788,7 @@ impl SkiApp {
                     self.settings.plugins = self.plugins.enabled_map().clone();
                     self.persist_settings();
                     // Badges and menu entries come from the listing, which is read again
-                    self.reload_items();
+                    self.reread_items();
                 }
             }
         });

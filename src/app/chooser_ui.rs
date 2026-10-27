@@ -228,7 +228,7 @@ impl SkiApp {
             });
         self.chooser = Some(ch);
         if filter_changed {
-            self.reload_items();
+            self.reread_items();
         }
         if cancel {
             chooser::cancel();

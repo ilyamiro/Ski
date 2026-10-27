@@ -72,7 +72,7 @@ impl SkiApp {
             Reaction::Refresh => {
                 crate::fs::dirsize::clear();
                 if self.search_query.trim().is_empty() {
-                    self.reload_items();
+                    self.reread_items();
                 }
             }
             Reaction::Search(query) => {
