@@ -2931,6 +2931,7 @@ impl SkiApp {
 
         self.last_item_rects = item_rects.clone();
         self.visible_rows = folder_sizes::visible_rows(&item_rects, scroll_out.inner_rect);
+        self.thumbs.set_visible(self.items.get(self.visible_rows.clone()).unwrap_or_default().iter().map(|i| i.path.as_path()));
         let drag_consumed = self.handle_drag_select(ui, scroll_out.inner_rect, scroll_out.state.clamped_offset().y, scroll_delta, &item_rects);
 
         if !drag_consumed {
@@ -3028,6 +3029,7 @@ impl SkiApp {
 
         self.last_item_rects = item_rects.clone();
         self.visible_rows = folder_sizes::visible_rows(&item_rects, scroll_out.inner_rect);
+        self.thumbs.set_visible(self.items.get(self.visible_rows.clone()).unwrap_or_default().iter().map(|i| i.path.as_path()));
         let drag_consumed = self.handle_drag_select(ui, scroll_out.inner_rect, scroll_out.state.clamped_offset().y, scroll_delta, &item_rects);
 
         if !drag_consumed {

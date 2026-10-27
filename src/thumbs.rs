@@ -18,7 +18,9 @@ const TIERS: [u32; 3] = [128, 256, 512];
 /// Document pages and video frames need more pixels than a small tile to stay readable, so they
 /// never render below this.
 const PAGE_MIN: u32 = 256;
-const WORKERS: usize = 4;
+const WORKERS: usize = 2;
+/// Textures uploaded per frame; the rest wait for the next one so a big folder never stalls a frame.
+const UPLOADS_PER_FRAME: usize = 6;
 /// PDFs and archives larger than this are not worth rendering for a tiny preview.
 /// ffmpeg gets this long on one frame before it is killed.
 const VIDEO_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
@@ -41,6 +43,36 @@ struct Job {
     tier: u32,
 }
 
+/// Jobs waiting for a worker. Workers take a job for something on screen before any other, so the
+/// pictures being looked at appear first and the rest of a big folder fills in behind them.
+#[derive(Default)]
+struct Queue {
+    jobs: Mutex<Vec<Job>>,
+    wake: std::sync::Condvar,
+    visible: Mutex<HashSet<PathBuf>>,
+}
+
+impl Queue {
+    fn push(&self, job: Job) {
+        if let Ok(mut jobs) = self.jobs.lock() {
+            jobs.push(job);
+        }
+        self.wake.notify_one();
+    }
+
+    fn pop(&self) -> Job {
+        let mut jobs = self.jobs.lock().unwrap_or_else(|e| e.into_inner());
+        loop {
+            if !jobs.is_empty() {
+                let visible = self.visible.lock().unwrap_or_else(|e| e.into_inner());
+                let at = jobs.iter().position(|j| visible.contains(&j.path)).unwrap_or(0);
+                return jobs.remove(at);
+            }
+            jobs = self.wake.wait(jobs).unwrap_or_else(|e| e.into_inner());
+        }
+    }
+}
+
 enum Outcome {
     Ready(egui::ColorImage, u32),
     Cancelled,
@@ -61,7 +93,7 @@ pub struct Thumbnails {
     extras: HashSet<PathBuf>,
     /// Files that have no preview, with the stamp they failed at; tried again once the file changes.
     failed: HashMap<PathBuf, Stamp>,
-    job_tx: mpsc::Sender<Job>,
+    queue: Arc<Queue>,
     result_rx: mpsc::Receiver<(PathBuf, Stamp, Outcome)>,
     generation: Arc<AtomicU64>,
 }
@@ -143,21 +175,20 @@ pub fn has_preview(path: &Path) -> bool {
 
 impl Thumbnails {
     pub fn new(ctx: &egui::Context) -> Self {
-        let (job_tx, job_rx) = mpsc::channel::<Job>();
+        let queue = Arc::new(Queue::default());
         let (result_tx, result_rx) = mpsc::channel();
-        let job_rx = Arc::new(Mutex::new(job_rx));
         let generation = Arc::new(AtomicU64::new(0));
 
         for _ in 0..WORKERS {
-            let job_rx = job_rx.clone();
+            let queue = queue.clone();
             let result_tx = result_tx.clone();
             let generation = generation.clone();
             let ctx = ctx.clone();
-            std::thread::spawn(move || loop {
-                let job = match job_rx.lock().map(|rx| rx.recv()) {
-                    Ok(Ok(job)) => job,
-                    _ => return,
-                };
+            std::thread::spawn(move || {
+                // Decoding is background work: it yields to the UI thread instead of competing with it
+                unsafe { libc::setpriority(libc::PRIO_PROCESS, libc::syscall(libc::SYS_gettid) as libc::id_t, 15) };
+                loop {
+                let job = queue.pop();
                 // Skip work for folders the user already left
                 if job.generation != generation.load(Ordering::Relaxed) {
                     let _ = result_tx.send((job.path, job.stamp, Outcome::Cancelled));
@@ -168,6 +199,7 @@ impl Thumbnails {
                 let outcome = decoded.map_or(Outcome::Failed, |img| Outcome::Ready(to_color_image(&img), job.tier));
                 let _ = result_tx.send((job.path, job.stamp, outcome));
                 ctx.request_repaint();
+                }
             });
         }
 
@@ -182,7 +214,7 @@ impl Thumbnails {
             current: Vec::new(),
             extras: HashSet::new(),
             failed: HashMap::new(),
-            job_tx,
+            queue,
             result_rx,
             generation,
         }
@@ -194,7 +226,15 @@ impl Thumbnails {
         let pending = self.queued.get(path) == Some(&stamp);
         if has_preview(path) && !sharp_enough && !pending && self.failed.get(path) != Some(&stamp) {
             self.queued.insert(path.to_path_buf(), stamp);
-            let _ = self.job_tx.send(Job { path: path.to_path_buf(), stamp, generation, tier: self.tier });
+            self.queue.push(Job { path: path.to_path_buf(), stamp, generation, tier: self.tier });
+        }
+    }
+
+    /// Tell the loader which files are on screen now; their previews are made first.
+    pub fn set_visible<'a>(&self, paths: impl Iterator<Item = &'a Path>) {
+        if let Ok(mut visible) = self.queue.visible.lock() {
+            visible.clear();
+            visible.extend(paths.map(Path::to_path_buf));
         }
     }
 
@@ -240,7 +280,9 @@ impl Thumbnails {
 
     /// Upload finished thumbnails; call once per frame.
     pub fn poll(&mut self, ctx: &egui::Context) {
-        while let Ok((path, stamp, outcome)) = self.result_rx.try_recv() {
+        let mut uploaded = 0;
+        while uploaded < UPLOADS_PER_FRAME {
+            let Ok((path, stamp, outcome)) = self.result_rx.try_recv() else { return };
             // The file changed after this job started: its result is for a picture that is gone
             let current = self.wanted.get(&path) == Some(&stamp);
             match outcome {
@@ -258,6 +300,7 @@ impl Thumbnails {
                     let tex = ctx.load_texture(path.to_string_lossy(), img, egui::TextureOptions::LINEAR);
                     self.made.insert(path.clone(), stamp);
                     self.textures.insert(path, (tex, tier));
+                    uploaded += 1;
                 }
                 Outcome::Cancelled => {
                     if self.queued.get(&path) == Some(&stamp) {
@@ -272,6 +315,8 @@ impl Thumbnails {
                 }
             }
         }
+        // More finished previews are waiting: draw this frame first, then take the next batch
+        ctx.request_repaint();
     }
 
     pub fn get(&self, path: &Path) -> Option<&egui::TextureHandle> {
@@ -288,6 +333,12 @@ fn to_color_image(img: &image::DynamicImage) -> egui::ColorImage {
 /// preview are remembered too, so a folder of covers-less tracks does not spawn ffmpeg per file on
 /// every visit.
 fn cached_thumbnail(path: &Path, tier: u32) -> Option<image::DynamicImage> {
+    let shared = is_image(path) && !is_ffmpeg_still(path);
+    if shared {
+        if let Some(hit) = shared_cache::read(path, tier) {
+            return Some(hit);
+        }
+    }
     let Some(key) = cache::key(path) else { return render_thumbnail(path, tier) };
     if let Some(hit) = cache::read(&key, tier) {
         return Some(hit);
@@ -297,7 +348,12 @@ fn cached_thumbnail(path: &Path, tier: u32) -> Option<image::DynamicImage> {
     }
     let rendered = render_thumbnail(path, tier);
     match &rendered {
-        Some(img) => cache::write(&key, tier, img),
+        Some(img) => {
+            cache::write(&key, tier, img);
+            if shared {
+                shared_cache::write(path, tier, img);
+            }
+        }
         None => cache::mark_missing(&key),
     }
     rendered
@@ -340,9 +396,29 @@ fn render_thumbnail(path: &Path, tier: u32) -> Option<image::DynamicImage> {
     } else if is_raw(path) {
         raw_preview(path)?
     } else {
-        image::ImageReader::open(path).ok()?.with_guessed_format().ok()?.decode().ok()?
+        scaled_jpeg(path, tier).or_else(|| image::ImageReader::open(path).ok()?.with_guessed_format().ok()?.decode().ok())?
     };
     Some(img.thumbnail(tier, tier))
+}
+
+/// A JPEG decoded at 1/2, 1/4 or 1/8 of its size straight from the DCT coefficients, the way
+/// gdk-pixbuf does for Nautilus: a 4K wallpaper costs a fraction of a full decode.
+fn scaled_jpeg(path: &Path, tier: u32) -> Option<image::DynamicImage> {
+    if !matches!(extension(path).as_deref(), Some("jpg" | "jpeg" | "jpe")) {
+        return None;
+    }
+    let mut decoder = jpeg_decoder::Decoder::new(std::io::BufReader::new(std::fs::File::open(path).ok()?));
+    decoder.read_info().ok()?;
+    let side = tier.min(u16::MAX as u32) as u16;
+    decoder.scale(side, side).ok()?;
+    let pixels = decoder.decode().ok()?;
+    let info = decoder.info()?;
+    let (w, h) = (info.width as u32, info.height as u32);
+    match info.pixel_format {
+        jpeg_decoder::PixelFormat::RGB24 => image::RgbImage::from_raw(w, h, pixels).map(image::DynamicImage::ImageRgb8),
+        jpeg_decoder::PixelFormat::L8 => image::GrayImage::from_raw(w, h, pixels).map(image::DynamicImage::ImageLuma8),
+        _ => None,
+    }
 }
 
 fn render_svg(path: &Path, px: u32) -> Option<image::DynamicImage> {
@@ -714,6 +790,89 @@ fn mobi_cover(path: &Path) -> Option<image::DynamicImage> {
 /// On-disk preview cache under `$XDG_CACHE_HOME/ski/thumbs`. An entry is named by a hash of the
 /// file's path, size and modification time, so editing a file makes its old entry unreachable
 /// instead of stale. Everything is best effort: any I/O error just means a cache miss.
+/// The thumbnail cache shared with Nautilus and other file managers (freedesktop thumbnail
+/// specification): `~/.cache/thumbnails/<size>/<md5 of the file's URI>.png`, with the URI and
+/// modification time stored in the PNG. Only plain pictures go in, so what other programs find
+/// there is the picture itself.
+mod shared_cache {
+    use std::path::{Path, PathBuf};
+
+    use percent_encoding::{utf8_percent_encode, AsciiSet, NON_ALPHANUMERIC};
+
+    /// What `g_filename_to_uri` leaves unescaped in a path.
+    const KEEP: &AsciiSet = &NON_ALPHANUMERIC.remove(b'-').remove(b'_').remove(b'.').remove(b'~').remove(b'!').remove(b'$').remove(b'&').remove(b'\'').remove(b'(').remove(b')').remove(b'*').remove(b'+').remove(b',').remove(b';').remove(b'=').remove(b':').remove(b'@').remove(b'/');
+
+    fn folder(tier: u32) -> Option<&'static str> {
+        match tier {
+            128 => Some("normal"),
+            256 => Some("large"),
+            512 => Some("x-large"),
+            _ => None,
+        }
+    }
+
+    fn uri(path: &Path) -> Option<String> {
+        use std::os::unix::ffi::OsStrExt;
+        let text = std::str::from_utf8(path.as_os_str().as_bytes()).ok()?;
+        Some(format!("file://{}", utf8_percent_encode(text, KEEP)))
+    }
+
+    fn mtime(path: &Path) -> Option<u64> {
+        std::fs::metadata(path).ok()?.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok().map(|d| d.as_secs())
+    }
+
+    fn entry(uri: &str, tier: u32) -> Option<PathBuf> {
+        let name = format!("{:x}.png", md5::compute(uri.as_bytes()));
+        Some(dirs::cache_dir()?.join("thumbnails").join(folder(tier)?).join(name))
+    }
+
+    pub fn read(path: &Path, tier: u32) -> Option<image::DynamicImage> {
+        let uri = uri(path)?;
+        let file = entry(&uri, tier)?;
+        let bytes = std::fs::read(&file).ok()?;
+        let reader = png::Decoder::new(std::io::Cursor::new(&bytes)).read_info().ok()?;
+        let text = |key: &str| reader.info().uncompressed_latin1_text.iter().find(|c| c.keyword == key).map(|c| c.text.clone());
+        // Made for this very file as it is now, not for an older version or another one with the same name
+        if text("Thumb::URI").is_some_and(|u| u != uri) || text("Thumb::MTime")?.trim().parse::<u64>().ok()? != mtime(path)? {
+            return None;
+        }
+        image::load_from_memory_with_format(&bytes, image::ImageFormat::Png).ok()
+    }
+
+    pub fn write(path: &Path, tier: u32, img: &image::DynamicImage) {
+        let (Some(uri), Some(mtime)) = (uri(path), mtime(path)) else { return };
+        let Some(file) = entry(&uri, tier) else { return };
+        let Some(dir) = file.parent() else { return };
+        if !dir.exists() {
+            use std::os::unix::fs::DirBuilderExt;
+            if std::fs::DirBuilder::new().recursive(true).mode(0o700).create(dir).is_err() {
+                return;
+            }
+        }
+        let rgba = img.to_rgba8();
+        let mut out = Vec::new();
+        let mut encoder = png::Encoder::new(&mut out, rgba.width(), rgba.height());
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        encoder.set_compression(png::Compression::Fast);
+        let size = std::fs::metadata(path).map_or(0, |m| m.len());
+        let ok = encoder.add_text_chunk("Thumb::URI".into(), uri).is_ok()
+            && encoder.add_text_chunk("Thumb::MTime".into(), mtime.to_string()).is_ok()
+            && encoder.add_text_chunk("Thumb::Size".into(), size.to_string()).is_ok()
+            && encoder.write_header().and_then(|mut w| w.write_image_data(rgba.as_raw())).is_ok();
+        if !ok {
+            return;
+        }
+        // Written under a temporary name first, so a reader never sees half a file
+        use std::os::unix::fs::OpenOptionsExt;
+        let tmp = file.with_extension(format!("tmp{}", std::process::id()));
+        let written = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&tmp).and_then(|mut f| std::io::Write::write_all(&mut f, &out));
+        if written.is_err() || std::fs::rename(&tmp, &file).is_err() {
+            let _ = std::fs::remove_file(&tmp);
+        }
+    }
+}
+
 mod cache {
     use std::io::Read;
     use std::os::unix::ffi::OsStrExt;
