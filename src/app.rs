@@ -2893,22 +2893,32 @@ impl SkiApp {
         let mut scroll_delta = 0.0;
         let tab_scroll_id = ("files_scroll", self.tabs[self.active_tab].id);
         let scroll_out = egui::ScrollArea::vertical().id_salt(tab_scroll_id).auto_shrink([false, false]).show(ui, |ui| {
-            ui.spacing_mut().item_spacing.y = 1.0;
+            let gap = 1.0;
+            let width = ui.available_width();
+            // The whole column is taken at once and every row sits at a position computed from its index,
+            // so rows out of view cost nothing: a big folder no longer walks the layout once per row each frame
+            let total = (self.items.len() as f32 * (row_height + gap) - gap).max(0.0);
+            let (_, area) = ui.allocate_space(egui::vec2(width, total));
             let clip = ui.clip_rect();
-            for (idx, item) in self.items.iter().enumerate() {
+            item_rects.extend((0..self.items.len()).map(|idx| {
+                (idx, egui::Rect::from_min_size(egui::pos2(area.left(), area.top() + idx as f32 * (row_height + gap)), egui::vec2(width, row_height)))
+            }));
+            let first = (((clip.top() - area.top()) / (row_height + gap)).floor().max(0.0) as usize).min(self.items.len());
+            let last = (((clip.bottom() - area.top()) / (row_height + gap)).ceil().max(0.0) as usize).min(self.items.len());
+            // A selected row the view must scroll to is built even out of view, so it can ask for the scroll
+            let wanted: Vec<usize> = if should_scroll { self.selection.iter().copied().filter(|i| !(first..last).contains(i) && *i < self.items.len()).collect() } else { Vec::new() };
+            for idx in (first..last).chain(wanted) {
+                let item = &self.items[idx];
+                let slot = item_rects[idx].1;
                 let selected = self.selection.contains(&idx);
-                // Rows out of view only take their place; building every row of a big folder each frame is what made it lag
-                let slot = egui::Rect::from_min_size(ui.cursor().min, egui::vec2(ui.available_width(), row_height));
-                if !slot.intersects(clip) && !(selected && should_scroll) {
-                    ui.allocate_space(slot.size());
-                    item_rects.push((idx, slot));
-                    continue;
-                }
                 let is_cut = cut.contains(&item.path);
                 let hint = self.path_hint(item);
                 let thumb = thumb_for(&self.thumbs, &self.folder_icons, item, show_thumbs);
-                let resp = file_row(ui, idx, item, &self.theme, selected, is_cut, should_scroll, thumb, hint.as_deref(), &self.columns, &self.settings.column_widths, row_height);
-                item_rects.push((idx, resp.rect));
+                let resp = ui
+                    .scope_builder(egui::UiBuilder::new().max_rect(slot), |ui| {
+                        file_row(ui, idx, item, &self.theme, selected, is_cut, should_scroll, thumb, hint.as_deref(), &self.columns, &self.settings.column_widths, row_height)
+                    })
+                    .inner;
                 plugin_ui::paint_marks(ui, &self.theme, &self.plugins.marks(item), egui::pos2(resp.rect.left() + 38.0, resp.rect.center().y + 9.0), egui::pos2(resp.rect.left() + 13.0, resp.rect.center().y + 12.0));
                 let mods = ui.input(|i| i.modifiers);
                 if resp.clicked() {
@@ -2938,10 +2948,10 @@ impl SkiApp {
             }
         });
 
-        self.last_item_rects = item_rects.clone();
         self.visible_rows = folder_sizes::visible_rows(&item_rects, scroll_out.inner_rect);
         self.thumbs.set_visible(self.items.get(self.visible_rows.clone()).unwrap_or_default().iter().map(|i| i.path.as_path()));
         let drag_consumed = self.handle_drag_select(ui, scroll_out.inner_rect, scroll_out.state.clamped_offset().y, scroll_delta, &item_rects);
+        self.last_item_rects = item_rects;
 
         if !drag_consumed {
             if let Some((idx, modifiers)) = clicked {
@@ -3042,10 +3052,10 @@ impl SkiApp {
             }
         });
 
-        self.last_item_rects = item_rects.clone();
         self.visible_rows = folder_sizes::visible_rows(&item_rects, scroll_out.inner_rect);
         self.thumbs.set_visible(self.items.get(self.visible_rows.clone()).unwrap_or_default().iter().map(|i| i.path.as_path()));
         let drag_consumed = self.handle_drag_select(ui, scroll_out.inner_rect, scroll_out.state.clamped_offset().y, scroll_delta, &item_rects);
+        self.last_item_rects = item_rects;
 
         if !drag_consumed {
             if let Some((idx, modifiers)) = clicked {
