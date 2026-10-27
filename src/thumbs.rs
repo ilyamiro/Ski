@@ -232,9 +232,14 @@ impl Thumbnails {
 
     /// Tell the loader which files are on screen now; their previews are made first.
     pub fn set_visible<'a>(&self, paths: impl Iterator<Item = &'a Path>) {
+        let paths: Vec<&Path> = paths.collect();
         if let Ok(mut visible) = self.queue.visible.lock() {
+            // Called every frame: only rebuild the set (and its allocations) when the view moved
+            if visible.len() == paths.len() && paths.iter().all(|p| visible.contains(*p)) {
+                return;
+            }
             visible.clear();
-            visible.extend(paths.map(Path::to_path_buf));
+            visible.extend(paths.into_iter().map(Path::to_path_buf));
         }
     }
 

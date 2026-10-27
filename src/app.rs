@@ -5061,9 +5061,20 @@ impl SkiApp {
                                 pick = Some(folder.clone());
                             }
                         }
+                        // A folder of thousands of pictures: rows out of view only take their place
+                        let clip = ui.clip_rect();
+                        let mut row_h: Option<f32> = None;
                         for image in &picker.images {
+                            if let Some(h) = row_h {
+                                let slot = egui::Rect::from_min_size(ui.cursor().min, egui::vec2(ui.available_width(), h));
+                                if !slot.intersects(clip) && picker.chosen.as_ref() != Some(image) {
+                                    ui.allocate_space(slot.size());
+                                    continue;
+                                }
+                            }
                             let label = image.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
                             let resp = nav_item(ui, ("pk_image", image), icons::IMAGE, &label, &theme, picker.chosen.as_ref() == Some(image));
+                            row_h = Some(resp.rect.height());
                             if resp.double_clicked() {
                                 picker.chosen = Some(image.clone());
                                 confirmed = true;
