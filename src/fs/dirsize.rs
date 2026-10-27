@@ -93,6 +93,17 @@ pub fn has_count(path: &Path) -> bool {
     with(|b| b.counts.contains_key(path))
 }
 
+/// The first `limit` of `folders` whose item count is not known, looked up under one lock: the
+/// listing asks this of every folder it shows on each frame.
+pub fn uncounted<'a>(folders: impl Iterator<Item = &'a Path>, limit: usize) -> Vec<PathBuf> {
+    with(|b| folders.filter(|p| !b.counts.contains_key(*p)).take(limit).map(Path::to_path_buf).collect())
+}
+
+/// Those of `folders` neither measured nor waiting to be, marked as waiting now, under one lock.
+pub fn claim<'a>(folders: impl Iterator<Item = &'a Path>) -> Vec<PathBuf> {
+    with(|b| folders.filter(|p| !b.sizes.contains_key(*p) && b.pending.insert(p.to_path_buf())).map(Path::to_path_buf).collect())
+}
+
 pub fn drop_pending() {
     with(|b| b.pending.clear());
 }

@@ -26,11 +26,12 @@ pub(super) struct SizeScheduler {
 impl SizeScheduler {
     /// Asks for `path` to be measured, unless it is known or on its way.
     pub(super) fn request(&mut self, path: &Path) {
-        if dirsize::totals(path).is_some() || dirsize::is_pending(path) {
-            return;
-        }
-        dirsize::mark_pending(path);
-        self.queue.push_back(path.to_path_buf());
+        self.request_all(std::iter::once(path));
+    }
+
+    /// `request` for many folders at once.
+    pub(super) fn request_all<'a>(&mut self, paths: impl Iterator<Item = &'a Path>) {
+        self.queue.extend(dirsize::claim(paths));
     }
 
     /// `request`, but ahead of everything that waits: what scrolled into view is measured next.
@@ -107,7 +108,7 @@ impl SkiApp {
     pub(super) fn tick_folder_sizes(&mut self, ctx: &egui::Context) {
         dirsize::set_size_on_disk(self.settings.size_on_disk);
         if !self.in_recent() && !self.sizes.counting.load(Ordering::Relaxed) {
-            let missing: Vec<PathBuf> = self.visible_first().filter(|i| i.is_dir && !dirsize::has_count(&i.path)).take(400).map(|i| i.path.clone()).collect();
+            let missing = dirsize::uncounted(self.visible_first().filter(|i| i.is_dir).map(|i| i.path.as_path()), 400);
             if !missing.is_empty() {
                 dirsize::count_in_background(missing, Arc::clone(&self.sizes.counting));
             }
@@ -120,10 +121,8 @@ impl SkiApp {
                 self.sizes.prioritize(&item.path);
             }
             // The selection feeds the status line
-            let selected: Vec<PathBuf> = self.selection.iter().filter_map(|&i| self.items.get(i)).filter(|i| i.is_dir).map(|i| i.path.clone()).collect();
-            for path in wanted.into_iter().chain(selected) {
-                self.sizes.request(&path);
-            }
+            let selected = self.selection.iter().filter_map(|&i| self.items.get(i)).filter(|i| i.is_dir).map(|i| i.path.as_path());
+            self.sizes.request_all(wanted.iter().map(PathBuf::as_path).chain(selected));
         }
         if self.sizes.tick() && self.sort_by == SortBy::Size {
             self.resort_items();
