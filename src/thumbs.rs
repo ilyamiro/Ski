@@ -21,6 +21,9 @@ const PAGE_MIN: u32 = 256;
 const WORKERS: usize = 2;
 /// Textures uploaded per frame; the rest wait for the next one so a big folder never stalls a frame.
 const UPLOADS_PER_FRAME: usize = 6;
+/// Previews kept in memory, in bytes of pixels. Past this, opening a folder lets go of the other
+/// folders' pictures; the disk cache brings them back quickly if they are needed again.
+const TEXTURE_BUDGET: usize = 256 * 1024 * 1024;
 /// PDFs and archives larger than this are not worth rendering for a tiny preview.
 /// ffmpeg gets this long on one frame before it is killed.
 const VIDEO_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
@@ -47,28 +50,51 @@ struct Job {
 /// pictures being looked at appear first and the rest of a big folder fills in behind them.
 #[derive(Default)]
 struct Queue {
-    jobs: Mutex<Vec<Job>>,
+    jobs: Mutex<Waiting>,
     wake: std::sync::Condvar,
-    visible: Mutex<HashSet<PathBuf>>,
+    /// The files on screen, top to bottom.
+    visible: Mutex<Vec<PathBuf>>,
+}
+
+#[derive(Default)]
+struct Waiting {
+    jobs: std::collections::VecDeque<Job>,
+    /// How many waiting jobs each file has, so a worker asks the few files on screen whether they
+    /// wait instead of hashing every job of a big folder on each turn.
+    count: HashMap<PathBuf, usize>,
 }
 
 impl Queue {
     fn push(&self, job: Job) {
-        if let Ok(mut jobs) = self.jobs.lock() {
-            jobs.push(job);
+        if let Ok(mut waiting) = self.jobs.lock() {
+            *waiting.count.entry(job.path.clone()).or_default() += 1;
+            waiting.jobs.push_back(job);
         }
         self.wake.notify_one();
     }
 
     fn pop(&self) -> Job {
-        let mut jobs = self.jobs.lock().unwrap_or_else(|e| e.into_inner());
+        let mut waiting = self.jobs.lock().unwrap_or_else(|e| e.into_inner());
         loop {
-            if !jobs.is_empty() {
-                let visible = self.visible.lock().unwrap_or_else(|e| e.into_inner());
-                let at = jobs.iter().position(|j| visible.contains(&j.path)).unwrap_or(0);
-                return jobs.remove(at);
+            if !waiting.jobs.is_empty() {
+                let at = {
+                    let visible = self.visible.lock().unwrap_or_else(|e| e.into_inner());
+                    visible
+                        .iter()
+                        .find(|p| waiting.count.contains_key(*p))
+                        .and_then(|p| waiting.jobs.iter().position(|j| &j.path == p))
+                        .unwrap_or(0)
+                };
+                let job = waiting.jobs.remove(at).expect("index in range");
+                if let Some(n) = waiting.count.get_mut(&job.path) {
+                    *n -= 1;
+                    if *n == 0 {
+                        waiting.count.remove(&job.path);
+                    }
+                }
+                return job;
             }
-            jobs = self.wake.wait(jobs).unwrap_or_else(|e| e.into_inner());
+            waiting = self.wake.wait(waiting).unwrap_or_else(|e| e.into_inner());
         }
     }
 }
@@ -234,8 +260,8 @@ impl Thumbnails {
     pub fn set_visible<'a>(&self, paths: impl Iterator<Item = &'a Path>) {
         let paths: Vec<&Path> = paths.collect();
         if let Ok(mut visible) = self.queue.visible.lock() {
-            // Called every frame: only rebuild the set (and its allocations) when the view moved
-            if visible.len() == paths.len() && paths.iter().all(|p| visible.contains(*p)) {
+            // Called every frame: only rebuild the list (and its allocations) when the view moved
+            if visible.len() == paths.len() && visible.iter().zip(&paths).all(|(a, b)| a == b) {
                 return;
             }
             visible.clear();
@@ -255,6 +281,19 @@ impl Thumbnails {
             self.enqueue(path, stamp, generation);
             self.current.push(path.to_path_buf());
         }
+        self.trim_textures();
+    }
+
+    /// Lets go of the pictures of other folders once they take more memory than `TEXTURE_BUDGET`,
+    /// so browsing folder after folder of photos does not hold every preview ever shown.
+    fn trim_textures(&mut self) {
+        let total: usize = self.textures.values().map(|(tex, _)| tex.size().iter().product::<usize>() * 4).sum();
+        if total <= TEXTURE_BUDGET {
+            return;
+        }
+        let keep: HashSet<&Path> = self.current.iter().map(PathBuf::as_path).collect();
+        self.textures.retain(|path, _| keep.contains(path.as_path()));
+        self.made.retain(|path, _| keep.contains(path.as_path()));
     }
 
     /// Queue one extra image (e.g. a custom folder icon) without cancelling the folder's own work.
