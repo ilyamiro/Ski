@@ -15,8 +15,8 @@ use eframe::egui;
 
 /// Preview resolutions, by the longest side in pixels.
 const TIERS: [u32; 3] = [128, 256, 512];
-/// Document pages and video frames keep their aspect ratio and need more pixels than a square
-/// crop to stay readable, so they never render below this.
+/// Document pages and video frames need more pixels than a small tile to stay readable, so they
+/// never render below this.
 const PAGE_MIN: u32 = 256;
 const WORKERS: usize = 4;
 /// PDFs and archives larger than this are not worth rendering for a tiny preview.
@@ -326,7 +326,7 @@ fn render_thumbnail(path: &Path, tier: u32) -> Option<image::DynamicImage> {
         return Some(page.thumbnail(page_size, page_size));
     }
     if is_audio(path) {
-        return Some(square(ffmpeg_picture(path, tier)?, tier));
+        return Some(ffmpeg_picture(path, tier)?.thumbnail(tier, tier));
     }
     if is_video(path) {
         if extension(path).as_deref() == Some("ts") && !is_transport_stream(path) {
@@ -342,14 +342,7 @@ fn render_thumbnail(path: &Path, tier: u32) -> Option<image::DynamicImage> {
     } else {
         image::ImageReader::open(path).ok()?.with_guessed_format().ok()?.decode().ok()?
     };
-    Some(square(img, tier))
-}
-
-/// Center crop to a square of at most `side` pixels.
-fn square(img: image::DynamicImage, side: u32) -> image::DynamicImage {
-    let (w, h) = (img.width(), img.height());
-    let edge = w.min(h);
-    img.crop_imm((w - edge) / 2, (h - edge) / 2, edge, edge).thumbnail(side, side)
+    Some(img.thumbnail(tier, tier))
 }
 
 fn render_svg(path: &Path, px: u32) -> Option<image::DynamicImage> {
@@ -729,7 +722,7 @@ mod cache {
     use std::time::{Duration, SystemTime};
 
     /// Bump when the way previews are drawn changes, which orphans every older entry.
-    const VERSION: u8 = 2;
+    const VERSION: u8 = 3;
     /// The least recently used entries go once the cache passes this size.
     const MAX_BYTES: u64 = 768 * 1024 * 1024;
     /// A file with no preview is tried again after this long, in case ffmpeg was installed meanwhile.
