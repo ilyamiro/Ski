@@ -2,8 +2,8 @@
 //! to the compositor itself, on its own event queue of the window's display: it starts a drag
 //! (`wl_data_device.start_drag`) when files are carried out of the window, and takes part as a
 //! target for drags from any window, Ski's own or another program's. Files travel as
-//! `text/uri-list`, like in Nautilus. The queue is dispatched from the frame loop (`poll`); a
-//! small thread only wakes the loop when the compositor has something to say.
+//! `text/uri-list`, like in Nautilus. The queue is dispatched from the frame loop (`poll`), which
+//! never touches the socket; a small thread reads it and wakes the loop when an event is for this queue.
 
 use std::collections::HashMap;
 use std::io::Write;
@@ -21,7 +21,7 @@ use wayland_client::protocol::wl_data_offer::{self, WlDataOffer};
 use wayland_client::protocol::wl_data_source::{self, WlDataSource};
 use wayland_client::protocol::wl_pointer::{self, ButtonState, WlPointer};
 use wayland_client::protocol::wl_registry::WlRegistry;
-use wayland_client::protocol::wl_seat::WlSeat;
+use wayland_client::protocol::wl_seat::{self, WlSeat};
 use wayland_client::protocol::wl_shm::{self, WlShm};
 use wayland_client::protocol::wl_shm_pool::WlShmPool;
 use wayland_client::protocol::wl_surface::WlSurface;
@@ -115,6 +115,8 @@ struct Outgoing {
 #[derive(Default)]
 struct State {
     surface: Option<ObjectId>,
+    /// Only while the seat has a pointer; its button presses give the serial a drag starts with.
+    pointer: Option<WlPointer>,
     press_serial: Option<u32>,
     offers: HashMap<ObjectId, OfferInfo>,
     selection: Option<WlDataOffer>,
@@ -133,7 +135,16 @@ pub struct WaylandDnd {
     manager: WlDataDeviceManager,
     device: WlDataDevice,
     _seat: WlSeat,
-    _pointer: WlPointer,
+    /// Asks for a frame when an event lands in this queue.
+    waker: std::task::Waker,
+}
+
+struct Repaint(eframe::egui::Context);
+
+impl std::task::Wake for Repaint {
+    fn wake(self: std::sync::Arc<Self>) {
+        self.0.request_repaint();
+    }
 }
 
 impl WaylandDnd {
@@ -155,40 +166,56 @@ impl WaylandDnd {
         let compositor: WlCompositor = globals.bind(&qh, 1..=4, ()).ok()?;
         let shm: Option<WlShm> = globals.bind(&qh, 1..=1, ()).ok();
         let device = manager.get_data_device(&seat, &qh, ());
-        let pointer = seat.get_pointer(&qh, ());
         connection.flush().ok()?;
 
         let state = State { surface: Some(surface_id), ..State::default() };
-        let this = Self { connection, queue, state, surface, compositor, shm, manager, device, _seat: seat, _pointer: pointer };
-        this.spawn_waker(ctx);
-        Some(this)
+        let waker = std::sync::Arc::new(Repaint(ctx.clone())).into();
+        Self::spawn_reader(connection.clone());
+        Some(Self { connection, queue, state, surface, compositor, shm, manager, device, _seat: seat, waker })
     }
 
-    /// Wakes the frame loop when the compositor sends something, since a drag over the window
-    /// produces no events for egui.
-    fn spawn_waker(&self, ctx: &eframe::egui::Context) {
-        let fd: RawFd = self.connection.backend().poll_fd().as_raw_fd();
-        let ctx = ctx.clone();
+    /// Reads the socket for this queue in the way libwayland expects of each reader (prepare, wait
+    /// until it is readable, read), so it never holds up winit or the clipboard, which read the same
+    /// display. Events read for this queue wake the frame loop through `waker`, since a drag over the
+    /// window produces no events for egui; nothing else that arrives asks for a frame.
+    fn spawn_reader(connection: Connection) {
         std::thread::spawn(move || {
             loop {
-                let mut pfd = libc::pollfd { fd, events: libc::POLLIN, revents: 0 };
+                let Some(guard) = connection.prepare_read() else {
+                    // Another reader already took in events for this queue: hand them on
+                    if connection.backend().dispatch_inner_queue().is_err() {
+                        return;
+                    }
+                    continue;
+                };
+                let mut pfd = libc::pollfd { fd: guard.connection_fd().as_raw_fd(), events: libc::POLLIN, revents: 0 };
                 // SAFETY: one valid pollfd; the display outlives the process's windows
                 let n = unsafe { libc::poll(&mut pfd, 1, -1) };
-                if n < 0 && std::io::Error::last_os_error().kind() != std::io::ErrorKind::Interrupted {
+                if n < 0 {
+                    if std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
+                        continue;
+                    }
                     return;
                 }
-                ctx.request_repaint();
-                std::thread::sleep(std::time::Duration::from_millis(8));
+                // Only read once there is something: reading an empty socket would wait for the other readers
+                if pfd.revents & libc::POLLIN != 0 {
+                    match guard.read() {
+                        Ok(_) => {}
+                        Err(wayland_backend::client::WaylandError::Io(e)) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+                        Err(_) => return,
+                    }
+                } else if pfd.revents & (libc::POLLHUP | libc::POLLERR | libc::POLLNVAL) != 0 {
+                    return;
+                }
             }
         });
     }
 
     /// Takes in what the compositor has sent and reports the state of a drag over the window.
+    /// Never waits on the socket: the reader thread takes care of that.
     pub fn poll(&mut self) -> Poll {
-        if let Some(guard) = self.queue.prepare_read() {
-            let _ = guard.read();
-        }
-        let _ = self.queue.dispatch_pending(&mut self.state);
+        let mut cx = std::task::Context::from_waker(&self.waker);
+        let _ = self.queue.poll_dispatch_pending(&mut cx, &mut self.state);
 
         let mut poll = Poll::default();
         if let Some(h) = &mut self.state.hover {
@@ -400,7 +427,23 @@ macro_rules! ignore_events {
         }
     )*};
 }
-ignore_events!(WlSeat, WlDataDeviceManager, WlCompositor, WlShm, WlShmPool, WlBuffer, WlSurface);
+ignore_events!(WlDataDeviceManager, WlCompositor, WlShm, WlShmPool, WlBuffer, WlSurface);
+
+impl Dispatch<WlSeat, ()> for State {
+    fn event(state: &mut Self, seat: &WlSeat, event: wl_seat::Event, _: &(), _: &Connection, qh: &QueueHandle<Self>) {
+        // Asking a seat without a pointer for one is a protocol error, which would end the window's connection too
+        if let wl_seat::Event::Capabilities { capabilities: WEnum::Value(caps) } = event {
+            let has = caps.contains(wl_seat::Capability::Pointer);
+            if has && state.pointer.is_none() {
+                state.pointer = Some(seat.get_pointer(qh, ()));
+            } else if !has && let Some(pointer) = state.pointer.take() {
+                if pointer.version() >= 3 {
+                    pointer.release();
+                }
+            }
+        }
+    }
+}
 
 impl Dispatch<WlPointer, ()> for State {
     fn event(state: &mut Self, _: &WlPointer, event: wl_pointer::Event, _: &(), _: &Connection, _: &QueueHandle<Self>) {
