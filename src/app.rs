@@ -2893,8 +2893,16 @@ impl SkiApp {
         let tab_scroll_id = ("files_scroll", self.tabs[self.active_tab].id);
         let scroll_out = egui::ScrollArea::vertical().id_salt(tab_scroll_id).auto_shrink([false, false]).show(ui, |ui| {
             ui.spacing_mut().item_spacing.y = 1.0;
+            let clip = ui.clip_rect();
             for (idx, item) in self.items.iter().enumerate() {
                 let selected = self.selection.contains(&idx);
+                // Rows out of view only take their place; building every row of a big folder each frame is what made it lag
+                let slot = egui::Rect::from_min_size(ui.cursor().min, egui::vec2(ui.available_width(), row_height));
+                if !slot.intersects(clip) && !(selected && should_scroll) {
+                    ui.allocate_space(slot.size());
+                    item_rects.push((idx, slot));
+                    continue;
+                }
                 let is_cut = cut.contains(&item.path);
                 let hint = self.path_hint(item);
                 let thumb = thumb_for(&self.thumbs, &self.folder_icons, item, show_thumbs);
@@ -2979,6 +2987,7 @@ impl SkiApp {
             self.grid_cols = cols;
             let rows = self.items.len().div_ceil(cols);
             let (_, area) = ui.allocate_space(egui::vec2(ui.available_width(), rows as f32 * (cell.y + spacing)));
+            let clip = ui.clip_rect();
 
             for (row_idx, row) in self.items.chunks(cols).enumerate() {
                 for (col_idx, item) in row.iter().enumerate() {
@@ -2989,6 +2998,11 @@ impl SkiApp {
                     let slot = egui::Rect::from_min_size(origin, cell);
                     let idx = row_idx * cols + col_idx;
                     let selected = self.selection.contains(&idx);
+                    // Tiles out of view only keep their place; building every tile of a big folder each frame is what made it lag
+                    if !slot.intersects(clip) && !(selected && should_scroll) {
+                        item_rects.push((idx, slot));
+                        continue;
+                    }
                     let is_cut = cut.contains(&item.path);
                     let thumb = thumb_for(&self.thumbs, &self.folder_icons, item, show_thumbs);
                     let resp = ui
