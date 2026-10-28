@@ -3771,11 +3771,19 @@ impl SkiApp {
                 Err(err) => failed.push(format!("{}: {err}", path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default())),
             }
         }
+        let next = self.items.iter().position(|i| removed.contains(&i.path));
         if self.is_mixed_listing() {
             self.selected_index = None;
             self.refresh_listing();
         } else {
             self.remove_listed(&removed);
+        }
+        // Keep the keyboard going, as Nautilus does: the item that slid into the gap, or the last one.
+        if let Some(at) = next.filter(|_| !removed.is_empty() && !self.items.is_empty()) {
+            let idx = at.min(self.items.len() - 1);
+            self.selected_index = Some(idx);
+            self.sync_selection(true);
+            self.scroll_to_selected = true;
         }
         self.forget_sizes(&removed);
         self.plugins.file_op_done(&crate::plugins::FileOpEvent::Removed(removed));
