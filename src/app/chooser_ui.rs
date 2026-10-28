@@ -166,63 +166,68 @@ impl SkiApp {
                     // Items centre on the row's height, which is only as tall as the label until the
                     // field and buttons widen it: fix it up front so the label lines up with the field
                     ui.set_min_height(material::BUTTON_HEIGHT);
-                    if ch.takes_name() {
-                        ui.label(egui::RichText::new(tr("File name")).size(material::FONT_CAPTION).color(theme.subtext1));
-                        // A frame is placed at the row's top rather than centred, so give it the row's
-                        // exact height through its margin instead of leaving it to the text's height
-                        let text_h = ui.fonts_mut(|f| f.row_height(&egui::FontId::proportional(material::FONT_BODY)));
-                        let pad = ((material::BUTTON_HEIGHT - text_h) / 2.0).max(0.0).round() as i8;
-                        let field = material::input_frame(&theme)
-                            .inner_margin(egui::Margin::symmetric(14, pad))
-                            .show(ui, |ui| {
-                                egui::TextEdit::singleline(&mut ch.name_input)
-                                    .frame(egui::Frame::NONE)
-                                    .desired_width(240.0)
-                                    .font(egui::FontId::proportional(material::FONT_BODY))
-                                    .show(ui)
-                            })
-                            .inner;
-                        if ch.focus_name {
-                            // Ready to type: focus the field with the name up to its extension selected
-                            field.response.request_focus();
-                            let end = match ch.name_input.rfind('.') {
-                                Some(i) if i > 0 => ch.name_input[..i].chars().count(),
-                                _ => ch.name_input.chars().count(),
-                            };
-                            let mut state = field.state.clone();
-                            state.cursor.set_char_range(Some(egui::text::CCursorRange::two(egui::text::CCursor::new(0), egui::text::CCursor::new(end))));
-                            state.store(ui.ctx(), field.response.id);
-                            ch.focus_name = false;
-                        }
-                        let field = field.response;
-                        if field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                            accept = true;
-                        }
-                    }
-                    if !ch.spec.filters.is_empty() {
-                        let labels: Vec<String> = ch.spec.filters.iter().map(|f| f.label.clone()).collect();
-                        // The listing is read again below, once the chooser is back: it filters by it
-                        filter_changed = material::dropdown(ui, "chooser_filter", &labels, &mut ch.filter, &theme);
-                    }
-                    let Chooser { spec, choice_values, .. } = &mut ch;
-                    for (choice, value) in spec.choices.iter().zip(choice_values.iter_mut()) {
-                        if choice.options.is_empty() {
-                            let mut on = value == "true";
-                            if ui.checkbox(&mut on, choice.label.replace('_', "")).changed() {
-                                *value = on.to_string();
-                            }
-                        } else {
-                            ui.label(egui::RichText::new(choice.label.replace('_', "")).size(material::FONT_CAPTION).color(theme.subtext1));
-                            let labels: Vec<String> = choice.options.iter().map(|(_, label)| label.clone()).collect();
-                            let mut at = choice.options.iter().position(|(id, _)| id == value).unwrap_or(0);
-                            if material::dropdown(ui, ("chooser_choice", &choice.id), &labels, &mut at, &theme) {
-                                *value = choice.options[at].0.clone();
-                            }
-                        }
-                    }
+                    // The buttons take their room first, so a long name or file type is fitted into
+                    // what is left rather than pushing under them
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         accept |= material::button(ui, "chooser_accept", Some(icons::CHECK), &label, &theme, ButtonKind::Filled, ready).clicked() && ready;
                         cancel |= material::button(ui, "chooser_cancel", None, tr("Cancel"), &theme, ButtonKind::Text, true).clicked();
+                        ui.add_space(10.0);
+                        ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                            if ch.takes_name() {
+                                ui.label(egui::RichText::new(tr("File name")).size(material::FONT_CAPTION).color(theme.subtext1));
+                                // A frame is placed at the row's top rather than centred, so give it the row's
+                                // exact height through its margin instead of leaving it to the text's height
+                                let text_h = ui.fonts_mut(|f| f.row_height(&egui::FontId::proportional(material::FONT_BODY)));
+                                let pad = ((material::BUTTON_HEIGHT - text_h) / 2.0).max(0.0).round() as i8;
+                                let field = material::input_frame(&theme)
+                                    .inner_margin(egui::Margin::symmetric(14, pad))
+                                    .show(ui, |ui| {
+                                        egui::TextEdit::singleline(&mut ch.name_input)
+                                            .frame(egui::Frame::NONE)
+                                            .desired_width(240.0_f32.min(ui.available_width() - 160.0).max(80.0))
+                                            .font(egui::FontId::proportional(material::FONT_BODY))
+                                            .show(ui)
+                                    })
+                                    .inner;
+                                if ch.focus_name {
+                                    // Ready to type: focus the field with the name up to its extension selected
+                                    field.response.request_focus();
+                                    let end = match ch.name_input.rfind('.') {
+                                        Some(i) if i > 0 => ch.name_input[..i].chars().count(),
+                                        _ => ch.name_input.chars().count(),
+                                    };
+                                    let mut state = field.state.clone();
+                                    state.cursor.set_char_range(Some(egui::text::CCursorRange::two(egui::text::CCursor::new(0), egui::text::CCursor::new(end))));
+                                    state.store(ui.ctx(), field.response.id);
+                                    ch.focus_name = false;
+                                }
+                                let field = field.response;
+                                if field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                                    accept = true;
+                                }
+                            }
+                            if !ch.spec.filters.is_empty() {
+                                let labels: Vec<String> = ch.spec.filters.iter().map(|f| f.label.clone()).collect();
+                                // The listing is read again below, once the chooser is back: it filters by it
+                                filter_changed = material::dropdown(ui, "chooser_filter", &labels, &mut ch.filter, &theme);
+                            }
+                            let Chooser { spec, choice_values, .. } = &mut ch;
+                            for (choice, value) in spec.choices.iter().zip(choice_values.iter_mut()) {
+                                if choice.options.is_empty() {
+                                    let mut on = value == "true";
+                                    if ui.checkbox(&mut on, choice.label.replace('_', "")).changed() {
+                                        *value = on.to_string();
+                                    }
+                                } else {
+                                    ui.label(egui::RichText::new(choice.label.replace('_', "")).size(material::FONT_CAPTION).color(theme.subtext1));
+                                    let labels: Vec<String> = choice.options.iter().map(|(_, label)| label.clone()).collect();
+                                    let mut at = choice.options.iter().position(|(id, _)| id == value).unwrap_or(0);
+                                    if material::dropdown(ui, ("chooser_choice", &choice.id), &labels, &mut at, &theme) {
+                                        *value = choice.options[at].0.clone();
+                                    }
+                                }
+                            }
+                        });
                     });
                 });
             });

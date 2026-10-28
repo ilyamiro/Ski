@@ -1399,7 +1399,9 @@ pub fn dropdown(
         .map(|o| ui.painter().layout_no_wrap(o.clone(), font.clone(), theme.text).size().x)
         .fold(0.0, f32::max);
     let width = text_w + 16.0 + 14.0 + 24.0;
-    let (rect, response) = ui.allocate_exact_size(Vec2::new(width, 32.0), egui::Sense::click());
+    // Never wider than the room left, so a long label is cut short instead of running under what follows
+    let shown_w = width.min(ui.available_width()).max(80.0);
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(shown_w, 32.0), egui::Sense::click());
     let id = ui.make_persistent_id(id_source);
     let open = egui::Popup::is_id_open(ui.ctx(), egui::Popup::default_response_id(&response));
     let bfx = fx(ui, id, &response, true, &FxSpec::CLICK);
@@ -1410,7 +1412,7 @@ pub fn dropdown(
         bfx.press,
     );
     paint_fill(ui.painter(), r, pill(r), fill, &bfx);
-    ui.painter().text(Pos2::new(rect.left() + 16.0, rect.center().y), Align2::LEFT_CENTER, shown, font.clone(), theme.text);
+    paint_label(ui, rect.left() + 16.0, rect.center().y, shown, FONT_BODY, theme.text, rect.width() - 16.0 - 34.0);
     // Chevron that points up while the menu is open
     let c = Pos2::new(rect.right() - 20.0, rect.center().y);
     let dy = if open { -2.5 } else { 2.5 };
