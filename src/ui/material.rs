@@ -483,7 +483,7 @@ pub fn paint_icon(painter: &egui::Painter, center: Pos2, icon: &str, size: f32, 
     // The close glyph is heavy; a hairline cross, a little smaller, reads lighter everywhere it appears
     if icon == icons::CLOSE {
         let d = size * 0.3;
-        let stroke = egui::Stroke::new(1.2, color);
+        let stroke = egui::Stroke::new(1.8, color);
         painter.line_segment([center + Vec2::new(-d, -d), center + Vec2::new(d, d)], stroke);
         painter.line_segment([center + Vec2::new(-d, d), center + Vec2::new(d, -d)], stroke);
         return;
@@ -617,8 +617,8 @@ pub fn filled_icon_button(
     };
     paint_fill(ui.painter(), r, pill(r), lerp_color(idle, hovered, fx.hover.max(fx.press)), &fx);
 
-    let color = lerp_color(theme.subtext1, accent.unwrap_or(theme.text), fx.hover.max(fx.press));
-    paint_icon(ui.painter(), rect.center(), icon, if close { 11.0 } else { (size * 0.42).round() }, color);
+    let color = if close { theme.text } else { lerp_color(theme.subtext1, accent.unwrap_or(theme.text), fx.hover.max(fx.press)) };
+    paint_icon(ui.painter(), rect.center(), icon, if close { 9.0 } else { (size * 0.42).round() }, color);
     if tooltip.is_empty() { response } else { response.on_hover_text(tooltip) }
 }
 
