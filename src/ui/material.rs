@@ -417,7 +417,8 @@ pub fn lerp_color(a: Color32, b: Color32, t: f32) -> Color32 {
 }
 
 pub(crate) fn blend_over(under: Color32, over: Color32) -> Color32 {
-    lerp_color(under, Color32::from_rgb(over.r(), over.g(), over.b()), over.a() as f32 / 255.0)
+    let [r, g, b, a] = over.to_srgba_unmultiplied();
+    lerp_color(under, Color32::from_rgb(r, g, b), a as f32 / 255.0)
 }
 
 pub(crate) fn lerp(a: f32, b: f32, t: f32) -> f32 {
@@ -991,10 +992,8 @@ fn nav_item_sense(
     let sel_t = animate(ui.ctx(), id.with("sel"), selected);
     let r = scaled(rect, fx.scale);
 
-    // Calm states: a step up in surface on hover, another step when chosen; no accent color
-    let hover = theme.with_alpha(theme.surface1, (fx.hover * 255.0).round() as u8);
-    let chosen = lerp_color(theme.surface2, lerp_color(theme.surface2, theme.text, 0.06), fx.press);
-    paint_fill(ui.painter(), r, pill(r), lerp_color(lerp_color(hover, theme.surface2, fx.press), chosen, sel_t), &fx);
+    // The same hover and selection fills as the rows of the file list
+    paint_fill(ui.painter(), r, pill(r), selectable_bg(theme, &fx, sel_t), &fx);
 
     let color = lerp_color(theme.subtext0, theme.text, fx.hover.max(sel_t));
     paint_icon(ui.painter(), Pos2::new(rect.left() + INSET_ICON, rect.center().y), icon, ICON_MD, color);
@@ -1583,7 +1582,7 @@ pub fn switch_row_with(
 
     paint_icon(ui.painter(), Pos2::new(rect.left() + INSET_ICON + 2.0, rect.center().y), icon, ICON_MD, lerp_color(theme.subtext0, theme.mauve, t));
     let text_x = rect.left() + INSET_LABEL + 2.0;
-    let room = rect.width() - (text_x - rect.left()) - 64.0;
+    let room = rect.width() - (text_x - rect.left()) - 76.0;
     match description {
         Some(desc) => {
             paint_label(ui, text_x, rect.center().y - 9.0, label, FONT_BODY, theme.text, room);
@@ -1592,16 +1591,78 @@ pub fn switch_row_with(
         None => paint_label(ui, text_x, rect.center().y, label, FONT_BODY, theme.text, room),
     }
 
-    paint_switch(ui, Pos2::new(rect.right() - 30.0, rect.center().y), t, fx.press, theme);
+    paint_switch(ui, Pos2::new(rect.right() - 36.0, rect.center().y), t, fx.press, theme);
     response
 }
 
-/// Flat on/off switch: a thin track and a plain knob, no glyphs.
+/// Setting row with a slider: icon and label at the left, a Material track with a round handle and the value at the right.
+/// Returns true when `value` changed.
+#[allow(clippy::too_many_arguments)]
+pub fn slider_row(
+    ui: &mut egui::Ui,
+    id_source: impl std::hash::Hash + std::fmt::Debug,
+    icon: &str,
+    label: &str,
+    theme: &SerpantinumTheme,
+    value: &mut u8,
+    range: std::ops::RangeInclusive<u8>,
+    suffix: &str,
+) -> bool {
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), SETTING_HEIGHT), egui::Sense::hover());
+    let id = ui.make_persistent_id(id_source);
+    let (lo, hi) = (*range.start() as f32, *range.end() as f32);
+
+    paint_icon(ui.painter(), Pos2::new(rect.left() + INSET_ICON + 2.0, rect.center().y), icon, ICON_MD, theme.subtext0);
+    let text_x = rect.left() + INSET_LABEL + 2.0;
+    paint_label(ui, text_x, rect.center().y, label, FONT_BODY, theme.text, 120.0);
+
+    // The value sits at the right edge; the track takes the room between the label and it
+    let value_w = 52.0;
+    let handle_r = 10.0;
+    let track_right = rect.right() - 16.0 - value_w - 8.0 - handle_r;
+    let track_left = (text_x + 120.0 + handle_r).min(track_right - 80.0).max(text_x + 60.0);
+    let hit = Rect::from_min_max(Pos2::new(track_left - handle_r, rect.center().y - 16.0), Pos2::new(track_right + handle_r, rect.center().y + 16.0));
+    let response = ui.interact(hit, id, egui::Sense::click_and_drag());
+
+    let mut changed = false;
+    if (response.dragged() || response.clicked() || response.drag_started())
+        && let Some(pos) = response.interact_pointer_pos() {
+            let f = ((pos.x - track_left) / (track_right - track_left)).clamp(0.0, 1.0);
+            let v = (lo + f * (hi - lo)).round() as u8;
+            if v != *value {
+                *value = v;
+                changed = true;
+            }
+    }
+
+    let active = response.dragged();
+    let hover = animate(ui.ctx(), id.with("hover"), response.hovered() || active);
+    let f = (*value as f32 - lo) / (hi - lo).max(1.0);
+    let x = lerp(track_left, track_right, f);
+    let painter = ui.painter();
+    let y = rect.center().y;
+    let bar = |l: f32, r: f32| Rect::from_min_max(Pos2::new(l, y - 2.0), Pos2::new(r, y + 2.0));
+    painter.rect_filled(bar(track_left, track_right), CornerRadius::same(2), theme.surface2);
+    painter.rect_filled(bar(track_left, x), CornerRadius::same(2), theme.mauve);
+    if hover > 0.01 {
+        painter.circle_filled(Pos2::new(x, y), handle_r + 6.0, theme.with_alpha(theme.mauve, (hover * if active { 52.0 } else { 34.0 }) as u8));
+    }
+    painter.circle_filled(Pos2::new(x, y), handle_r - if active { 1.0 } else { 0.0 }, theme.mauve);
+
+    let galley = painter.layout_no_wrap(format!("{}{suffix}", *value), egui::FontId::proportional(FONT_BODY), theme.text);
+    painter.galley(Pos2::new(rect.right() - 16.0 - galley.size().x, y - galley.size().y / 2.0), galley, theme.text);
+    changed
+}
+
+const SWITCH_W: f32 = 44.0;
+const SWITCH_H: f32 = 24.0;
+
+/// Flat on/off switch: a pill track and a round knob that slides and grows as it turns on, no glyphs.
 fn paint_switch(ui: &egui::Ui, center: Pos2, on: f32, press: f32, theme: &SerpantinumTheme) {
-    let track = snap(ui.painter(), Rect::from_center_size(center, Vec2::new(34.0, 18.0)));
-    ui.painter().rect_filled(track, CornerRadius::same(9), lerp_color(theme.surface2, theme.mauve, on));
-    let knob_r = lerp(5.5, 6.5, on) + press * 0.8;
-    let knob_x = lerp(track.left() + 9.0, track.right() - 9.0, on);
+    let track = Rect::from_center_size(center, Vec2::new(SWITCH_W, SWITCH_H));
+    ui.painter().rect_filled(track, CornerRadius::same((SWITCH_H / 2.0) as u8), lerp_color(theme.surface2, theme.mauve, on));
+    let knob_r = lerp(7.0, 8.5, on) + press * 1.0;
+    let knob_x = lerp(track.left() + SWITCH_H / 2.0, track.right() - SWITCH_H / 2.0, on);
     let knob = lerp_color(theme.subtext1, on_color(theme, theme.mauve), on);
     ui.painter().circle_filled(Pos2::new(knob_x, track.center().y), knob_r, knob);
 }
@@ -1647,12 +1708,12 @@ pub fn toggle_row(
 ) -> egui::Response {
     let (rect, response, fx) = menu_row_frame(ui, &id_source, theme);
     let t = animate(ui.ctx(), response.id.with("on"), on);
-    let switch_cx = rect.right() - 12.0 - 17.0;
+    let switch_cx = rect.right() - 12.0 - SWITCH_W / 2.0;
     paint_switch(ui, Pos2::new(switch_cx, rect.center().y), t, fx.press, theme);
-    let mut room = rect.width() - 24.0 - 34.0 - 8.0;
+    let mut room = rect.width() - 24.0 - SWITCH_W - 8.0;
     if let Some(hint) = hint {
         let galley = ui.painter().layout_no_wrap(hint.to_owned(), egui::FontId::proportional(FONT_CAPTION), theme.subtext1);
-        let x = switch_cx - 17.0 - 10.0 - galley.size().x;
+        let x = switch_cx - SWITCH_W / 2.0 - 10.0 - galley.size().x;
         ui.painter().galley(Pos2::new(x, rect.center().y - galley.size().y / 2.0), galley, theme.subtext1);
         room = x - rect.left() - 12.0 - 10.0;
     }
@@ -2006,6 +2067,19 @@ pub fn dialog_header_with_heart(
     close_id: impl std::hash::Hash + std::fmt::Debug,
     heart: Option<bool>,
 ) -> (bool, bool) {
+    dialog_header_sized(ui, title, subtitle, theme, close_id, heart, FONT_TITLE)
+}
+
+/// `dialog_header_with_heart` with a chosen title size.
+pub fn dialog_header_sized(
+    ui: &mut egui::Ui,
+    title: &str,
+    subtitle: Option<&str>,
+    theme: &SerpantinumTheme,
+    close_id: impl std::hash::Hash + std::fmt::Debug,
+    heart: Option<bool>,
+    title_size: f32,
+) -> (bool, bool) {
     const SIZE: f32 = 30.0;
     let mut close = false;
     let mut hearted = false;
@@ -2021,7 +2095,7 @@ pub fn dialog_header_with_heart(
         ui.vertical(|ui| {
             ui.spacing_mut().item_spacing.y = 0.0;
             let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width() - SIZE - 8.0, SIZE), egui::Sense::hover());
-            paint_label(ui, rect.left(), rect.center().y, title, FONT_TITLE, theme.text, rect.width());
+            paint_label(ui, rect.left(), rect.center().y, title, title_size, theme.text, rect.width());
             if let Some(sub) = subtitle {
                 ui.add_space(1.0);
                 ui.label(egui::RichText::new(sub).size(FONT_CAPTION).color(theme.subtext1));

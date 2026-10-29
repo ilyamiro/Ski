@@ -458,6 +458,8 @@ impl SkiApp {
         let canonical_path = initial_path.canonicalize().unwrap_or(initial_path);
 
         let mut settings = settings;
+        let faded = { let mut t = theme; t.fade(settings.opacity); t };
+        crate::ui::theme::apply(ctx, &faded);
         settings.last_dir = Some(canonical_path.clone());
         crate::fs::file_item::set_format_options(settings.decimal_units, settings.relative_dates);
         crate::fs::file_item::set_show_extensions(settings.show_extensions);
@@ -499,7 +501,7 @@ impl SkiApp {
             dnd_view: egui::Rect::NOTHING,
             wl_dnd: None,
             error_message: None,
-            theme,
+            theme: faded,
             back_history: Vec::new(),
             forward_history: Vec::new(),
             search_query: String::new(),
@@ -533,8 +535,8 @@ impl SkiApp {
             saved_settings: settings.clone(),
             settings,
             system_theme: SerpantinumTheme::load(),
-            from_theme: theme,
-            target_theme: theme,
+            from_theme: faded,
+            target_theme: faded,
             theme_anim_start: None,
             theme_dirty: false,
             fonts_dirty: false,
@@ -1241,6 +1243,7 @@ impl SkiApp {
             }
         }
         theme.border_radius = crate::ui::theme::BASE_RADIUS * self.settings.corner_scale;
+        theme.fade(self.settings.opacity);
         if theme != self.target_theme {
             self.from_theme = self.theme;
             self.target_theme = theme;
@@ -1999,13 +2002,6 @@ const CRUMB_HEIGHT: f32 = 26.0;
 const CRUMB_INSET: f32 = (material::CONTROL_HEIGHT - CRUMB_HEIGHT) / 2.0;
 const CRUMB_ICON_STEP: f32 = material::INSET_LABEL - material::INSET_ICON + 8.0;
 
-impl SkiApp {
-    /// A window background at the chosen opacity.
-    fn glass(&self, color: egui::Color32) -> egui::Color32 {
-        self.theme.with_alpha(color, (self.settings.opacity.clamp(1, 100) as f32 * 2.55).round() as u8)
-    }
-}
-
 impl eframe::App for SkiApp {
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
         [0.0; 4]
@@ -2092,7 +2088,7 @@ impl eframe::App for SkiApp {
                 .resizable(false)
                 .frame(
                     egui::Frame::new()
-                        .fill(self.glass(self.theme.mantle))
+                        .fill(self.theme.mantle)
                         // The top matches the header's, so the search and menu buttons sit on its centre line
                         .inner_margin(egui::Margin { left: PAGE_MARGIN, right: PAGE_MARGIN, top: 4, bottom: 8 }),
                 )
@@ -2105,7 +2101,7 @@ impl eframe::App for SkiApp {
         egui::Panel::top("top_navigation")
             .frame(
                 egui::Frame::new()
-                    .fill(self.glass(self.theme.mantle))
+                    .fill(self.theme.base)
                     .inner_margin(egui::Margin { left: HEADER_MARGIN, right: 8, top: 4, bottom: 4 }),
             )
             .show(ui, |ui| self.render_top_bar(ui, sidebar_visible));
@@ -2116,7 +2112,7 @@ impl eframe::App for SkiApp {
         let central = egui::CentralPanel::default()
             .frame(
                 egui::Frame::new()
-                    .fill(self.glass(self.theme.base))
+                    .fill(self.theme.base)
                     .inner_margin(egui::Margin { left: PAGE_MARGIN, right: PAGE_MARGIN, top: 0, bottom: 6 }),
             )
             .show(ui, |ui| {
@@ -2302,8 +2298,8 @@ impl SkiApp {
                 let pill_hover = material::animate(ui.ctx(), title_resp.id.with("hover"), !editing_top_pill && title_resp.hovered());
                 let pill_edit = material::animate(ui.ctx(), egui::Id::unique("top_pill_edit"), editing_top_pill);
                 let pill_fill = material::lerp_color(
-                    material::lerp_color(self.theme.mantle, self.theme.surface0, pill_hover),
-                    self.theme.surface2,
+                    material::lerp_color(self.theme.mantle, self.theme.surface0, pill_hover * 0.5),
+                    self.theme.surface0,
                     pill_edit,
                 );
                 let pill_radius = if self.show_search { egui::CornerRadius::same(material::radius_md()) } else { material::pill(title_rect) };

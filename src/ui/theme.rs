@@ -189,9 +189,23 @@ impl SerpantinumTheme {
         self.with_alpha(super::material::lerp_color(self.mauve, self.text, 0.22), alpha)
     }
 
+    /// Makes the backgrounds translucent: `opacity` is a percentage, 100 leaves them solid.
+    pub fn fade(&mut self, opacity: u8) {
+        let a = (opacity.clamp(1, 100) as f32 * 2.55).round() as u8;
+        // Whatever shows through is unknown, so the dimmer texts move toward the main one to stay legible
+        let see_through = (100 - opacity.clamp(1, 100)) as f32 / 100.0;
+        self.subtext0 = super::material::lerp_color(self.subtext0, self.text, see_through);
+        self.subtext1 = super::material::lerp_color(self.subtext1, self.text, see_through);
+        for c in [&mut self.base, &mut self.mantle, &mut self.crust, &mut self.surface0, &mut self.surface1, &mut self.surface2] {
+            *c = Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), a);
+        }
+    }
+
     /// Semi-transparent color
     pub fn with_alpha(&self, color: Color32, alpha: u8) -> Color32 {
-        Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), alpha)
+        // r/g/b of a Color32 are premultiplied, which only matches the color itself while it is solid
+        let [r, g, b, _] = color.to_srgba_unmultiplied();
+        Color32::from_rgba_unmultiplied(r, g, b, alpha)
     }
 
     /// Smoothly blends between two palettes.
@@ -264,7 +278,8 @@ pub fn apply(ctx: &egui::Context, theme: &SerpantinumTheme) {
         offset: [0, 8],
         blur: 32,
         spread: 0,
-        color: Color32::from_black_alpha(if theme.light { 50 } else { 110 }),
+        // A shadow would show through translucent surfaces
+        color: Color32::from_black_alpha(if theme.base.a() < 255 { 0 } else if theme.light { 50 } else { 110 }),
     };
     let w = &mut visuals.widgets;
     for state in [&mut w.noninteractive, &mut w.inactive, &mut w.hovered, &mut w.active, &mut w.open] {

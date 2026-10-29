@@ -39,7 +39,18 @@ fn chip_rows(ui: &mut egui::Ui, id: &str, labels: &[&str], on: impl Fn(usize) ->
         }
         rows.last_mut().unwrap().push(i);
     }
+    // The same number of rows with the chips spread evenly, so the last one is not left alone
+    if rows.len() > 1 {
+        let per = labels.len().div_ceil(rows.len());
+        let even: Vec<Vec<usize>> = (0..labels.len()).collect::<Vec<_>>().chunks(per).map(<[usize]>::to_vec).collect();
+        let fits = even.iter().all(|r| r.iter().map(|i| widths[*i]).sum::<f32>() + gap * (r.len() - 1) as f32 <= avail);
+        if fits {
+            rows = even;
+        }
+    }
     let mut clicked = None;
+    // Rows sit the same distance apart as the chips in them
+    ui.spacing_mut().item_spacing.y = gap;
     for row in rows {
         let natural: f32 = row.iter().map(|i| widths[*i]).sum();
         let grow = ((avail - gap * (row.len() - 1) as f32) / natural).max(1.0);
@@ -99,12 +110,13 @@ impl SkiApp {
 
         let ctx = ui.ctx().clone();
         let theme = self.theme;
-        let close = material::dialog_header(ui, tr("Settings"), None, &theme, "set_close");
-        // A rule under the header, so the title stays apart from what it heads
-        ui.add_space(6.0);
-        let (rule, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 1.0), egui::Sense::hover());
-        ui.painter().rect_filled(rule, 0, theme.surface1);
-        ui.add_space(10.0);
+        // The title lines up with the category icons below it, and the close button sits further out
+        let area = ui.available_rect_before_wrap();
+        let header_rect = egui::Rect::from_min_max(egui::pos2(area.left() + material::INSET_ICON - material::ICON_MD / 2.0 - 6.0, area.top()), egui::pos2(area.right() + 10.0, area.bottom()));
+        let shown = ui.scope_builder(egui::UiBuilder::new().max_rect(header_rect), |ui| material::dialog_header_sized(ui, tr("Settings"), None, &theme, "set_close", None, material::FONT_TITLE + 4.0).0);
+        let close = shown.inner;
+        ui.advance_cursor_after_rect(shown.response.rect);
+        ui.add_space(8.0);
 
         let max_height = (ctx.content_rect().height() - 140.0).clamp(340.0, 620.0);
 
@@ -131,14 +143,11 @@ impl SkiApp {
             // The dialog keeps one height for every category
             ui.set_min_height(max_height);
             // Left pane: categories
-            // The categories sit on a panel of their own, tinted like the cards on the right
+            // The categories are a plain list on the dialog's own surface, as the sidebar is in the main window
             egui::Frame::new()
-                .fill(theme.surface0)
-                .corner_radius(CornerRadius::same(material::radius_container()))
-                .inner_margin(egui::Margin::same(6))
                 .show(ui, |ui| ui.vertical(|ui| {
-                ui.set_width(156.0);
-                ui.set_min_height(max_height - 12.0);
+                ui.set_width(168.0);
+                ui.set_min_height(max_height);
                 ui.spacing_mut().item_spacing = egui::vec2(0.0, 2.0);
 
                 let categories: [(usize, &str, &str); CATEGORY_COUNT as usize] = [
@@ -368,8 +377,11 @@ impl SkiApp {
         });
 
         material::section_label(ui, tr("Accent color"), &theme);
+        group_card(ui, &theme, |ui| {
+        ui.add_space(6.0);
         ui.horizontal_wrapped(|ui| {
-            ui.spacing_mut().item_spacing = egui::vec2(8.0, 8.0);
+            ui.spacing_mut().item_spacing = egui::vec2(10.0, 10.0);
+            ui.add_space(8.0);
             if chip(ui, "accent_default", None, tr("Theme default"), &theme, self.settings.accent.is_none()).clicked() {
                 self.settings.accent = None;
                 hex.clear();
@@ -387,7 +399,10 @@ impl SkiApp {
                 }
             }
         });
+        ui.add_space(6.0);
         ui.horizontal(|ui| {
+            ui.add_space(8.0);
+            ui.spacing_mut().item_spacing.x = 12.0;
             material::input_frame(&theme).show(ui, |ui| {
                 ui.set_width(120.0);
                 let resp = ui.add(
@@ -408,13 +423,15 @@ impl SkiApp {
             });
             ui.label(egui::RichText::new(tr("Custom hex color")).size(material::FONT_CAPTION).color(theme.subtext1));
         });
+        ui.add_space(6.0);
+        });
 
         material::section_label(ui, tr("Transparency"), &theme);
         group_card(ui, &theme, |ui| {
             let mut opacity = self.settings.opacity.clamp(1, 100);
-            ui.spacing_mut().slider_width = ui.available_width() - 80.0;
-            if ui.add(egui::Slider::new(&mut opacity, 1..=100).suffix("%").text(tr("Opacity"))).changed() {
+            if material::slider_row(ui, "opacity", icons::VISIBILITY, tr("Opacity"), &theme, &mut opacity, 1..=100, "%") {
                 self.settings.opacity = opacity;
+                self.rebuild_theme();
                 self.persist_settings();
             }
         });

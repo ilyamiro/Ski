@@ -344,7 +344,7 @@ impl SkiApp {
         egui::Panel::top("tab_bar")
             .exact_size((TAB_BAR_HEIGHT * t).max(1.0))
             .resizable(false)
-            .frame(egui::Frame::new().fill(self.glass(theme.mantle)).inner_margin(egui::Margin::symmetric(HEADER_MARGIN, 0)))
+            .frame(egui::Frame::new().fill(theme.base).inner_margin(egui::Margin::symmetric(HEADER_MARGIN, 0)))
             .show(ui, |ui| {
                 ui.set_opacity(t);
                 let row = egui::Rect::from_min_size(ui.max_rect().min, egui::vec2(ui.max_rect().width(), TAB_BAR_HEIGHT));
