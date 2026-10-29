@@ -4358,6 +4358,8 @@ impl SkiApp {
         let t = material::animate(ctx, egui::Id::unique("context_menu_anim"), self.menu.is_some());
         let live = self.menu.as_ref().map(|m| (m.pos, m.target.clone(), m.open_label.clone()));
         let interactive = live.is_some();
+        // Only a menu taller than the window scrolls
+        let scrolls;
         let (origin, groups, open_label) = if let Some((pos, target, open_label)) = live {
             let mut groups = self.menu_entries(&target);
             groups.retain(|g| !g.is_empty());
@@ -4365,14 +4367,18 @@ impl SkiApp {
             let dividers = groups.len().saturating_sub(1);
             let gaps = (count + dividers).saturating_sub(1);
             let screen = ctx.content_rect();
-            let height = (count as f32 * material::ENTRY_HEIGHT + dividers as f32 * 9.0 + gaps as f32 * 2.0 + 16.0).min(screen.height() - 16.0);
+            let full_height = count as f32 * material::ENTRY_HEIGHT + dividers as f32 * 9.0 + gaps as f32 * 2.0 + 16.0;
+            let height = full_height.min(screen.height() - 16.0);
             let origin = egui::pos2(
                 pos.x.min(screen.right() - MENU_WIDTH - 8.0).max(8.0),
                 pos.y.min(screen.bottom() - height - 8.0).max(8.0),
             );
             self.menu_ghost = Some(MenuGhost { origin, groups: groups.clone(), open_label: open_label.clone() });
+            scrolls = full_height > screen.height() - 16.0;
             (origin, groups, open_label)
         } else if let Some(ghost) = self.menu_ghost.as_ref().filter(|_| t > 0.0) {
+            let full = ghost.groups.iter().map(Vec::len).sum::<usize>() as f32 * material::ENTRY_HEIGHT + 16.0;
+            scrolls = full > ctx.content_rect().height() - 16.0;
             (ghost.origin, ghost.groups.clone(), ghost.open_label.clone())
         } else {
             self.menu_ghost = None;
@@ -4399,7 +4405,7 @@ impl SkiApp {
                     .show(ui, |ui| {
                         ui.set_width(MENU_WIDTH - 16.0);
                         ui.spacing_mut().item_spacing.y = 2.0;
-                        egui::ScrollArea::vertical().max_height(ctx.content_rect().height() - 32.0).auto_shrink([false, true]).show(ui, |ui| {
+                        egui::ScrollArea::vertical().max_height(ctx.content_rect().height() - 32.0).auto_shrink([false, true]).vscroll(scrolls).show(ui, |ui| {
                             for (g, group) in groups.iter().enumerate() {
                                 if g > 0 {
                                     material::divider(ui, &self.theme);
@@ -4464,7 +4470,9 @@ impl SkiApp {
             let row_top = sub_anchor.map(|r| r.top()).or_else(|| self.menu_sub_rect.map(|r| r.top() + 8.0));
             if let Some(row_top) = row_top {
                 let screen = ctx.content_rect();
-                let height = (entries.len() as f32 * material::ENTRY_HEIGHT + (entries.len() as f32 - 1.0) * 2.0 + 16.0).min(screen.height() - 16.0);
+                let full_height = entries.len() as f32 * material::ENTRY_HEIGHT + (entries.len() as f32 - 1.0) * 2.0 + 16.0;
+                let height = full_height.min(screen.height() - 16.0);
+                let sub_scrolls = full_height > screen.height() - 16.0;
                 let right_x = rect.right() + 2.0;
                 let x = if right_x + MENU_WIDTH <= screen.right() - 8.0 { right_x } else { (rect.left() - 2.0 - MENU_WIDTH).max(8.0) };
                 let y = (row_top - 8.0).min(screen.bottom() - height - 8.0).max(8.0);
@@ -4481,7 +4489,7 @@ impl SkiApp {
                             .show(ui, |ui| {
                                 ui.set_width(MENU_WIDTH - 16.0);
                                 ui.spacing_mut().item_spacing.y = 2.0;
-                                egui::ScrollArea::vertical().max_height(screen.height() - 32.0).auto_shrink([false, true]).show(ui, |ui| {
+                                egui::ScrollArea::vertical().max_height(screen.height() - 32.0).auto_shrink([false, true]).vscroll(sub_scrolls).show(ui, |ui| {
                                     for (i, (icon, label, action)) in entries.iter().enumerate() {
                                         let resp = material::menu_item(ui, ("submenu", g, idx, i), icon, label, hints[i].as_deref(), &self.theme);
                                         if resp.clicked() {
