@@ -12,59 +12,12 @@ use crate::settings::{Density, Settings, StartLocation};
 use crate::ui::fonts::SystemFont;
 use crate::ui::icons;
 use crate::ui::material::{self, button, chip, choice_row, filled_icon_button, group_card, nav_item_roving, switch_row_with, ButtonKind, Column};
-use crate::ui::theme::{self, SerpantinumTheme, ACCENTS, PRESETS};
+use crate::ui::theme::{self, SerpantinumTheme, ACCENTS, MORE_PRESETS, PRESETS};
 
 const CATEGORY_COUNT: i32 = 7;
 
 fn category_focus_id() -> egui::Id {
     egui::Id::unique("set_cat_focus")
-}
-
-/// Choices as chips in as many rows as the card needs, each row stretched to the full width.
-/// Returns the index that was clicked.
-fn chip_rows(ui: &mut egui::Ui, id: &str, labels: &[&str], on: impl Fn(usize) -> bool, theme: &SerpantinumTheme) -> Option<usize> {
-    let gap = 8.0;
-    let avail = ui.available_width() - 16.0;
-    let widths: Vec<f32> = labels.iter().map(|l| material::chip_natural_width(ui, None, l, theme)).collect();
-    // Greedy rows, then each row stretched to the same total width
-    let mut rows: Vec<Vec<usize>> = vec![Vec::new()];
-    let mut used = 0.0;
-    for (i, w) in widths.iter().enumerate() {
-        let need = if rows.last().is_some_and(|r| r.is_empty()) { *w } else { used + gap + w };
-        if need > avail && !rows.last().is_some_and(|r| r.is_empty()) {
-            rows.push(Vec::new());
-            used = *w;
-        } else {
-            used = need;
-        }
-        rows.last_mut().unwrap().push(i);
-    }
-    // The same number of rows with the chips spread evenly, so the last one is not left alone
-    if rows.len() > 1 {
-        let per = labels.len().div_ceil(rows.len());
-        let even: Vec<Vec<usize>> = (0..labels.len()).collect::<Vec<_>>().chunks(per).map(<[usize]>::to_vec).collect();
-        let fits = even.iter().all(|r| r.iter().map(|i| widths[*i]).sum::<f32>() + gap * (r.len() - 1) as f32 <= avail);
-        if fits {
-            rows = even;
-        }
-    }
-    let mut clicked = None;
-    // Rows sit the same distance apart as the chips in them
-    ui.spacing_mut().item_spacing.y = gap;
-    for row in rows {
-        let natural: f32 = row.iter().map(|i| widths[*i]).sum();
-        let grow = ((avail - gap * (row.len() - 1) as f32) / natural).max(1.0);
-        ui.horizontal(|ui| {
-            ui.add_space(8.0);
-            ui.spacing_mut().item_spacing.x = gap;
-            for i in row {
-                if material::chip_width(ui, (id, labels[i]), None, labels[i], theme, on(i), Some(widths[i] * grow)).clicked() {
-                    clicked = Some(i);
-                }
-            }
-        });
-    }
-    clicked
 }
 
 impl SkiApp {
@@ -80,6 +33,7 @@ impl SkiApp {
             keybind_search: String::new(),
             capture: None,
             conflict_warning: None,
+            theme_browser: None,
         });
     }
 
@@ -104,6 +58,7 @@ impl SkiApp {
             keybind_search,
             capture,
             conflict_warning,
+            theme_browser,
         } = dialog else {
             return false;
         };
@@ -218,7 +173,7 @@ impl SkiApp {
                         ui.spacing_mut().item_spacing = egui::vec2(6.0, 8.0);
                         match *tab {
                             0 => self.general_tab(ui),
-                            1 => self.appearance_tab(ui, font_query, hex),
+                            1 => self.appearance_tab(ui, font_query, hex, theme_browser),
                             2 => self.files_view_tab(ui),
                             3 => self.behavior_tab(ui),
                             4 => self.keybindings_tab(ui, keybind_search, capture, conflict_warning),
@@ -256,7 +211,7 @@ impl SkiApp {
         let mut query: String = ui.ctx().data_mut(|d| d.get_temp(query_id)).unwrap_or_default();
         material::input_frame(&theme).show(ui, |ui| {
             ui.horizontal(|ui| {
-                material::inline_icon(ui, icons::SEARCH, material::ICON_SM, theme.subtext1);
+                material::input_icon(ui, icons::SEARCH, material::ICON_SM, theme.subtext1);
                 ui.add(
                     egui::TextEdit::singleline(&mut query)
                         .frame(egui::Frame::NONE)
@@ -347,26 +302,14 @@ impl SkiApp {
         });
     }
 
-    fn appearance_tab(&mut self, ui: &mut egui::Ui, font_query: &mut String, hex: &mut String) {
+    /// Theme cards five to a row; clicking one switches to that palette.
+    fn theme_cards(&mut self, ui: &mut egui::Ui, choices: Vec<(&str, &str, SerpantinumTheme)>) {
         let theme = self.theme;
-
-        material::section_label(ui, tr("Theme"), &theme);
-        // The cards share the row evenly, so the last one never wraps onto a line of its own
         let gap = 8.0;
-        // Five to a row keeps the rows balanced however many themes there are
         let per_row = 5usize;
         let card_w = ((ui.available_width() - gap * (per_row - 1) as f32) / per_row as f32).floor().clamp(80.0, 140.0);
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing = egui::vec2(gap, gap);
-            let mut choices: Vec<(&str, &str, SerpantinumTheme)> = vec![("system", tr("System"), self.system_theme)];
-            for (id, label, ..) in PRESETS.iter() {
-                let preset = Settings {
-                    theme: (*id).to_owned(),
-                    accent: None,
-                    ..Settings::default()
-                };
-                choices.push((id, tr(label), SerpantinumTheme::from_settings(&preset)));
-            }
             for (id, label, preview) in choices {
                 if theme_card(ui, ("theme_card", id), card_w, label, &preview, &theme, self.settings.theme == id).clicked() {
                     self.settings.theme = id.to_owned();
@@ -375,6 +318,79 @@ impl SkiApp {
                 }
             }
         });
+    }
+
+    /// Every palette that is not on the Appearance page, dark and light apart, with a search.
+    /// Returns true when Back was clicked.
+    fn theme_browser_page(&mut self, ui: &mut egui::Ui, query: &mut String) -> bool {
+        let theme = self.theme;
+        let back = ui
+            .horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 8.0;
+                let back = material::icon_button(ui, "theme_browser_back", icons::ARROW_BACK, &theme, true, tr("Back")).clicked();
+                ui.label(egui::RichText::new(tr("More themes")).size(material::FONT_TITLE).color(theme.text));
+                back
+            })
+            .inner;
+        material::input_frame(&theme).show(ui, |ui| {
+            ui.horizontal(|ui| {
+                material::input_icon(ui, icons::SEARCH, material::ICON_SM, theme.subtext1);
+                ui.add(
+                    egui::TextEdit::singleline(query)
+                        .frame(egui::Frame::NONE)
+                        .desired_width(f32::INFINITY)
+                        .hint_text(tr("Search themes"))
+                        .font(egui::FontId::proportional(material::FONT_BODY)),
+                );
+            });
+        });
+        let needle = query.trim().to_lowercase();
+        let matching = |light: bool| -> Vec<(&'static str, &'static str, SerpantinumTheme)> {
+            MORE_PRESETS
+                .iter()
+                .filter(|(id, label, _, l)| *l == light && (needle.is_empty() || label.to_lowercase().contains(&needle) || id.contains(&needle)))
+                .map(|(id, label, ..)| (*id, *label, preset_preview(id)))
+                .collect()
+        };
+        let (dark, light) = (matching(false), matching(true));
+        if dark.is_empty() && light.is_empty() {
+            material::hint_label(ui, tr("No matching themes"), &theme);
+        }
+        for (title, choices) in [(tr("Dark"), dark), (tr("Light"), light)] {
+            if !choices.is_empty() {
+                material::section_label(ui, title, &theme);
+                self.theme_cards(ui, choices);
+            }
+        }
+        back
+    }
+
+    fn appearance_tab(&mut self, ui: &mut egui::Ui, font_query: &mut String, hex: &mut String, theme_browser: &mut Option<String>) {
+        let theme = self.theme;
+
+        if let Some(query) = theme_browser {
+            if self.theme_browser_page(ui, query) {
+                *theme_browser = None;
+            }
+            return;
+        }
+
+        material::section_label(ui, tr("Theme"), &theme);
+        // The desktop's palette and the two plain ones, then the curated palettes under a divider
+        let mut basics = vec![("system", tr("System"), self.system_theme)];
+        basics.extend(PRESETS[..2].iter().map(|(id, label, ..)| (*id, tr(label), preset_preview(id))));
+        self.theme_cards(ui, basics);
+        material::divider(ui, &theme);
+        let mut others: Vec<(&str, &str, SerpantinumTheme)> = PRESETS[2..].iter().map(|(id, label, ..)| (*id, tr(label), preset_preview(id))).collect();
+        // A palette picked from the full list shows here too, so the choice stays visible
+        if let Some((id, label, ..)) = MORE_PRESETS.iter().find(|(id, ..)| *id == self.settings.theme) {
+            others.push((id, tr(label), preset_preview(id)));
+        }
+        self.theme_cards(ui, others);
+        ui.add_space(2.0);
+        if material::button(ui, "theme_browse", Some(icons::PALETTE), tr("Browse more themes"), &theme, material::ButtonKind::Tonal, true).clicked() {
+            *theme_browser = Some(String::new());
+        }
 
         material::section_label(ui, tr("Accent color"), &theme);
         group_card(ui, &theme, |ui| {
@@ -463,7 +479,7 @@ impl SkiApp {
         material::hint_label(ui, &trf("Current: {}", &[&current]), &theme);
         material::input_frame(&theme).show(ui, |ui| {
             ui.horizontal(|ui| {
-                material::inline_icon(ui, icons::SEARCH, material::ICON_SM, theme.subtext1);
+                material::input_icon(ui, icons::SEARCH, material::ICON_SM, theme.subtext1);
                 ui.add(
                     egui::TextEdit::singleline(font_query)
                         .frame(egui::Frame::NONE)
@@ -575,7 +591,7 @@ impl SkiApp {
         material::paint_label(ui, head.left() + material::INSET_LABEL + 2.0, head.center().y, tr("Sort by"), material::FONT_BODY, theme.text, head.width() - material::INSET_LABEL - 12.0);
         let fields = [SortBy::Name, SortBy::Size, SortBy::Type, SortBy::Modified, SortBy::Created, SortBy::Accessed, SortBy::Owner, SortBy::Permissions];
         let labels = [tr("Name"), tr("Size"), tr("Type"), tr("Last modified"), tr("Created"), tr("Accessed"), tr("Owner"), tr("Permissions")];
-        let picked = chip_rows(ui, "fv_sort", &labels, |i| self.sort_by == fields[i], theme).map(|i| fields[i]);
+        let picked = material::chip_rows(ui, "fv_sort", &labels, |i| self.sort_by == fields[i], theme).map(|i| fields[i]);
         ui.add_space(4.0);
         picked
     }
@@ -648,7 +664,7 @@ impl SkiApp {
             material::paint_icon(ui.painter(), head.left_center() + egui::vec2(material::INSET_ICON + 2.0, 0.0), icons::VIEW_COLUMN, material::ICON_MD, theme.subtext0);
             material::paint_label(ui, head.left() + material::INSET_LABEL + 2.0, head.center().y, tr("Columns"), material::FONT_BODY, theme.text, head.width() - material::INSET_LABEL - 12.0);
             let labels = Column::ALL.map(|c| c.label());
-            if let Some(i) = chip_rows(ui, "fv_col", &labels, |i| self.columns.contains(&Column::ALL[i]), &theme) {
+            if let Some(i) = material::chip_rows(ui, "fv_col", &labels, |i| self.columns.contains(&Column::ALL[i]), &theme) {
                 let col = Column::ALL[i];
                 self.columns = Column::ALL
                     .into_iter()
@@ -855,7 +871,7 @@ impl SkiApp {
         ui.horizontal(|ui| {
             material::input_frame(&theme).show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    material::inline_icon(ui, icons::SEARCH, material::ICON_SM, theme.subtext1);
+                    material::input_icon(ui, icons::SEARCH, material::ICON_SM, theme.subtext1);
                     ui.add(
                         egui::TextEdit::singleline(keybind_search)
                             .frame(egui::Frame::NONE)
@@ -1243,6 +1259,11 @@ fn keycap_pill(
     (resp, remove_clicked)
 }
 
+/// What a preset looks like on its own, without the accent the user picked.
+fn preset_preview(id: &str) -> SerpantinumTheme {
+    SerpantinumTheme::from_settings(&Settings { theme: id.to_owned(), accent: None, ..Settings::default() })
+}
+
 fn theme_card(
     ui: &mut egui::Ui,
     id_source: impl std::hash::Hash + std::fmt::Debug,
@@ -1278,13 +1299,11 @@ fn theme_card(
         preview.subtext1,
     );
     painter.circle_filled(egui::pos2(swatch_rect.right() - 16.0, swatch_rect.center().y), 9.0, preview.mauve);
-    painter.text(
-        egui::pos2(rect.center().x, rect.bottom() - 13.0),
-        egui::Align2::CENTER_CENTER,
-        label,
-        egui::FontId::proportional(material::FONT_CAPTION),
-        material::lerp_color(theme.subtext0, theme.text, sel.max(fx.hover)),
-    );
+    // Long names end in an ellipsis instead of running past the card
+    let color = material::lerp_color(theme.subtext0, theme.text, sel.max(fx.hover));
+    let galley = material::truncated(ui, label, material::FONT_CAPTION, color, rect.width() - 12.0);
+    let pos = egui::pos2(rect.center().x - galley.size().x / 2.0, rect.bottom() - 13.0 - galley.size().y / 2.0);
+    ui.painter().galley(pos, galley, color);
     resp
 }
 

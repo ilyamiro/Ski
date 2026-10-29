@@ -34,6 +34,7 @@ pub const ARROW_BACK: &str = "\u{f004d}";
 pub const ARROW_FORWARD: &str = "\u{f0054}";
 pub const ARROW_UP: &str = "\u{f005d}";
 pub const SEARCH: &str = "\u{f0349}";
+pub const PALETTE: &str = "\u{f03d8}";
 pub const SETTINGS: &str = "\u{f08bb}";
 pub const CLOSE: &str = "\u{f0156}";
 pub const CHECK: &str = "\u{f012c}";
@@ -58,8 +59,9 @@ pub const VIEW_COLUMN: &str = "\u{f056d}";
 pub const RESIZE: &str = "\u{f0a68}";
 pub const VISIBILITY: &str = "\u{f06d0}";
 pub const VISIBILITY_OFF: &str = "\u{f06d1}";
-pub const SORT_ASC: &str = "\u{f04bc}";
-pub const SORT_DESC: &str = "\u{f04bd}";
+// The back and forward chevrons turned upright: up for ascending, down for descending
+pub const SORT_ASC: &str = "\u{f0143}";
+pub const SORT_DESC: &str = CHEVRON_DOWN;
 
 pub const HEART: &str = "\u{f02d1}";
 pub const HEART_OUTLINE: &str = "\u{f02d5}";

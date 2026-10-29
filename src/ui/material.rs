@@ -529,7 +529,7 @@ fn office_texture(ctx: &egui::Context, kind: Office, side: f32) -> Option<egui::
 }
 
 /// Single-line text truncated with an ellipsis at `max_width`.
-fn truncated(ui: &egui::Ui, text: &str, size: f32, color: Color32, max_width: f32) -> std::sync::Arc<egui::Galley> {
+pub fn truncated(ui: &egui::Ui, text: &str, size: f32, color: Color32, max_width: f32) -> std::sync::Arc<egui::Galley> {
     let mut job = LayoutJob::simple_singleline(text.to_owned(), egui::FontId::proportional(size), color);
     job.wrap = TextWrapping::truncate_at_width(max_width.max(1.0));
     ui.painter().layout_job(job)
@@ -675,6 +675,53 @@ pub fn chip(
     selected: bool,
 ) -> egui::Response {
     chip_width(ui, id_source, icon, label, theme, selected, None)
+}
+
+/// Choices as chips in as many rows as the card needs, each row stretched to the full width.
+/// Returns the index that was clicked.
+pub fn chip_rows(ui: &mut egui::Ui, id: &str, labels: &[&str], on: impl Fn(usize) -> bool, theme: &SerpantinumTheme) -> Option<usize> {
+    let gap = 8.0;
+    let avail = ui.available_width() - 16.0;
+    let widths: Vec<f32> = labels.iter().map(|l| chip_natural_width(ui, None, l, theme)).collect();
+    // Greedy rows, then each row stretched to the same total width
+    let mut rows: Vec<Vec<usize>> = vec![Vec::new()];
+    let mut used = 0.0;
+    for (i, w) in widths.iter().enumerate() {
+        let need = if rows.last().is_some_and(|r| r.is_empty()) { *w } else { used + gap + w };
+        if need > avail && !rows.last().is_some_and(|r| r.is_empty()) {
+            rows.push(Vec::new());
+            used = *w;
+        } else {
+            used = need;
+        }
+        rows.last_mut().unwrap().push(i);
+    }
+    // The same number of rows with the chips spread evenly, so the last one is not left alone
+    if rows.len() > 1 {
+        let per = labels.len().div_ceil(rows.len());
+        let even: Vec<Vec<usize>> = (0..labels.len()).collect::<Vec<_>>().chunks(per).map(<[usize]>::to_vec).collect();
+        let fits = even.iter().all(|r| r.iter().map(|i| widths[*i]).sum::<f32>() + gap * (r.len() - 1) as f32 <= avail);
+        if fits {
+            rows = even;
+        }
+    }
+    let mut clicked = None;
+    // Rows sit the same distance apart as the chips in them
+    ui.spacing_mut().item_spacing.y = gap;
+    for row in rows {
+        let natural: f32 = row.iter().map(|i| widths[*i]).sum();
+        let grow = ((avail - gap * (row.len() - 1) as f32) / natural).max(1.0);
+        ui.horizontal(|ui| {
+            ui.add_space(8.0);
+            ui.spacing_mut().item_spacing.x = gap;
+            for i in row {
+                if chip_width(ui, (id, labels[i]), None, labels[i], theme, on(i), Some(widths[i] * grow)).clicked() {
+                    clicked = Some(i);
+                }
+            }
+        });
+    }
+    clicked
 }
 
 /// Natural width of a `chip`.
@@ -824,18 +871,8 @@ pub fn segmented_in(
 
 /// Width of one cell of a `segmented` control that shows an icon instead of text.
 const SEGMENT_ICON_W: f32 = 44.0;
-
-/// `segmented` whose cells are icons; `labels` are their tooltips.
-pub fn segmented_icons(
-    ui: &mut egui::Ui,
-    id_source: impl std::hash::Hash + std::fmt::Debug,
-    glyphs: &[&str],
-    labels: &[&str],
-    selected: usize,
-    theme: &SerpantinumTheme,
-) -> Option<usize> {
-    segmented_sized(ui, id_source, labels, selected, theme, None, None, Some(glyphs))
-}
+/// Gap between a `segmented` control's edge and its selection indicator.
+const SEGMENT_PAD: f32 = 2.0;
 
 /// `segmented_in` that stretches its cells to fill `fill` points of width, when they need less.
 /// With `glyphs`, each cell shows that icon and `options` are only the tooltips.
@@ -857,18 +894,18 @@ pub fn segmented_sized(
         .collect();
     if let Some(fill) = fill {
         let natural: f32 = widths.iter().sum();
-        let room = fill - 8.0;
+        let room = fill - SEGMENT_PAD * 2.0;
         if natural < room {
             let grow = room / natural;
             widths.iter_mut().for_each(|w| *w *= grow);
         }
     }
     let total: f32 = widths.iter().sum();
-    let (rect, _) = ui.allocate_exact_size(Vec2::new(total + 8.0, CHIP_HEIGHT + 8.0), egui::Sense::hover());
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(total + SEGMENT_PAD * 2.0, CONTROL_HEIGHT), egui::Sense::hover());
     let id = ui.make_persistent_id(id_source);
     ui.painter().rect_filled(snap(ui.painter(), rect), pill(rect), theme.surface1);
 
-    let inner = snap(ui.painter(), rect.shrink(4.0));
+    let inner = snap(ui.painter(), rect.shrink(SEGMENT_PAD));
     let mut x = inner.left();
     let mut cells = Vec::with_capacity(options.len());
     for w in &widths {
@@ -1059,6 +1096,8 @@ fn paint_thumb(ui: &egui::Ui, tex: &egui::TextureHandle, rect: Rect, radius: u8)
 
 /// Left edge of the name in a list row; the header lines its first label up with it.
 pub const ROW_NAME_X: f32 = 48.0;
+/// Center of a list row's icon, from the row's left edge.
+const ROW_ICON_X: f32 = 24.0;
 const ROW_PAD_RIGHT: f32 = 20.0;
 /// Narrowest the name may get before detail columns start dropping out.
 const ROW_NAME_MIN: f32 = 160.0;
@@ -1223,7 +1262,8 @@ pub fn list_header(
     let edges = column_edges(&fitting, widths, rect);
     let name_right = edges.first().map_or(rect.right() - ROW_PAD_RIGHT, |(c, e)| e - c.width(widths));
     let name_cell = Rect::from_min_max(
-        Pos2::new(rect.left() + ROW_NAME_X - 10.0, rect.top() + 2.0),
+        // The title starts at the icons' left edge, like Nautilus, not over the names
+        Pos2::new(rect.left() + ROW_ICON_X - 20.0, rect.top() + 2.0),
         Pos2::new(name_right - 2.0, rect.bottom() - 2.0),
     );
     cell(ui, "name", Some(SortBy::Name), tr("Name"), name_cell);
@@ -1291,7 +1331,7 @@ pub fn file_row(
     // The icon grows with the row, so a tight list is not full of oversized glyphs
     let icon_size = (row_height * 0.52).round().clamp(16.0, 24.0);
     let k = icon_size / 24.0;
-    let icon_center = Pos2::new(r.left() + 24.0, r.center().y);
+    let icon_center = Pos2::new(r.left() + ROW_ICON_X, r.center().y);
     if thumb_t < 0.99 {
         let (glyph, color) = item_icon_animated(item, theme, sel_t);
         paint_item_icon(ui.painter(), item, icon_center, icon_size, (glyph, color), fade * (1.0 - thumb_t));
@@ -1701,13 +1741,14 @@ pub fn radio_row(
 ) -> egui::Response {
     let (rect, response, fx) = menu_row_frame(ui, &id_source, theme);
     let t = animate(ui.ctx(), response.id.with("on"), selected);
-    let center = Pos2::new(rect.left() + 18.0, rect.center().y);
+    // Material 3 radio: a 20 px ring with a 2 px stroke and a 10 px dot that grows in when selected
+    let center = Pos2::new(rect.left() + 20.0, rect.center().y);
     let ring = lerp_color(lerp_color(theme.subtext1, theme.text, fx.hover), theme.mauve, t);
-    ui.painter().circle_stroke(center, 7.0, egui::Stroke::new(1.5, ring));
+    ui.painter().circle_stroke(center, 9.0, egui::Stroke::new(2.0, ring));
     if t > 0.01 {
-        ui.painter().circle_filled(center, 3.5 * t, theme.mauve.gamma_multiply(t));
+        ui.painter().circle_filled(center, 5.0 * t, theme.mauve.gamma_multiply(t));
     }
-    paint_label(ui, rect.left() + 38.0, rect.center().y, label, FONT_BODY, theme.text, rect.width() - 48.0);
+    paint_label(ui, rect.left() + 42.0, rect.center().y, label, FONT_BODY, theme.text, rect.width() - 52.0);
     response
 }
 
@@ -1874,12 +1915,12 @@ pub fn choice_row_with(
         .iter()
         .map(|o| if glyphs.is_some() { SEGMENT_ICON_W } else { (ui.painter().layout_no_wrap((*o).to_owned(), font.clone(), theme.text).size().x + 28.0).max(52.0) })
         .sum::<f32>()
-        + 8.0;
+        + SEGMENT_PAD * 2.0;
     let label_w = ui.painter().layout_no_wrap(label.to_owned(), egui::FontId::proportional(FONT_BODY), theme.text).size().x;
     let width = ui.available_width();
     let inline = INSET_LABEL + label_w + 16.0 + seg_w + 8.0 <= width;
 
-    let seg_h = CHIP_HEIGHT + 8.0;
+    let seg_h = CONTROL_HEIGHT;
     let height = if inline { SETTING_HEIGHT } else { SETTING_HEIGHT + seg_h + 2.0 };
     let (rect, _) = ui.allocate_exact_size(Vec2::new(width, height), egui::Sense::hover());
 
@@ -2188,7 +2229,19 @@ pub fn input_frame(theme: &SerpantinumTheme) -> egui::Frame {
     egui::Frame::new()
         .fill(theme.surface1)
         .corner_radius(CornerRadius::same(radius_lg()))
-        .inner_margin(egui::Margin::symmetric(14, 8))
+        // The text's line box keeps more room above the letters than below, so the content
+        // starts a little lower to look centered
+        .inner_margin(egui::Margin { left: 14, right: 14, top: 8 + INPUT_TEXT_DROP, bottom: 8 - INPUT_TEXT_DROP })
+}
+
+/// How far `input_frame` lowers its content so the text reads centered.
+const INPUT_TEXT_DROP: i8 = 2;
+
+/// Icon at the start of an `input_frame` (search). A glyph has no extra room above it like text
+/// does, so it goes back up by the frame's drop to sit on the field's center.
+pub fn input_icon(ui: &mut egui::Ui, icon: &str, size: f32, color: Color32) {
+    let (rect, _) = ui.allocate_exact_size(Vec2::splat(size), egui::Sense::hover());
+    paint_icon(ui.painter(), rect.center() - Vec2::new(0.0, INPUT_TEXT_DROP as f32), icon, size, color);
 }
 
 /// Centered placeholder for views without content: a large quiet icon, a title and a hint.

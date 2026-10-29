@@ -215,6 +215,8 @@ pub(crate) enum Dialog {
         keybind_search: String,
         capture: Option<(crate::keymap::Action, Option<usize>)>,
         conflict_warning: Option<(String, crate::keymap::Action, crate::keymap::Action, Option<usize>)>,
+        /// The "Browse more themes" page of Appearance, open with its search text.
+        theme_browser: Option<String>,
     },
     Shortcuts,
     /// A copy or move found its target name taken and waits for the answer.
@@ -3541,20 +3543,31 @@ impl SkiApp {
         }
     }
 
-    fn section_title(&self, ui: &mut egui::Ui, text: &str) {
-        material::section_label(ui, text, &self.theme);
+    /// Heading of a view options section, lined up with the row labels under it. Returns its rect
+    /// so a control can sit at its right end.
+    fn section_title(&self, ui: &mut egui::Ui, text: &str) -> egui::Rect {
+        ui.add_space(10.0);
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), CONTROL_HEIGHT), egui::Sense::hover());
+        material::paint_label(ui, rect.left() + 12.0, rect.center().y, text, material::FONT_SECTION, self.theme.subtext1, rect.width() - 24.0 - CONTROL_HEIGHT);
+        rect
     }
 
     fn file_options(&mut self, ui: &mut egui::Ui) -> bool {
         let theme = self.theme;
+        // Chips and the view switch sit on the popup itself, not on a card
+        let low = theme.lowered();
         let mut reload = false;
         let hidden_hint = crate::keymap::hint(&self.settings.keybinds, crate::keymap::Action::ToggleHidden, self.settings.vim_keys);
         ui.spacing_mut().item_spacing.y = 2.0;
 
-        if let Some(i) = material::segmented_icons(ui, "vo_view", &[icons::VIEW_LIST, icons::GRID_VIEW], &[tr("List view"), tr("Grid view")], usize::from(self.view_mode == ViewMode::Grid), &theme) {
+        // View: the layout switch spans the popup, then what shapes the listing
+        let glyphs = [icons::VIEW_LIST, icons::GRID_VIEW];
+        let selected = usize::from(self.view_mode == ViewMode::Grid);
+        let fill = Some(ui.available_width());
+        if let Some(i) = material::segmented_sized(ui, "vo_view", &[tr("List view"), tr("Grid view")], selected, &low, None, fill, Some(&glyphs)) {
             self.view_mode = if i == 0 { ViewMode::List } else { ViewMode::Grid };
         }
-
+        ui.add_space(4.0);
         match self.view_mode {
             ViewMode::Grid => {
                 let size = self.settings.grid_size;
@@ -3571,22 +3584,6 @@ impl SkiApp {
                 }
             }
         }
-
-        material::divider(ui, &theme);
-        self.section_title(ui, tr("Sort by"));
-        for (field, label) in [(SortBy::Name, tr("Name")), (SortBy::Size, tr("Size")), (SortBy::Type, tr("Type")), (SortBy::Modified, tr("Last modified")), (SortBy::Created, tr("Created")), (SortBy::Accessed, tr("Accessed")), (SortBy::Owner, tr("Owner")), (SortBy::Permissions, tr("Permissions"))] {
-            if material::radio_row(ui, ("vo_sort", label), label, &theme, self.sort_by == field).clicked() && self.sort_by != field {
-                self.sort_by = field;
-                self.apply_sort();
-            }
-        }
-        let descending = self.sort_order == SortOrder::Descending;
-        if material::toggle_row(ui, "vo_reverse", tr("Reverse order"), None, &theme, descending).clicked() {
-            self.sort_order = if descending { SortOrder::Ascending } else { SortOrder::Descending };
-            self.apply_sort();
-        }
-
-        material::divider(ui, &theme);
         if material::toggle_row(ui, "vo_hidden", tr("Hidden files"), hidden_hint.as_deref(), &theme, self.show_hidden).clicked() {
             self.show_hidden = !self.show_hidden;
             reload = true;
@@ -3606,34 +3603,43 @@ impl SkiApp {
             self.apply_sort();
         }
 
-        material::collapsible(ui, "vo_list_columns", self.view_mode == ViewMode::List, |ui| {
-            material::divider(ui, &theme);
-            self.section_title(ui, tr("List columns"));
-            ui.horizontal_wrapped(|ui| {
-                ui.spacing_mut().item_spacing = egui::vec2(6.0, 6.0);
-                for column in Column::ALL {
-                    let on = self.columns.contains(&column);
-                    if chip(ui, ("set_col", column.label()), None, column.label(), &theme, on).clicked() {
-                        self.columns = Column::ALL
-                            .into_iter()
-                            .filter(|c| (*c == column) != self.columns.contains(c))
-                            .collect();
-                    }
-                }
-            });
-        });
+        // Sort: the fields as chips, the direction as one button beside the heading
+        let head = self.section_title(ui, tr("Sort by"));
+        let descending = self.sort_order == SortOrder::Descending;
+        let order_icon = if descending { icons::SORT_DESC } else { icons::SORT_ASC };
+        let button = egui::Rect::from_min_size(egui::pos2(head.right() - CONTROL_HEIGHT - 4.0, head.top()), egui::Vec2::splat(CONTROL_HEIGHT));
+        if ui.scope_builder(egui::UiBuilder::new().max_rect(button), |ui| icon_button(ui, "vo_reverse", order_icon, &theme, true, tr("Reverse order"))).inner.clicked() {
+            self.sort_order = if descending { SortOrder::Ascending } else { SortOrder::Descending };
+            self.apply_sort();
+        }
+        let fields = [SortBy::Name, SortBy::Size, SortBy::Type, SortBy::Modified, SortBy::Created, SortBy::Accessed, SortBy::Owner, SortBy::Permissions];
+        let labels = [tr("Name"), tr("Size"), tr("Type"), tr("Last modified"), tr("Created"), tr("Accessed"), tr("Owner"), tr("Permissions")];
+        if let Some(field) = material::chip_rows(ui, "vo_sort", &labels, |i| self.sort_by == fields[i], &low).map(|i| fields[i]) {
+            if field != self.sort_by {
+                self.sort_by = field;
+                self.apply_sort();
+            }
+        }
 
-        material::divider(ui, &theme);
-        self.section_title(ui, tr("File type"));
-        ui.horizontal_wrapped(|ui| {
-            ui.spacing_mut().item_spacing = egui::vec2(6.0, 6.0);
-            for filter in TypeFilter::ALL {
-                if chip(ui, ("set_type", filter.label()), None, filter.label(), &theme, self.type_filter == filter).clicked() {
-                    self.type_filter = filter;
-                    reload = true;
-                }
+        material::collapsible(ui, "vo_list_columns", self.view_mode == ViewMode::List, |ui| {
+            self.section_title(ui, tr("Columns"));
+            let labels: Vec<&str> = Column::ALL.iter().map(|c| c.label()).collect();
+            if let Some(i) = material::chip_rows(ui, "vo_col", &labels, |i| self.columns.contains(&Column::ALL[i]), &low) {
+                let column = Column::ALL[i];
+                self.columns = Column::ALL
+                    .into_iter()
+                    .filter(|c| (*c == column) != self.columns.contains(c))
+                    .collect();
             }
         });
+
+        self.section_title(ui, tr("File type"));
+        let labels: Vec<&str> = TypeFilter::ALL.iter().map(|f| f.label()).collect();
+        if let Some(i) = material::chip_rows(ui, "vo_type", &labels, |i| self.type_filter == TypeFilter::ALL[i], &low) {
+            self.type_filter = TypeFilter::ALL[i];
+            reload = true;
+        }
+        ui.add_space(4.0);
 
         reload
     }
@@ -5338,7 +5344,7 @@ impl SkiApp {
         // Search over every installed application
         material::input_frame(&theme).show(ui, |ui| {
             ui.horizontal(|ui| {
-                material::inline_icon(ui, icons::SEARCH, material::ICON_SM, theme.subtext1);
+                material::input_icon(ui, icons::SEARCH, material::ICON_SM, theme.subtext1);
                 let resp = ui.add(
                     egui::TextEdit::singleline(query)
                         .frame(egui::Frame::NONE)
