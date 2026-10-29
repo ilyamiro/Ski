@@ -118,7 +118,8 @@ fn open_window(mut request: instance::Request) -> eframe::Result {
         .with_inner_size([1080.0, 720.0])
         .with_min_inner_size([360.0, 420.0])
         // The header draws its own close button; compositors without server-side decorations (niri) would add a bar
-        .with_decorations(false);
+        .with_decorations(false)
+        .with_transparent(true);
     if let Some(spec) = &chooser {
         viewport = viewport.with_inner_size(chooser::saved_size().unwrap_or(chooser::DEFAULT_SIZE)).with_app_id("ski-chooser");
         // Tied to its requester (see wayland_parent.rs) it is floated and centered as a dialog and can

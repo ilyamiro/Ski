@@ -409,6 +409,16 @@ impl SkiApp {
             ui.label(egui::RichText::new(tr("Custom hex color")).size(material::FONT_CAPTION).color(theme.subtext1));
         });
 
+        material::section_label(ui, tr("Transparency"), &theme);
+        group_card(ui, &theme, |ui| {
+            let mut opacity = self.settings.opacity.clamp(1, 100);
+            ui.spacing_mut().slider_width = ui.available_width() - 80.0;
+            if ui.add(egui::Slider::new(&mut opacity, 1..=100).suffix("%").text(tr("Opacity"))).changed() {
+                self.settings.opacity = opacity;
+                self.persist_settings();
+            }
+        });
+
         material::section_label(ui, tr("Interface"), &theme);
         group_card(ui, &theme, |ui| {
             let scales = [0.85, 1.0, 1.15, 1.3];
