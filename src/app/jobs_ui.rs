@@ -337,8 +337,8 @@ impl SkiApp {
             }
         }
         if running && row.controllable {
-            let cancel_rect = egui::Rect::from_center_size(egui::pos2(right - 13.0, rect.top() + 24.0), egui::vec2(26.0, 26.0));
-            if ui.put(cancel_rect, |ui: &mut egui::Ui| material::filled_icon_button(ui, ("job_cancel", row.id), icons::CLOSE, theme, 26.0, tr("Cancel"), None)).clicked() {
+            let cancel_rect = egui::Rect::from_center_size(egui::pos2(right - 13.0, rect.top() + 24.0), egui::vec2(material::CLOSE_BUTTON, material::CLOSE_BUTTON));
+            if ui.put(cancel_rect, |ui: &mut egui::Ui| material::filled_icon_button(ui, ("job_cancel", row.id), icons::CLOSE, theme, material::CLOSE_BUTTON, tr("Cancel"), None)).clicked() {
                 action = Some(JobAction::Cancel(row.id));
             }
             right -= 32.0;

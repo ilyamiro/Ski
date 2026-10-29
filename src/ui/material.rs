@@ -480,6 +480,14 @@ pub(crate) fn paint_fill(painter: &egui::Painter, rect: Rect, radius: CornerRadi
 }
 
 pub fn paint_icon(painter: &egui::Painter, center: Pos2, icon: &str, size: f32, color: Color32) {
+    // The close glyph is heavy; a hairline cross, a little smaller, reads lighter everywhere it appears
+    if icon == icons::CLOSE {
+        let d = size * 0.3;
+        let stroke = egui::Stroke::new(1.2, color);
+        painter.line_segment([center + Vec2::new(-d, -d), center + Vec2::new(d, d)], stroke);
+        painter.line_segment([center + Vec2::new(-d, d), center + Vec2::new(d, -d)], stroke);
+        return;
+    }
     painter.text(center, Align2::CENTER_CENTER, icon, icons::font(size), color);
 }
 
@@ -582,6 +590,9 @@ pub fn icon_button_tinted(
 }
 
 /// Icon-only counterpart of `chip`: a filled round button (dialog close buttons, small resets).
+/// Side of every close (X) button, so they match across the window and its dialogs.
+pub const CLOSE_BUTTON: f32 = 26.0;
+
 pub fn filled_icon_button(
     ui: &mut egui::Ui,
     id_source: impl std::hash::Hash + std::fmt::Debug,
@@ -596,15 +607,18 @@ pub fn filled_icon_button(
     let fx = fx(ui, id, &response, true, &FxSpec::CLICK);
     let r = scaled(rect, fx.scale);
 
-    let idle = theme.surface1;
+    // Close buttons are one size and a step quieter than the other round buttons
+    let close = icon == icons::CLOSE;
+    let idle = if close { theme.surface0 } else { theme.surface1 };
     let hovered = match accent {
+        None if close => lerp_color(theme.surface1, theme.text, fx.press * 0.08),
         Some(a) => blend_over(theme.surface1, theme.with_alpha(a, 70 + (fx.press * 30.0) as u8)),
         None => lerp_color(theme.surface2, theme.text, fx.press * 0.08),
     };
     paint_fill(ui.painter(), r, pill(r), lerp_color(idle, hovered, fx.hover.max(fx.press)), &fx);
 
     let color = lerp_color(theme.subtext1, accent.unwrap_or(theme.text), fx.hover.max(fx.press));
-    paint_icon(ui.painter(), rect.center(), icon, (size * 0.42).round(), color);
+    paint_icon(ui.painter(), rect.center(), icon, if close { 11.0 } else { (size * 0.42).round() }, color);
     if tooltip.is_empty() { response } else { response.on_hover_text(tooltip) }
 }
 
@@ -2103,7 +2117,7 @@ pub fn dialog_header_sized(
             }
         });
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
-            if filled_icon_button(ui, close_id, icons::CLOSE, theme, SIZE, tr("Close"), None).clicked() {
+            if filled_icon_button(ui, close_id, icons::CLOSE, theme, CLOSE_BUTTON, tr("Close"), None).clicked() {
                 close = true;
             }
         });

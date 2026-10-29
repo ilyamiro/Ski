@@ -2366,7 +2366,7 @@ impl SkiApp {
                 }
                 ui.add_space(CLOSE_GAP);
                 // Small and round like Nautilus's: the header's own buttons are bigger than a window button should be
-                let close_size = 24.0;
+                let close_size = material::CLOSE_BUTTON;
                 if material::filled_icon_button(ui, "btn_close_window", icons::CLOSE, &self.theme, close_size, tr("Close"), None).clicked() {
                     ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
                 }
@@ -5145,7 +5145,7 @@ impl SkiApp {
                                 }
                             }
                             ui.add_space(CLOSE_GAP - TITLE_GAP);
-                            if material::filled_icon_button(ui, "pk_close", icons::CLOSE, &theme, 24.0, tr("Close"), None).clicked() {
+                            if material::filled_icon_button(ui, "pk_close", icons::CLOSE, &theme, material::CLOSE_BUTTON, tr("Close"), None).clicked() {
                                 cancelled = true;
                             }
                         },
