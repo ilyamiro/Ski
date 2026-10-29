@@ -1175,9 +1175,7 @@ pub fn list_header(
     let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 30.0), egui::Sense::hover());
     let fitting = fitting_columns(columns, widths, rect.width());
     let mut clicked = None;
-    // A hairline under the titles, and a little air before the first row
-    let line_y = snap(ui.painter(), Rect::from_min_size(Pos2::new(rect.left(), rect.bottom()), Vec2::new(rect.width(), 1.0))).top();
-    ui.painter().line_segment([Pos2::new(rect.left() + 6.0, line_y), Pos2::new(rect.right() - 6.0, line_y)], egui::Stroke::new(1.0, theme.surface0));
+    // A little air before the first row
     ui.add_space(4.0);
 
     let mut cell = |ui: &mut egui::Ui, id: &str, key: Option<SortBy>, label: &str, cell: Rect| {

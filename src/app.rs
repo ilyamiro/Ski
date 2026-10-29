@@ -2089,7 +2089,7 @@ impl eframe::App for SkiApp {
         egui::Panel::top("top_navigation")
             .frame(
                 egui::Frame::new()
-                    .fill(self.theme.base)
+                    .fill(self.theme.mantle)
                     .inner_margin(egui::Margin::symmetric(HEADER_MARGIN, 4)),
             )
             .show(ui, |ui| self.render_top_bar(ui, sidebar_visible));
