@@ -1207,9 +1207,9 @@ fn keycap_pill(
         let remove = ui.interact(remove_rect, id.with("rm"), egui::Sense::click()).on_hover_text(tr("Remove shortcut"));
         let rem_fx = material::fx(ui, id.with("rm"), &remove, true, &material::FxSpec::ICON);
         let rem_r = material::scaled(remove_rect, rem_fx.scale);
-        let rem_bg = theme.with_alpha(theme.red, ((rem_fx.hover * 40.0) + (rem_fx.press * 24.0)).round() as u8);
+        let rem_bg = material::row_layer(&theme, &rem_fx);
         material::paint_fill(ui.painter(), rem_r, material::pill(rem_r), rem_bg, &rem_fx);
-        material::paint_icon(ui.painter(), remove_rect.center(), icons::CLOSE, 12.0, material::lerp_color(theme.subtext1, theme.red, rem_fx.hover.max(rem_fx.press)));
+        material::paint_icon(ui.painter(), remove_rect.center(), icons::CLOSE, 10.0, material::lerp_color(theme.subtext1, theme.text, rem_fx.hover.max(rem_fx.press)));
         remove_clicked = remove.clicked();
     }
 

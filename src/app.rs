@@ -2263,7 +2263,7 @@ impl SkiApp {
                 // Search lives in the sidebar; without a sidebar it becomes a header button.
                 let show_jobs = !self.engine.jobs.is_empty();
                 let jobs_w = if show_jobs { button_w } else { 0.0 };
-                let right_w = button_w + jobs_w + if sidebar_visible { 0.0 } else { button_w } + if show_search_btn { button_w } else { 0.0 } + if show_view { material::SPLIT_BUTTON_W } else { 0.0 };
+                let right_w = gap + 24.0 + jobs_w + if sidebar_visible { 0.0 } else { button_w } + if show_search_btn { button_w } else { 0.0 } + if show_view { material::SPLIT_BUTTON_W } else { 0.0 };
                 let title_width = (ui.available_width() - right_w - TITLE_GAP).max(40.0);
 
                 let (title_rect, title_resp) =
@@ -2347,8 +2347,7 @@ impl SkiApp {
                 ui.add_space(gap);
                 // Small and round like Nautilus's: the header's own buttons are bigger than a window button should be
                 let close_size = 24.0;
-                ui.add_space((CONTROL_HEIGHT - close_size) / 2.0);
-                if material::filled_icon_button(ui, "btn_close_window", icons::CLOSE, &self.theme, close_size, tr("Close"), Some(self.theme.red)).clicked() {
+                if material::filled_icon_button(ui, "btn_close_window", icons::CLOSE, &self.theme, close_size, tr("Close"), None).clicked() {
                     ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
                 }
             },

@@ -603,7 +603,7 @@ pub fn filled_icon_button(
     paint_fill(ui.painter(), r, pill(r), lerp_color(idle, hovered, fx.hover.max(fx.press)), &fx);
 
     let color = lerp_color(theme.subtext1, accent.unwrap_or(theme.text), fx.hover.max(fx.press));
-    paint_icon(ui.painter(), rect.center(), icon, (size * 0.5).round(), color);
+    paint_icon(ui.painter(), rect.center(), icon, (size * 0.42).round(), color);
     if tooltip.is_empty() { response } else { response.on_hover_text(tooltip) }
 }
 
@@ -637,9 +637,9 @@ pub fn split_icon_button(
         } else {
             CornerRadius { nw: small, sw: small, ne: round, se: round }
         };
-        // Rests on the same fill as the address pill next to it, and follows it on hover
+        // Flat at rest like Nautilus's header buttons; only hover and press give it a fill
         let hovered = lerp_color(theme.surface1, theme.surface2, fx.press);
-        paint_fill(ui.painter(), r, corners, lerp_color(theme.surface0, hovered, fx.hover.max(fx.press)), &fx);
+        paint_fill(ui.painter(), r, corners, lerp_color(Color32::TRANSPARENT, hovered, fx.hover.max(fx.press)), &fx);
         let color = lerp_color(theme.subtext1, theme.text, fx.hover.max(fx.press));
         paint_icon(ui.painter(), rect.center(), glyph, if left { ICON_MD } else { ICON_XS }, color);
         if tip.is_empty() { response } else { response.on_hover_text(tip) }
@@ -1738,13 +1738,12 @@ fn stepper_row_with(
     (out[0], out[1])
 }
 
-/// Back and forward as one joined pill: two flat halves, dimmed when there is nowhere to go.
+/// Back and forward side by side, flat like Nautilus's: two halves, dimmed when there is nowhere to go.
 pub fn nav_pair(ui: &mut egui::Ui, theme: &SerpantinumTheme, can_back: bool, can_forward: bool) -> (egui::Response, egui::Response) {
     // Same height as every other header control; each half is as wide as a round icon button
     const W: f32 = CONTROL_HEIGHT;
     const H: f32 = CONTROL_HEIGHT;
     let (body, _) = ui.allocate_exact_size(Vec2::new(W * 2.0, H), egui::Sense::hover());
-    ui.painter().rect_filled(snap(ui.painter(), body), pill(body), theme.surface0);
     let id = ui.make_persistent_id("nav_pair");
     let mut responses = Vec::with_capacity(2);
     for (i, (icon, enabled, tip)) in [(icons::CHEVRON_LEFT, can_back, tr("Back")), (icons::CHEVRON_RIGHT, can_forward, tr("Forward"))].into_iter().enumerate() {
@@ -1753,8 +1752,11 @@ pub fn nav_pair(ui: &mut egui::Ui, theme: &SerpantinumTheme, can_back: bool, can
         let resp = ui.interact(cell, btn_id, if enabled { egui::Sense::click() } else { egui::Sense::hover() });
         let fx = fx(ui, btn_id, &resp, enabled, &FxSpec::CLICK);
         let en_t = animate(ui.ctx(), id.with(("en", i)), enabled);
-        let inner = scaled(cell.shrink(2.0), fx.scale);
-        paint_fill(ui.painter(), inner, pill(inner), row_layer(theme, &fx), &fx);
+        // A box that fills on hover like the view button beside the address pill
+        let inner = scaled(cell.shrink2(Vec2::new(1.0, 0.0)), fx.scale);
+        let hovered = lerp_color(theme.surface1, theme.surface2, fx.press);
+        let layer = lerp_color(Color32::TRANSPARENT, hovered, if enabled { fx.hover.max(fx.press) } else { 0.0 });
+        paint_fill(ui.painter(), inner, CornerRadius::same(radius_md()), layer, &fx);
         let active_color = lerp_color(theme.subtext1, theme.text, fx.hover.max(fx.press * 0.5));
         let color = lerp_color(theme.with_alpha(theme.subtext1, 70), active_color, en_t);
         paint_icon(ui.painter(), cell.center(), icon, ICON_SM, color);
@@ -2012,7 +2014,7 @@ pub fn dialog_header_with_heart(
             let (icon, tip) = if on { (icons::HEART, tr("Remove from bookmarks")) } else { (icons::HEART_OUTLINE, tr("Add to bookmarks")) };
             let resp = filled_icon_button(ui, "dlg_heart", icon, theme, SIZE, tip, Some(theme.red));
             if on {
-                paint_icon(ui.painter(), resp.rect.center(), icon, (SIZE * 0.5).round(), theme.red);
+                paint_icon(ui.painter(), resp.rect.center(), icon, (SIZE * 0.42).round(), theme.red);
             }
             hearted = resp.clicked();
         }
@@ -2027,7 +2029,7 @@ pub fn dialog_header_with_heart(
             }
         });
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
-            if filled_icon_button(ui, close_id, icons::CLOSE, theme, SIZE, tr("Close"), Some(theme.red)).clicked() {
+            if filled_icon_button(ui, close_id, icons::CLOSE, theme, SIZE, tr("Close"), None).clicked() {
                 close = true;
             }
         });
