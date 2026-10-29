@@ -2184,10 +2184,39 @@ impl eframe::App for SkiApp {
         self.render_drop_overlay(&ctx);
         self.update_system_dnd(&ctx);
         self.update_item_drag(&ctx);
+        Self::window_resize_edges(&ctx);
     }
 }
 
 impl SkiApp {
+    /// The window has no frame of its own, so its outer few pixels resize it, like Nautilus's.
+    fn window_resize_edges(ctx: &egui::Context) {
+        use egui::viewport::ResizeDirection as D;
+        const EDGE: f32 = 5.0;
+        let (viewport, pos, pressed, screen) = ctx.input(|i| (i.viewport().clone(), i.pointer.hover_pos(), i.pointer.primary_pressed(), i.content_rect()));
+        if viewport.maximized == Some(true) || viewport.fullscreen == Some(true) {
+            return;
+        }
+        let Some(pos) = pos else { return };
+        let (west, east) = (pos.x < screen.left() + EDGE, pos.x > screen.right() - EDGE);
+        let (north, south) = (pos.y < screen.top() + EDGE, pos.y > screen.bottom() - EDGE);
+        let (dir, cursor) = match (north, south, west, east) {
+            (true, _, true, _) => (D::NorthWest, egui::CursorIcon::ResizeNwSe),
+            (true, _, _, true) => (D::NorthEast, egui::CursorIcon::ResizeNeSw),
+            (_, true, true, _) => (D::SouthWest, egui::CursorIcon::ResizeNeSw),
+            (_, true, _, true) => (D::SouthEast, egui::CursorIcon::ResizeNwSe),
+            (true, ..) => (D::North, egui::CursorIcon::ResizeVertical),
+            (_, true, ..) => (D::South, egui::CursorIcon::ResizeVertical),
+            (_, _, true, _) => (D::West, egui::CursorIcon::ResizeHorizontal),
+            (_, _, _, true) => (D::East, egui::CursorIcon::ResizeHorizontal),
+            _ => return,
+        };
+        ctx.set_cursor_icon(cursor);
+        if pressed {
+            ctx.send_viewport_cmd(egui::ViewportCommand::BeginResize(dir));
+        }
+    }
+
     /// One fixed-height row: every control is `CONTROL_HEIGHT` tall and centered on the same axis.
     fn render_top_bar(&mut self, ui: &mut egui::Ui, sidebar_visible: bool) {
         let gap = 2.0;
