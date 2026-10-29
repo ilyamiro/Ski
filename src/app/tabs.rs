@@ -341,101 +341,96 @@ impl SkiApp {
         if t <= 0.001 {
             return;
         }
-        egui::Panel::top("tab_bar")
-            .show_separator_line(false)
-            .exact_size((TAB_BAR_HEIGHT * t).max(1.0))
-            .resizable(false)
-            .frame(egui::Frame::new().fill(theme.base).inner_margin(egui::Margin::symmetric(HEADER_MARGIN, 0)))
-            .show(ui, |ui| {
-                ui.set_opacity(t);
-                let row = egui::Rect::from_min_size(ui.max_rect().min, egui::vec2(ui.max_rect().width(), TAB_BAR_HEIGHT));
-                let plus_w = TAB_HEIGHT + 4.0;
-                let strip = egui::Rect::from_min_max(row.min, egui::pos2(row.right() - plus_w, row.bottom()));
-                let count = self.tabs.len();
-                let width = ((strip.width() - 4.0 * (count as f32 - 1.0)) / count as f32).clamp(TAB_MIN_W, TAB_MAX_W);
+        super::chrome::header_strip(ui, "tab_bar", TAB_BAR_HEIGHT * t, &theme, |ui| {
+            ui.set_opacity(t);
+            let row = egui::Rect::from_min_size(ui.max_rect().min, egui::vec2(ui.max_rect().width(), TAB_BAR_HEIGHT));
+            let plus_w = TAB_HEIGHT + 4.0;
+            let strip = egui::Rect::from_min_max(row.min, egui::pos2(row.right() - plus_w, row.bottom()));
+            let count = self.tabs.len();
+            let width = ((strip.width() - 4.0 * (count as f32 - 1.0)) / count as f32).clamp(TAB_MIN_W, TAB_MAX_W);
 
-                let mut switch_to = None;
-                let mut close = None;
-                let mut drag_to: Option<(usize, usize)> = None;
-                let mut rects = Vec::with_capacity(count);
-                let mut x = strip.left();
-                let top = row.center().y - TAB_HEIGHT / 2.0;
-                let active = self.active_tab;
-                let entering = self.tab_enter.take();
-                for idx in 0..count {
-                    let id = self.tabs[idx].id;
-                    let grow_id = ui.make_persistent_id(("tab_grow", id));
-                    if entering == Some(id) {
-                        material::reset_anim(&ctx, grow_id, 0.0);
-                    }
-                    let grow = material::animate_value(&ctx, grow_id, 1.0, material::ANIM);
-                    let w = width * grow;
-                    let rect = egui::Rect::from_min_size(egui::pos2(x, top), egui::vec2(w, TAB_HEIGHT));
-                    x += w + 4.0 * grow;
-                    rects.push(rect);
-                    if rect.right() > strip.right() + 1.0 {
-                        continue;
-                    }
-                    let (icon, title) = self.tab_label(idx);
-                    let tab_id = ui.make_persistent_id(("tab", id));
-                    let tab_path = self.tabs[idx].saved.as_ref().map_or(&self.current_path, |s| &s.current_path).clone();
-                    self.drop_zones.push(super::dnd::DropZone { rect, dest: tab_path });
-                    let resp = ui.interact(rect, tab_id, egui::Sense::click_and_drag());
-                    let fx = material::fx(ui, tab_id, &resp, true, &material::FxSpec::ROW);
-                    let on = material::animate(&ctx, tab_id.with("on"), idx == active);
-                    let base = material::selectable_bg(&theme, &fx, on);
-                    let rounded = egui::CornerRadius::same(material::radius_md());
-                    material::paint_fill(ui.painter(), rect, rounded, base, &fx);
-
-                    let color = material::lerp_color(material::lerp_color(theme.subtext0, theme.text, fx.hover), theme.mauve, on);
-                    material::paint_icon(ui.painter(), egui::pos2(rect.left() + 16.0, rect.center().y), icon, material::ICON_SM, color);
-                    let close_rect = egui::Rect::from_center_size(egui::pos2(rect.right() - 17.0, rect.center().y), egui::vec2(22.0, 22.0));
-                    let close_resp = ui.interact(close_rect, tab_id.with("x"), egui::Sense::click());
-                    let close_t = material::animate_for(&ctx, tab_id.with("xs"), resp.hovered() || close_resp.hovered() || idx == active, material::ANIM_FAST);
-                    if close_t > 0.01 {
-                        let cfx = material::fx(ui, tab_id.with("x"), &close_resp, true, &material::FxSpec::ICON);
-                        let r = material::scaled(close_rect, cfx.scale);
-                        material::paint_fill(ui.painter(), r, material::pill(r), material::row_layer(&theme, &cfx).gamma_multiply(close_t), &cfx);
-                        material::paint_icon(ui.painter(), close_rect.center(), icons::CLOSE, material::ICON_XS, color.gamma_multiply(close_t));
-                    }
-                    let label_right = rect.right() - 8.0 - 22.0 * close_t.max(if idx == active { 1.0 } else { 0.0 }) - 4.0;
-                    material::paint_label(ui, rect.left() + 32.0, rect.center().y, &title, material::FONT_BODY, color, (label_right - rect.left() - 32.0).max(12.0));
-
-                    if close_resp.clicked() || resp.middle_clicked() {
-                        close = Some(idx);
-                    } else if resp.clicked() {
-                        switch_to = Some(idx);
-                    }
-                    if resp.dragged() && let Some(p) = resp.interact_pointer_pos() {
-                        if let Some(over) = rects.iter().position(|r| p.x >= r.left() && p.x < r.right()) && over != idx {
-                            drag_to = Some((idx, over));
-                        }
-                        ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
-                    }
+            let mut switch_to = None;
+            let mut close = None;
+            let mut drag_to: Option<(usize, usize)> = None;
+            let mut rects = Vec::with_capacity(count);
+            let mut x = strip.left();
+            let top = row.center().y - TAB_HEIGHT / 2.0;
+            let active = self.active_tab;
+            let entering = self.tab_enter.take();
+            for idx in 0..count {
+                let id = self.tabs[idx].id;
+                let grow_id = ui.make_persistent_id(("tab_grow", id));
+                if entering == Some(id) {
+                    material::reset_anim(&ctx, grow_id, 0.0);
                 }
+                let grow = material::animate_value(&ctx, grow_id, 1.0, material::ANIM);
+                let w = width * grow;
+                let rect = egui::Rect::from_min_size(egui::pos2(x, top), egui::vec2(w, TAB_HEIGHT));
+                x += w + 4.0 * grow;
+                rects.push(rect);
+                if rect.right() > strip.right() + 1.0 {
+                    continue;
+                }
+                let (icon, title) = self.tab_label(idx);
+                let tab_id = ui.make_persistent_id(("tab", id));
+                let tab_path = self.tabs[idx].saved.as_ref().map_or(&self.current_path, |s| &s.current_path).clone();
+                self.drop_zones.push(super::dnd::DropZone { rect, dest: tab_path });
+                let resp = ui.interact(rect, tab_id, egui::Sense::click_and_drag());
+                let fx = material::fx(ui, tab_id, &resp, true, &material::FxSpec::ROW);
+                let on = material::animate(&ctx, tab_id.with("on"), idx == active);
+                let base = material::selectable_bg(&theme, &fx, on);
+                let rounded = egui::CornerRadius::same(material::radius_md());
+                material::paint_fill(ui.painter(), rect, rounded, base, &fx);
 
-                let plus = egui::Rect::from_center_size(egui::pos2(strip.right() + plus_w / 2.0, row.center().y), egui::vec2(TAB_HEIGHT, TAB_HEIGHT));
-                let plus_id = ui.make_persistent_id("tab_new");
-                let resp = ui.interact(plus, plus_id, egui::Sense::click()).on_hover_text(tr("New tab"));
-                let fx = material::fx(ui, plus_id, &resp, true, &material::FxSpec::ICON);
-                let r = material::scaled(plus, fx.scale);
-                material::paint_fill(ui.painter(), r, material::pill(r), material::row_layer(&theme, &fx), &fx);
-                material::paint_icon(ui.painter(), plus.center(), icons::ADD, material::ICON_MD, material::lerp_color(theme.subtext1, theme.text, fx.hover));
-                let new_tab = resp.clicked();
+                let color = material::lerp_color(material::lerp_color(theme.subtext0, theme.text, fx.hover), theme.mauve, on);
+                material::paint_icon(ui.painter(), egui::pos2(rect.left() + 16.0, rect.center().y), icon, material::ICON_SM, color);
+                let close_rect = egui::Rect::from_center_size(egui::pos2(rect.right() - 17.0, rect.center().y), egui::vec2(22.0, 22.0));
+                let close_resp = ui.interact(close_rect, tab_id.with("x"), egui::Sense::click());
+                let close_t = material::animate_for(&ctx, tab_id.with("xs"), resp.hovered() || close_resp.hovered() || idx == active, material::ANIM_FAST);
+                if close_t > 0.01 {
+                    let cfx = material::fx(ui, tab_id.with("x"), &close_resp, true, &material::FxSpec::ICON);
+                    let r = material::scaled(close_rect, cfx.scale);
+                    material::paint_fill(ui.painter(), r, material::pill(r), material::row_layer(&theme, &cfx).gamma_multiply(close_t), &cfx);
+                    material::paint_icon(ui.painter(), close_rect.center(), icons::CLOSE, material::ICON_XS, color.gamma_multiply(close_t));
+                }
+                let label_right = rect.right() - 8.0 - 22.0 * close_t.max(if idx == active { 1.0 } else { 0.0 }) - 4.0;
+                material::paint_label(ui, rect.left() + 32.0, rect.center().y, &title, material::FONT_BODY, color, (label_right - rect.left() - 32.0).max(12.0));
 
-                if let Some((from, to)) = drag_to {
-                    self.move_tab(from, to);
+                if close_resp.clicked() || resp.middle_clicked() {
+                    close = Some(idx);
+                } else if resp.clicked() {
+                    switch_to = Some(idx);
                 }
-                if let Some(idx) = close {
-                    self.close_tab(&ctx, idx);
-                } else if let Some(idx) = switch_to {
-                    self.switch_tab(idx);
+                if resp.dragged() && let Some(p) = resp.interact_pointer_pos() {
+                    if let Some(over) = rects.iter().position(|r| p.x >= r.left() && p.x < r.right()) && over != idx {
+                        drag_to = Some((idx, over));
+                    }
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
                 }
-                if new_tab {
-                    let here = self.current_path.clone();
-                    self.new_tab(here);
-                }
-            });
+            }
+
+            let plus = egui::Rect::from_center_size(egui::pos2(strip.right() + plus_w / 2.0, row.center().y), egui::vec2(TAB_HEIGHT, TAB_HEIGHT));
+            let plus_id = ui.make_persistent_id("tab_new");
+            let resp = ui.interact(plus, plus_id, egui::Sense::click()).on_hover_text(tr("New tab"));
+            let fx = material::fx(ui, plus_id, &resp, true, &material::FxSpec::ICON);
+            let r = material::scaled(plus, fx.scale);
+            material::paint_fill(ui.painter(), r, material::pill(r), material::row_layer(&theme, &fx), &fx);
+            material::paint_icon(ui.painter(), plus.center(), icons::ADD, material::ICON_MD, material::lerp_color(theme.subtext1, theme.text, fx.hover));
+            let new_tab = resp.clicked();
+
+            if let Some((from, to)) = drag_to {
+                self.move_tab(from, to);
+            }
+            if let Some(idx) = close {
+                self.close_tab(&ctx, idx);
+            } else if let Some(idx) = switch_to {
+                self.switch_tab(idx);
+            }
+            if new_tab {
+                let here = self.current_path.clone();
+                self.new_tab(here);
+            }
+        });
     }
 
     /// Run a search again after a tab was shown; its results are not kept while it is parked.

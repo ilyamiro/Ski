@@ -2234,6 +2234,13 @@ pub fn input_frame(theme: &SerpantinumTheme) -> egui::Frame {
         .inner_margin(egui::Margin { left: 14, right: 14, top: 8 + INPUT_TEXT_DROP, bottom: 8 - INPUT_TEXT_DROP })
 }
 
+/// `input_frame` that is `height` tall around a line of text `text_height` tall, to stand in a
+/// row of buttons, its text kept on the field's center the same way.
+pub fn input_frame_sized(theme: &SerpantinumTheme, height: f32, text_height: f32) -> egui::Frame {
+    let pad = ((height - text_height) / 2.0).max(INPUT_TEXT_DROP as f32).round() as i8;
+    input_frame(theme).inner_margin(egui::Margin { left: 14, right: 14, top: pad + INPUT_TEXT_DROP, bottom: pad - INPUT_TEXT_DROP })
+}
+
 /// How far `input_frame` lowers its content so the text reads centered.
 const INPUT_TEXT_DROP: i8 = 2;
 
