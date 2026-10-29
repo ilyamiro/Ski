@@ -225,14 +225,14 @@ fn name_cmp(a: &FileItem, b: &FileItem) -> Ordering {
 /// What an item is sorted by besides its name, looked up once per item instead of on every comparison.
 enum SortKey {
     None,
-    /// `None` for a folder not measured yet.
+    /// A file's bytes, or a folder's item count; `None` for a folder not counted yet.
     Size(Option<u64>),
     Text(String),
 }
 
 fn sort_key(item: &FileItem, sort_by: SortBy) -> SortKey {
     match sort_by {
-        SortBy::Size if item.is_dir => SortKey::Size(super::dirsize::known_bytes(&item.path)),
+        SortBy::Size if item.is_dir => SortKey::Size(super::dirsize::known_count(&item.path).map(|n| n as u64)),
         SortBy::Size => SortKey::Size(Some(item.size)),
         SortBy::Type => SortKey::Text(extension_of(item)),
         SortBy::Owner => SortKey::Text(item.owner()),
@@ -257,7 +257,7 @@ pub fn sort_items(items: &mut [FileItem], opts: &ListOptions) {
 
         let ordering = match (&keys[x], &keys[y]) {
             (SortKey::Size(sa), SortKey::Size(sb)) => {
-                // Folders not measured yet follow everything with a size, whichever way the column is ordered
+                // Folders not counted yet follow everything with a size, whichever way the column is ordered
                 let asc = sort_order == SortOrder::Ascending;
                 match (sa, sb) {
                     (Some(sa), Some(sb)) => sa.cmp(sb),
@@ -304,16 +304,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn folders_not_measured_yet_sort_after_measured_ones_either_way() {
+    fn folders_sort_by_item_count_and_uncounted_ones_last_either_way() {
         use super::super::dirsize;
         let root = std::env::temp_dir().join(format!("ski-sortsize-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         for name in ["big", "small", "unknown-a", "unknown-b"] {
             std::fs::create_dir_all(root.join(name)).unwrap();
         }
-        let totals = |bytes| dirsize::Totals { bytes, disk: bytes, files: 1, folders: 0, partial: false };
-        dirsize::store(&root.join("big"), totals(9000));
-        dirsize::store(&root.join("small"), totals(10));
+        dirsize::store_count(&root.join("big"), Some(90));
+        dirsize::store_count(&root.join("small"), Some(2));
         let items = || ["unknown-b", "big", "unknown-a", "small"].map(|n| FileItem::from_path(&root.join(n)).unwrap()).to_vec();
         let names = |items: &[FileItem]| items.iter().map(|i| i.name.clone()).collect::<Vec<_>>();
         let opts = |sort_order| ListOptions { show_hidden: false, sort_by: SortBy::Size, sort_order, folders_first: true, type_filter: TypeFilter::All };

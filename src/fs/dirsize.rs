@@ -65,11 +65,6 @@ pub fn totals(path: &Path) -> Option<Totals> {
     with(|b| b.sizes.get(path).copied())
 }
 
-/// The size to sort a folder by, when it is known.
-pub fn known_bytes(path: &Path) -> Option<u64> {
-    totals(path).map(|t| t.shown())
-}
-
 pub fn is_pending(path: &Path) -> bool {
     with(|b| b.pending.contains(path))
 }
@@ -87,6 +82,11 @@ pub fn store(path: &Path, totals: Totals) {
 
 pub fn store_count(path: &Path, count: Option<usize>) {
     with(|b| b.counts.insert(path.to_path_buf(), count));
+}
+
+/// How many items a folder holds, when it has been counted and could be read.
+pub fn known_count(path: &Path) -> Option<usize> {
+    with(|b| b.counts.get(path).copied().flatten())
 }
 
 pub fn has_count(path: &Path) -> bool {
@@ -172,11 +172,11 @@ mod tests {
         assert_eq!(label(p), "—");
         store_count(p, Some(3));
         assert_eq!(label(p), "3 items");
+        assert_eq!(known_count(p), Some(3));
         mark_pending(p);
         assert_eq!(label(p), "…");
         store(p, Totals { bytes: 2048, disk: 4096, files: 2, folders: 1, partial: false });
         assert_eq!(label(p), format_bytes(2048));
-        assert_eq!(known_bytes(p), Some(2048));
         store(p, Totals { bytes: 10, disk: 10, files: 1, folders: 0, partial: true });
         assert_eq!(label(p), format!("≥ {}", format_bytes(10)));
     }

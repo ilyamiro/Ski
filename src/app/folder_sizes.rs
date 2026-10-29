@@ -21,6 +21,8 @@ pub(super) struct SizeScheduler {
     running: Vec<(PathBuf, FolderScan)>,
     queue: VecDeque<PathBuf>,
     counting: Arc<AtomicBool>,
+    /// A count was started and its results not sorted in yet.
+    counts_unsorted: bool,
 }
 
 impl SizeScheduler {
@@ -103,14 +105,17 @@ impl SkiApp {
         self.items[start..end].iter().chain(&self.items[..start]).chain(&self.items[end..])
     }
 
-    /// Once per frame: queue the folders that should be measured, start the scans, and sort again
-    /// when sizes arrived and the listing is ordered by size.
+    /// Once per frame: count and queue the folders that should be measured, start the scans, and
+    /// sort again when item counts arrived and the listing is ordered by size (folders go by count).
     pub(super) fn tick_folder_sizes(&mut self, ctx: &egui::Context) {
         dirsize::set_size_on_disk(self.settings.size_on_disk);
-        if !self.in_recent() && !self.sizes.counting.load(Ordering::Relaxed) {
+        let counting = self.sizes.counting.load(Ordering::Relaxed);
+        let counted = !counting && std::mem::take(&mut self.sizes.counts_unsorted);
+        if !self.in_recent() && !counting {
             let missing = dirsize::uncounted(self.visible_first().filter(|i| i.is_dir).map(|i| i.path.as_path()), 400);
             if !missing.is_empty() {
                 dirsize::count_in_background(missing, Arc::clone(&self.sizes.counting));
+                self.sizes.counts_unsorted = true;
             }
         }
         if self.settings.folder_sizes == FolderSizeMode::Always {
@@ -124,7 +129,8 @@ impl SkiApp {
             let selected = self.selection.iter().filter_map(|&i| self.items.get(i)).filter(|i| i.is_dir).map(|i| i.path.as_path());
             self.sizes.request_all(wanted.iter().map(PathBuf::as_path).chain(selected));
         }
-        if self.sizes.tick() && self.sort_by == SortBy::Size {
+        self.sizes.tick();
+        if counted && self.sort_by == SortBy::Size {
             self.resort_items();
         }
         if self.sizes.busy() {

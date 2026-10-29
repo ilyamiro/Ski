@@ -5765,6 +5765,37 @@ mod tests {
         std::fs::remove_dir_all(&work).unwrap();
     }
 
+    /// Sorting by size orders folders by how many items they hold, not by their bytes.
+    #[test]
+    fn sorting_by_size_orders_folders_by_item_count() {
+        let work = std::env::temp_dir().join(format!("ski_app_sortsize_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&work);
+        // The fewest items hold the most bytes, so a sort by bytes would come out the other way
+        for (name, files, bytes) in [("a-small", 1, 9000), ("b-big", 5, 1), ("c-mid", 3, 10)] {
+            for n in 0..files {
+                std::fs::create_dir_all(work.join(name)).unwrap();
+                std::fs::write(work.join(name).join(format!("{n}.bin")), vec![0u8; bytes]).unwrap();
+            }
+        }
+
+        let ctx = egui::Context::default();
+        let settings = Settings { folder_sizes: crate::settings::FolderSizeMode::Always, ..Settings::default() };
+        let mut app = SkiApp::new(work.clone(), SerpantinumTheme::default(), settings, &ctx);
+        app.sort_by = SortBy::Size;
+        app.sort_order = SortOrder::Descending;
+        app.apply_sort();
+        let names = |app: &SkiApp| app.items.iter().map(|i| i.name.clone()).collect::<Vec<_>>();
+        for _ in 0..300 {
+            app.tick_folder_sizes(&ctx);
+            if names(&app) == ["b-big", "c-mid", "a-small"] {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert_eq!(names(&app), ["b-big", "c-mid", "a-small"]);
+        std::fs::remove_dir_all(&work).unwrap();
+    }
+
     /// Drives rename, trash, undo and permanent delete through the app, in a sandboxed data folder.
     #[test]
     fn rename_trash_restore_delete() {
