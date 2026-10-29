@@ -2090,7 +2090,7 @@ impl eframe::App for SkiApp {
             .frame(
                 egui::Frame::new()
                     .fill(self.theme.base)
-                    .inner_margin(egui::Margin::symmetric(HEADER_MARGIN, 8)),
+                    .inner_margin(egui::Margin::symmetric(HEADER_MARGIN, 4)),
             )
             .show(ui, |ui| self.render_top_bar(ui, sidebar_visible));
         self.render_tab_bar(ui);
@@ -2234,11 +2234,15 @@ impl SkiApp {
                 // Search lives in the sidebar; without a sidebar it becomes a header button.
                 let show_jobs = !self.engine.jobs.is_empty();
                 let jobs_w = if show_jobs { button_w } else { 0.0 };
-                let right_w = jobs_w + if sidebar_visible { 0.0 } else { button_w } + if show_search_btn { button_w } else { 0.0 } + if show_view { material::SPLIT_BUTTON_W } else { 0.0 };
+                let right_w = button_w + jobs_w + if sidebar_visible { 0.0 } else { button_w } + if show_search_btn { button_w } else { 0.0 } + if show_view { material::SPLIT_BUTTON_W } else { 0.0 };
                 let title_width = (ui.available_width() - right_w - TITLE_GAP).max(40.0);
 
                 let (title_rect, title_resp) =
-                    ui.allocate_exact_size(egui::vec2(title_width, CONTROL_HEIGHT), egui::Sense::click());
+                    ui.allocate_exact_size(egui::vec2(title_width, CONTROL_HEIGHT), egui::Sense::click_and_drag());
+                // The window has no title bar of its own, so the header carries it: drag to move, double-click to maximize
+                if title_resp.drag_started_by(egui::PointerButton::Primary) {
+                    ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
+                }
                 ui.add_space(TITLE_GAP);
 
                 let editing_top_pill = self.show_search || self.is_editing_path;
@@ -2286,31 +2290,34 @@ impl SkiApp {
                     self.jobs_button(ui);
                     ui.add_space(gap);
                 }
-                if !show_view {
-                    return;
+                if show_view {
+                    // Like Nautilus: the button switches the view at once and shows the one it switches to;
+                    // the small arrow beside it opens the rest of the view options.
+                    let view_icon = match self.view_mode {
+                        ViewMode::List => icons::GRID_VIEW,
+                        ViewMode::Grid => icons::VIEW_LIST,
+                    };
+                    let switch_tip = match self.view_mode {
+                        ViewMode::List => tr("Grid view"),
+                        ViewMode::Grid => tr("List view"),
+                    };
+                    let (switch, more) = material::split_icon_button(ui, "btn_view_switch", view_icon, icons::CHEVRON_DOWN, &self.theme, switch_tip, tr("View options"));
+                    self.settings_button_rect = switch.rect.union(more.rect);
+                    let filter_dot_t = material::animate(ui.ctx(), egui::Id::unique("view_filter_dot"), self.type_filter != TypeFilter::All);
+                    if filter_dot_t > 0.01 {
+                        let dot = egui::pos2(more.rect.right() - 6.0, more.rect.top() + 7.0);
+                        ui.painter().circle_filled(dot, 4.0 * filter_dot_t, self.theme.mauve.gamma_multiply(filter_dot_t));
+                    }
+                    if switch.clicked() {
+                        self.view_mode = if self.view_mode == ViewMode::List { ViewMode::Grid } else { ViewMode::List };
+                    }
+                    if more.clicked() {
+                        self.show_settings = !self.show_settings;
+                    }
                 }
-                // Like Nautilus: the button switches the view at once and shows the one it switches to;
-                // the small arrow beside it opens the rest of the view options.
-                let view_icon = match self.view_mode {
-                    ViewMode::List => icons::GRID_VIEW,
-                    ViewMode::Grid => icons::VIEW_LIST,
-                };
-                let switch_tip = match self.view_mode {
-                    ViewMode::List => tr("Grid view"),
-                    ViewMode::Grid => tr("List view"),
-                };
-                let (switch, more) = material::split_icon_button(ui, "btn_view_switch", view_icon, icons::CHEVRON_DOWN, &self.theme, switch_tip, tr("View options"));
-                self.settings_button_rect = switch.rect.union(more.rect);
-                let filter_dot_t = material::animate(ui.ctx(), egui::Id::unique("view_filter_dot"), self.type_filter != TypeFilter::All);
-                if filter_dot_t > 0.01 {
-                    let dot = egui::pos2(more.rect.right() - 6.0, more.rect.top() + 7.0);
-                    ui.painter().circle_filled(dot, 4.0 * filter_dot_t, self.theme.mauve.gamma_multiply(filter_dot_t));
-                }
-                if switch.clicked() {
-                    self.view_mode = if self.view_mode == ViewMode::List { ViewMode::Grid } else { ViewMode::List };
-                }
-                if more.clicked() {
-                    self.show_settings = !self.show_settings;
+                ui.add_space(gap);
+                if icon_button(ui, "btn_close_window", icons::CLOSE, &self.theme, true, tr("Close")).clicked() {
+                    ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
                 }
             },
         );
