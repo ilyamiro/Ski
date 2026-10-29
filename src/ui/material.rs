@@ -1750,12 +1750,12 @@ pub fn nav_pair(ui: &mut egui::Ui, theme: &SerpantinumTheme, can_back: bool, can
         let cell = Rect::from_min_size(body.min + Vec2::new(W * i as f32, 0.0), Vec2::new(W, H));
         let btn_id = id.with(i);
         let resp = ui.interact(cell, btn_id, if enabled { egui::Sense::click() } else { egui::Sense::hover() });
-        let fx = fx(ui, btn_id, &resp, enabled, &FxSpec::CLICK);
+        let fx = fx(ui, btn_id, &resp, true, &FxSpec::CLICK);
         let en_t = animate(ui.ctx(), id.with(("en", i)), enabled);
         // A box that fills on hover like the view button beside the address pill
         let inner = scaled(cell.shrink2(Vec2::new(1.0, 0.0)), fx.scale);
         let hovered = lerp_color(theme.surface1, theme.surface2, fx.press);
-        let layer = lerp_color(Color32::TRANSPARENT, hovered, if enabled { fx.hover.max(fx.press) } else { 0.0 });
+        let layer = lerp_color(Color32::TRANSPARENT, hovered, if enabled { fx.hover.max(fx.press) } else { fx.hover * 0.6 });
         paint_fill(ui.painter(), inner, CornerRadius::same(radius_md()), layer, &fx);
         let active_color = lerp_color(theme.subtext1, theme.text, fx.hover.max(fx.press * 0.5));
         let color = lerp_color(theme.with_alpha(theme.subtext1, 70), active_color, en_t);

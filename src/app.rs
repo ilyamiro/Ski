@@ -1978,6 +1978,10 @@ const MENU_WIDTH: f32 = 264.0;
 const SIDEBAR_BREAKPOINT: f32 = 680.0;
 /// Narrowest the path pill may get before header buttons start to drop out.
 const TITLE_MIN: f32 = 110.0;
+/// The address pill stops growing here and detaches from the controls beside it.
+const TITLE_MAX: f32 = 720.0;
+/// Room between the header's last control and the window's close button.
+const CLOSE_GAP: f32 = 10.0;
 /// Outer gutter shared by the sidebar, header, list and status bar so their edges line up.
 const PAGE_MARGIN: i8 = 10;
 /// Side margin of the header row: puts the round end buttons' icons on the sidebar's icon column.
@@ -2078,7 +2082,8 @@ impl eframe::App for SkiApp {
                 .frame(
                     egui::Frame::new()
                         .fill(self.theme.mantle)
-                        .inner_margin(egui::Margin::symmetric(PAGE_MARGIN, 8)),
+                        // The top matches the header's, so the search and menu buttons sit on its centre line
+                        .inner_margin(egui::Margin { left: PAGE_MARGIN, right: PAGE_MARGIN, top: 4, bottom: 8 }),
                 )
                 .show(ui, |ui| {
                     ui.set_opacity(sidebar_t);
@@ -2090,7 +2095,7 @@ impl eframe::App for SkiApp {
             .frame(
                 egui::Frame::new()
                     .fill(self.theme.mantle)
-                    .inner_margin(egui::Margin::symmetric(HEADER_MARGIN, 4)),
+                    .inner_margin(egui::Margin { left: HEADER_MARGIN, right: 8, top: 4, bottom: 4 }),
             )
             .show(ui, |ui| self.render_top_bar(ui, sidebar_visible));
         self.render_tab_bar(ui);
@@ -2219,7 +2224,7 @@ impl SkiApp {
 
     /// One fixed-height row: every control is `CONTROL_HEIGHT` tall and centered on the same axis.
     fn render_top_bar(&mut self, ui: &mut egui::Ui, sidebar_visible: bool) {
-        let gap = 2.0;
+        let gap = 6.0;
 
         ui.allocate_ui_with_layout(
             egui::vec2(ui.available_width(), CONTROL_HEIGHT),
@@ -2263,8 +2268,15 @@ impl SkiApp {
                 // Search lives in the sidebar; without a sidebar it becomes a header button.
                 let show_jobs = !self.engine.jobs.is_empty();
                 let jobs_w = if show_jobs { button_w } else { 0.0 };
-                let right_w = gap + 24.0 + jobs_w + if sidebar_visible { 0.0 } else { button_w } + if show_search_btn { button_w } else { 0.0 } + if show_view { material::SPLIT_BUTTON_W } else { 0.0 };
-                let title_width = (ui.available_width() - right_w - TITLE_GAP).max(40.0);
+                let right_w = CLOSE_GAP + 24.0 + jobs_w + if sidebar_visible { 0.0 } else { button_w } + if show_search_btn { button_w } else { 0.0 } + if show_view { material::SPLIT_BUTTON_W } else { 0.0 };
+                // The pill fills the room between the controls while the window is small; once that room
+                // exceeds TITLE_MAX it stops growing and stays centered, apart from the controls on both sides
+                let left_x = ui.cursor().left();
+                let right_limit = ui.max_rect().right() - right_w - TITLE_GAP;
+                let room = (right_limit - left_x).max(40.0);
+                let title_width = room.min(TITLE_MAX);
+                let pill_left = (ui.max_rect().center().x - title_width / 2.0).clamp(left_x, left_x + room - title_width);
+                ui.add_space(pill_left - left_x);
 
                 let (title_rect, title_resp) =
                     ui.allocate_exact_size(egui::vec2(title_width, CONTROL_HEIGHT), egui::Sense::click_and_drag());
@@ -2272,7 +2284,8 @@ impl SkiApp {
                 if title_resp.drag_started_by(egui::PointerButton::Primary) {
                     ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
                 }
-                ui.add_space(TITLE_GAP);
+                // The path stops growing at TITLE_MAX; the buttons gather at the right edge beside the window button
+                ui.add_space(TITLE_GAP + (ui.available_width() - TITLE_GAP - right_w).max(0.0));
 
                 let editing_top_pill = self.show_search || self.is_editing_path;
                 let pill_hover = material::animate(ui.ctx(), title_resp.id.with("hover"), !editing_top_pill && title_resp.hovered());
@@ -2344,7 +2357,7 @@ impl SkiApp {
                         self.show_settings = !self.show_settings;
                     }
                 }
-                ui.add_space(gap);
+                ui.add_space(CLOSE_GAP);
                 // Small and round like Nautilus's: the header's own buttons are bigger than a window button should be
                 let close_size = 24.0;
                 if material::filled_icon_button(ui, "btn_close_window", icons::CLOSE, &self.theme, close_size, tr("Close"), None).clicked() {
@@ -2886,8 +2899,9 @@ impl SkiApp {
     /// Search button (the field itself lives in the header) with the main menu button at the right.
     fn render_sidebar_search(&mut self, ui: &mut egui::Ui) {
         let (row, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), CONTROL_HEIGHT), egui::Sense::hover());
-        // Round buttons are inset so their icons sit on the same column as the destinations' icons
-        let menu_rect = egui::Rect::from_min_size(egui::pos2(row.right() - HEADER_INSET - CONTROL_HEIGHT, row.top()), egui::vec2(CONTROL_HEIGHT, CONTROL_HEIGHT));
+        // Both buttons sit the same 8px from the sidebar's edges, as far from the top as the window button is from the right
+        let edge = 8.0 - PAGE_MARGIN as f32;
+        let menu_rect = egui::Rect::from_min_size(egui::pos2(row.right() - edge - CONTROL_HEIGHT, row.top()), egui::vec2(CONTROL_HEIGHT, CONTROL_HEIGHT));
         let menu = ui.scope_builder(egui::UiBuilder::new().max_rect(menu_rect), |ui| {
             icon_button(ui, "sidebar_main_menu", icons::MENU, &self.theme, true, tr("Main menu"))
         });
@@ -2896,7 +2910,7 @@ impl SkiApp {
             self.toggle_main_menu(ui.ctx());
         }
 
-        let search_rect = egui::Rect::from_min_size(egui::pos2(row.left() + HEADER_INSET, row.top()), egui::vec2(CONTROL_HEIGHT, CONTROL_HEIGHT));
+        let search_rect = egui::Rect::from_min_size(egui::pos2(row.left() + edge, row.top()), egui::vec2(CONTROL_HEIGHT, CONTROL_HEIGHT));
         let button = ui.scope_builder(egui::UiBuilder::new().max_rect(search_rect), |ui| {
             icon_button(ui, "sidebar_search_btn", icons::SEARCH, &self.theme, true, tr("Search (/)"))
         });
