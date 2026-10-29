@@ -5056,6 +5056,7 @@ impl SkiApp {
         let mut reset = false;
         let builder = egui::ViewportBuilder::default()
             .with_title(format!("{title} — {what}"))
+            .with_decorations(false)
             .with_inner_size([880.0, 600.0])
             .with_min_inner_size([560.0, 380.0]);
 
@@ -5069,6 +5070,7 @@ impl SkiApp {
             if ctx.input(|i| i.viewport().close_requested() || i.key_pressed(egui::Key::Escape)) {
                 cancelled = true;
             }
+            Self::window_resize_edges(&ctx);
 
             egui::Panel::left("pk_places")
                 .exact_size(212.0)
@@ -5100,6 +5102,11 @@ impl SkiApp {
             egui::Panel::top("pk_path")
                 .frame(egui::Frame::new().fill(theme.base).inner_margin(egui::Margin::symmetric(HEADER_MARGIN, 8)))
                 .show(ui, |ui| {
+                    // No title bar of its own: the empty parts of the header drag the window
+                    let drag = ui.interact(ui.max_rect().expand2(egui::vec2(HEADER_MARGIN as f32, 8.0)), ui.scope_id().with("pk_drag"), egui::Sense::click_and_drag());
+                    if drag.drag_started_by(egui::PointerButton::Primary) {
+                        ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
+                    }
                     ui.allocate_ui_with_layout(
                         egui::vec2(ui.available_width(), CONTROL_HEIGHT),
                         egui::Layout::left_to_right(egui::Align::Center),
@@ -5110,7 +5117,7 @@ impl SkiApp {
                                 && let Some(parent) = picker.dir.parent() {
                                     goto = Some(parent.to_path_buf());
                                 }
-                            let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), CONTROL_HEIGHT), egui::Sense::hover());
+                            let (rect, _) = ui.allocate_exact_size(egui::vec2((ui.available_width() - CLOSE_GAP - 24.0).max(40.0), CONTROL_HEIGHT), egui::Sense::hover());
                             ui.painter().rect_filled(rect, material::pill(rect), theme.surface1);
                             let edit_rect = egui::Rect::from_min_max(egui::pos2(rect.left() + 16.0, rect.top()), egui::pos2(rect.right() - 12.0, rect.bottom()));
                             let resp = material::put_over(
@@ -5129,6 +5136,10 @@ impl SkiApp {
                                 } else {
                                     picker.path_input = picker.dir.to_string_lossy().into_owned();
                                 }
+                            }
+                            ui.add_space(CLOSE_GAP - TITLE_GAP);
+                            if material::filled_icon_button(ui, "pk_close", icons::CLOSE, &theme, 24.0, tr("Close"), None).clicked() {
+                                cancelled = true;
                             }
                         },
                     );
