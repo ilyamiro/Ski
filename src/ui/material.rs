@@ -13,7 +13,7 @@ use crate::fs::scanner::{SortBy, SortOrder};
 use crate::ui::icons;
 
 /// Height shared by every control in the header so the row always lines up.
-pub const CONTROL_HEIGHT: f32 = 34.0;
+pub const CONTROL_HEIGHT: f32 = 32.0;
 /// Height of dialog buttons and segmented controls.
 pub const BUTTON_HEIGHT: f32 = 36.0;
 /// Height of a chip.
@@ -54,9 +54,9 @@ pub const FONT_SUBTITLE: f32 = 14.0;
 pub const FONT_TITLE: f32 = 16.0;
 
 /// Shared icon sizes
-pub const ICON_XS: f32 = 14.0;
-pub const ICON_SM: f32 = 16.0;
-pub const ICON_MD: f32 = 18.0;
+pub const ICON_XS: f32 = 12.0;
+pub const ICON_SM: f32 = 14.0;
+pub const ICON_MD: f32 = 16.0;
 
 /// Where icon and label sit inside a navigation-like row, so every list lines up.
 pub const INSET_ICON: f32 = 22.0;
@@ -641,7 +641,7 @@ pub fn split_icon_button(
         let hovered = lerp_color(theme.surface1, theme.surface2, fx.press);
         paint_fill(ui.painter(), r, corners, lerp_color(theme.surface0, hovered, fx.hover.max(fx.press)), &fx);
         let color = lerp_color(theme.subtext1, theme.text, fx.hover.max(fx.press));
-        paint_icon(ui.painter(), rect.center(), glyph, if left { (size * 0.5).round() } else { 14.0 }, color);
+        paint_icon(ui.painter(), rect.center(), glyph, if left { ICON_MD } else { ICON_XS }, color);
         if tip.is_empty() { response } else { response.on_hover_text(tip) }
     };
     let main = half(ui, (id_source, 0), icon, SPLIT_MAIN_W, true, tooltip);
@@ -1278,7 +1278,7 @@ pub fn file_row(
 
     let fade = lerp(1.0, 0.58, cut_t);
     // The icon grows with the row, so a tight list is not full of oversized glyphs
-    let icon_size = (row_height * 0.6).round().clamp(16.0, 28.0);
+    let icon_size = (row_height * 0.52).round().clamp(16.0, 24.0);
     let k = icon_size / 24.0;
     let icon_center = Pos2::new(r.left() + 24.0, r.center().y);
     if thumb_t < 0.99 {
