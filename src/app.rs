@@ -2084,6 +2084,7 @@ impl eframe::App for SkiApp {
 
         if sidebar_t > 0.001 {
             egui::Panel::left("sidebar_places")
+            .show_separator_line(false)
                 .exact_size((212.0 * sidebar_t).max(1.0))
                 .resizable(false)
                 .frame(
@@ -2099,6 +2100,7 @@ impl eframe::App for SkiApp {
         }
 
         egui::Panel::top("top_navigation")
+            .show_separator_line(false)
             .frame(
                 egui::Frame::new()
                     .fill(self.theme.base)
@@ -5080,6 +5082,7 @@ impl SkiApp {
             Self::window_resize_edges(&ctx);
 
             egui::Panel::left("pk_places")
+            .show_separator_line(false)
                 .exact_size(212.0)
                 .resizable(false)
                 .frame(egui::Frame::new().fill(theme.mantle).inner_margin(egui::Margin::symmetric(PAGE_MARGIN, 8)))
@@ -5107,6 +5110,7 @@ impl SkiApp {
                 });
 
             egui::Panel::top("pk_path")
+            .show_separator_line(false)
                 .frame(egui::Frame::new().fill(theme.base).inner_margin(egui::Margin::symmetric(HEADER_MARGIN, 8)))
                 .show(ui, |ui| {
                     // No title bar of its own: the empty parts of the header drag the window
@@ -5153,6 +5157,7 @@ impl SkiApp {
                 });
 
             egui::Panel::bottom("pk_footer")
+            .show_separator_line(false)
                 .frame(egui::Frame::new().fill(theme.mantle).inner_margin(egui::Margin::symmetric(CONTENT_INSET, 10)))
                 .show(ui, |ui| {
                     let dest = picker.chosen.as_ref().unwrap_or(&picker.dir);

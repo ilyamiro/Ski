@@ -342,6 +342,7 @@ impl SkiApp {
             return;
         }
         egui::Panel::top("tab_bar")
+            .show_separator_line(false)
             .exact_size((TAB_BAR_HEIGHT * t).max(1.0))
             .resizable(false)
             .frame(egui::Frame::new().fill(theme.base).inner_margin(egui::Margin::symmetric(HEADER_MARGIN, 0)))
