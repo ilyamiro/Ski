@@ -4364,8 +4364,8 @@ impl SkiApp {
             let count: usize = groups.iter().map(Vec::len).sum();
             let dividers = groups.len().saturating_sub(1);
             let gaps = (count + dividers).saturating_sub(1);
-            let height = count as f32 * material::ENTRY_HEIGHT + dividers as f32 * 9.0 + gaps as f32 * 2.0 + 16.0;
             let screen = ctx.content_rect();
+            let height = (count as f32 * material::ENTRY_HEIGHT + dividers as f32 * 9.0 + gaps as f32 * 2.0 + 16.0).min(screen.height() - 16.0);
             let origin = egui::pos2(
                 pos.x.min(screen.right() - MENU_WIDTH - 8.0).max(8.0),
                 pos.y.min(screen.bottom() - height - 8.0).max(8.0),
@@ -4399,39 +4399,41 @@ impl SkiApp {
                     .show(ui, |ui| {
                         ui.set_width(MENU_WIDTH - 16.0);
                         ui.spacing_mut().item_spacing.y = 2.0;
-                        for (g, group) in groups.iter().enumerate() {
-                            if g > 0 {
-                                material::divider(ui, &self.theme);
-                            }
-                            for (idx, (icon, label, action)) in group.iter().enumerate() {
-                                if matches!(action, MenuAction::Submenu(_)) {
-                                    let open = self.menu_sub == Some((g, idx));
-                                    let resp = material::menu_submenu_item(ui, ("menu", g, idx), icon, label, open, &self.theme);
-                                    item_ids.push(resp.id);
-                                    if interactive && (resp.hovered() || resp.clicked()) {
-                                        sub_hover = Some(Some((g, idx, resp.rect)));
+                        egui::ScrollArea::vertical().max_height(ctx.content_rect().height() - 32.0).auto_shrink([false, true]).show(ui, |ui| {
+                            for (g, group) in groups.iter().enumerate() {
+                                if g > 0 {
+                                    material::divider(ui, &self.theme);
+                                }
+                                for (idx, (icon, label, action)) in group.iter().enumerate() {
+                                    if matches!(action, MenuAction::Submenu(_)) {
+                                        let open = self.menu_sub == Some((g, idx));
+                                        let resp = material::menu_submenu_item(ui, ("menu", g, idx), icon, label, open, &self.theme);
+                                        item_ids.push(resp.id);
+                                        if interactive && (resp.hovered() || resp.clicked()) {
+                                            sub_hover = Some(Some((g, idx, resp.rect)));
+                                        }
+                                        continue;
                                     }
-                                    continue;
-                                }
-                                let shown = match action {
-                                    MenuAction::Open(item) if !item.is_dir => open_label.as_deref().unwrap_or(label),
-                                    _ => label,
-                                };
-                                if let MenuAction::Unavailable(reason) = action {
-                                    let resp = ui.add_enabled_ui(false, |ui| menu_item(ui, ("menu", g, idx), icon, shown, None, &self.theme)).inner;
-                                    resp.on_disabled_hover_text(*reason);
-                                    continue;
-                                }
-                                let resp = menu_item(ui, ("menu", g, idx), icon, shown, hints[g][idx].as_deref(), &self.theme);
-                                item_ids.push(resp.id);
-                                if resp.hovered() && interactive && sub_hover.is_none() {
-                                    sub_hover = Some(None);
-                                }
-                                if resp.clicked() && interactive {
-                                    chosen = Some(action.clone());
+                                    let shown = match action {
+                                        MenuAction::Open(item) if !item.is_dir => open_label.as_deref().unwrap_or(label),
+                                        _ => label,
+                                    };
+                                    if let MenuAction::Unavailable(reason) = action {
+                                        let resp = ui.add_enabled_ui(false, |ui| menu_item(ui, ("menu", g, idx), icon, shown, None, &self.theme)).inner;
+                                        resp.on_disabled_hover_text(*reason);
+                                        continue;
+                                    }
+                                    let resp = menu_item(ui, ("menu", g, idx), icon, shown, hints[g][idx].as_deref(), &self.theme);
+                                    item_ids.push(resp.id);
+                                    if resp.hovered() && interactive && sub_hover.is_none() {
+                                        sub_hover = Some(None);
+                                    }
+                                    if resp.clicked() && interactive {
+                                        chosen = Some(action.clone());
+                                    }
                                 }
                             }
-                        }
+                        });
                     });
             });
 
@@ -4462,7 +4464,7 @@ impl SkiApp {
             let row_top = sub_anchor.map(|r| r.top()).or_else(|| self.menu_sub_rect.map(|r| r.top() + 8.0));
             if let Some(row_top) = row_top {
                 let screen = ctx.content_rect();
-                let height = entries.len() as f32 * material::ENTRY_HEIGHT + (entries.len() as f32 - 1.0) * 2.0 + 16.0;
+                let height = (entries.len() as f32 * material::ENTRY_HEIGHT + (entries.len() as f32 - 1.0) * 2.0 + 16.0).min(screen.height() - 16.0);
                 let right_x = rect.right() + 2.0;
                 let x = if right_x + MENU_WIDTH <= screen.right() - 8.0 { right_x } else { (rect.left() - 2.0 - MENU_WIDTH).max(8.0) };
                 let y = (row_top - 8.0).min(screen.bottom() - height - 8.0).max(8.0);
@@ -4479,12 +4481,14 @@ impl SkiApp {
                             .show(ui, |ui| {
                                 ui.set_width(MENU_WIDTH - 16.0);
                                 ui.spacing_mut().item_spacing.y = 2.0;
-                                for (i, (icon, label, action)) in entries.iter().enumerate() {
-                                    let resp = material::menu_item(ui, ("submenu", g, idx, i), icon, label, hints[i].as_deref(), &self.theme);
-                                    if resp.clicked() {
-                                        chosen = Some(action.clone());
+                                egui::ScrollArea::vertical().max_height(screen.height() - 32.0).auto_shrink([false, true]).show(ui, |ui| {
+                                    for (i, (icon, label, action)) in entries.iter().enumerate() {
+                                        let resp = material::menu_item(ui, ("submenu", g, idx, i), icon, label, hints[i].as_deref(), &self.theme);
+                                        if resp.clicked() {
+                                            chosen = Some(action.clone());
+                                        }
                                     }
-                                }
+                                });
                             });
                     });
                 flyout_rect = Some(fly.response.rect);

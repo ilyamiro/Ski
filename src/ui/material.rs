@@ -457,6 +457,11 @@ pub(crate) fn row_layer(theme: &SerpantinumTheme, fx: &Fx) -> Color32 {
     )
 }
 
+/// Hover and press fill of context-menu entries: a surface color, softer than the text tint of `row_layer`.
+fn menu_row_layer(theme: &SerpantinumTheme, fx: &Fx) -> Color32 {
+    lerp_color(lerp_color(Color32::TRANSPARENT, theme.surface1, fx.hover), theme.surface2, fx.press)
+}
+
 /// Row background that fades to the accent tint when selected.
 pub(crate) fn selectable_bg(theme: &SerpantinumTheme, fx: &Fx, sel_t: f32) -> Color32 {
     let sel_alpha = (ALPHA_SEL_BG as f32 + fx.hover * (ALPHA_SEL_HOVER - ALPHA_SEL_BG) as f32 + fx.press * 12.0).round() as u8;
@@ -1419,7 +1424,7 @@ pub fn menu_item(
     let id = ui.make_persistent_id(id_source);
     let fx = fx(ui, id, &response, true, &FxSpec::ROW);
     let r = scaled(rect, fx.scale);
-    paint_fill(ui.painter(), r, pill(r), row_layer(theme, &fx), &fx);
+    paint_fill(ui.painter(), r, pill(r), menu_row_layer(theme, &fx), &fx);
 
     let color = lerp_color(theme.subtext0, theme.text, fx.hover.max(fx.press));
     paint_icon(ui.painter(), Pos2::new(rect.left() + INSET_ICON, rect.center().y), icon, ICON_MD, color);
@@ -1448,7 +1453,7 @@ pub fn menu_submenu_item(
     let fx = fx(ui, id, &response, true, &FxSpec::ROW);
     let lit = animate(ui.ctx(), id.with("open"), open);
     let r = scaled(rect, fx.scale);
-    paint_fill(ui.painter(), r, pill(r), lerp_color(row_layer(theme, &fx), theme.surface2, lit), &fx);
+    paint_fill(ui.painter(), r, pill(r), lerp_color(menu_row_layer(theme, &fx), theme.surface1, lit), &fx);
 
     let color = lerp_color(theme.subtext0, theme.text, fx.hover.max(fx.press).max(lit));
     paint_icon(ui.painter(), Pos2::new(rect.left() + INSET_ICON, rect.center().y), icon, ICON_MD, color);
