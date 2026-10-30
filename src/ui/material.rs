@@ -355,7 +355,7 @@ pub struct FxSpec {
 impl FxSpec {
     pub const ICON: FxSpec = FxSpec { hover_scale: 1.06, press_scale: 0.92, pop_scale: 1.1 };
     pub const CLICK: FxSpec = FxSpec { hover_scale: 1.02, press_scale: 0.97, pop_scale: 1.04 };
-    pub const TILE: FxSpec = FxSpec { hover_scale: 1.015, press_scale: 0.98, pop_scale: 1.025 };
+    pub const TILE: FxSpec = FxSpec { hover_scale: 1.015, press_scale: 0.99, pop_scale: 1.012 };
     pub const ROW: FxSpec = FxSpec { hover_scale: 1.0, press_scale: 1.0, pop_scale: 1.0 };
 }
 
