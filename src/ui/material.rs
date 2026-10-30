@@ -919,9 +919,10 @@ pub fn segmented_sized(
     if let Some(fill) = fill {
         let natural: f32 = widths.iter().sum();
         let room = fill - SEGMENT_PAD * 2.0;
-        if natural < room {
-            let grow = room / natural;
-            widths.iter_mut().for_each(|w| *w *= grow);
+        // Stretch to fill, or squeeze (down to a point) when the cells are wider than the room
+        if natural > 0.0 && room > 0.0 {
+            let scale = (room / natural).max(0.6);
+            widths.iter_mut().for_each(|w| *w *= scale);
         }
     }
     let total: f32 = widths.iter().sum();
