@@ -393,6 +393,8 @@ pub struct SkiApp {
 
     // Dynamic shell theme from Serpantinum
     pub(crate) theme: SerpantinumTheme,
+    /// The same palette left solid, for menus, dialogs and popovers, which never fade with the window.
+    pub(crate) popup_theme: SerpantinumTheme,
 
     // Navigation history
     back_history: Vec<PathBuf>,
@@ -448,6 +450,8 @@ pub struct SkiApp {
     pub(crate) system_theme: SerpantinumTheme,
     from_theme: SerpantinumTheme,
     target_theme: SerpantinumTheme,
+    from_popup_theme: SerpantinumTheme,
+    target_popup_theme: SerpantinumTheme,
     theme_anim_start: Option<f64>,
     pub(crate) theme_dirty: bool,
     pub(crate) fonts_dirty: bool,
@@ -519,7 +523,7 @@ impl SkiApp {
 
         let mut settings = settings;
         let faded = { let mut t = theme; t.fade(settings.opacity); t };
-        crate::ui::theme::apply(ctx, &faded);
+        crate::ui::theme::apply(ctx, &faded, &theme);
         settings.last_dir = Some(canonical_path.clone());
         crate::fs::file_item::set_format_options(settings.decimal_units, settings.relative_dates);
         crate::fs::file_item::set_show_extensions(settings.show_extensions);
@@ -567,6 +571,7 @@ impl SkiApp {
             release_pointer: false,
             error_message: None,
             theme: faded,
+            popup_theme: theme,
             back_history: Vec::new(),
             forward_history: Vec::new(),
             search_query: String::new(),
@@ -602,6 +607,8 @@ impl SkiApp {
             system_theme: SerpantinumTheme::load(),
             from_theme: faded,
             target_theme: faded,
+            from_popup_theme: theme,
+            target_popup_theme: theme,
             theme_anim_start: None,
             theme_dirty: false,
             fonts_dirty: false,
@@ -1332,10 +1339,12 @@ impl SkiApp {
             }
         }
         theme.border_radius = crate::ui::theme::BASE_RADIUS * self.settings.corner_scale;
+        let solid = theme;
         theme.fade(self.settings.opacity);
-        if theme != self.target_theme {
-            self.from_theme = self.theme;
+        // The fade starts from what is on screen when the next frame begins (see `sync_settings`)
+        if theme != self.target_theme || solid != self.target_popup_theme {
             self.target_theme = theme;
+            self.target_popup_theme = solid;
             self.theme_dirty = true;
         }
     }
@@ -1351,11 +1360,15 @@ impl SkiApp {
         let dur_s = material::dur(material::ANIM);
         if self.theme_dirty {
             self.theme_dirty = false;
+            self.from_theme = self.theme;
+            self.from_popup_theme = self.popup_theme;
             if dur_s <= 0.0 {
                 self.theme = self.target_theme;
                 self.from_theme = self.target_theme;
+                self.popup_theme = self.target_popup_theme;
+                self.from_popup_theme = self.target_popup_theme;
                 self.theme_anim_start = None;
-                crate::ui::theme::apply(ctx, &self.theme);
+                crate::ui::theme::apply(ctx, &self.theme, &self.popup_theme);
             } else {
                 self.theme_anim_start = Some(now);
             }
@@ -1364,10 +1377,13 @@ impl SkiApp {
             let t = if dur_s > 0.0 { ((now - start) as f32 / dur_s).clamp(0.0, 1.0) } else { 1.0 };
             let eased = material::quint_out(t);
             self.theme = self.from_theme.lerp(&self.target_theme, eased);
-            crate::ui::theme::apply(ctx, &self.theme);
+            self.popup_theme = self.from_popup_theme.lerp(&self.target_popup_theme, eased);
+            crate::ui::theme::apply(ctx, &self.theme, &self.popup_theme);
             if t >= 1.0 {
                 self.theme = self.target_theme;
                 self.from_theme = self.target_theme;
+                self.popup_theme = self.target_popup_theme;
+                self.from_popup_theme = self.target_popup_theme;
                 self.theme_anim_start = None;
             } else {
                 ctx.request_repaint();
@@ -2281,13 +2297,16 @@ impl eframe::App for SkiApp {
         });
         self.render_selection_pill(&ctx, central.response.rect);
 
+        // Menus, dialogs and popovers stay solid however see-through the window is
+        let window_theme = std::mem::replace(&mut self.theme, self.popup_theme);
         self.render_settings(&ctx);
         self.render_jobs_popover(&ctx);
         self.render_menu(&ctx);
         self.render_dialog(&ctx);
+        self.render_toast(&ctx);
+        self.theme = window_theme;
         self.render_picker(&ctx);
         self.render_icon_gallery(&ctx);
-        self.render_toast(&ctx);
         self.render_drop_overlay(&ctx);
         self.update_system_dnd(&ctx);
         self.update_item_drag(&ctx);
@@ -2648,7 +2667,7 @@ impl SkiApp {
             self.path_popup_rect = None;
             return None;
         }
-        let theme = self.theme;
+        let theme = self.popup_theme;
         let mut clicked = None;
         let area = egui::Area::new(egui::Id::unique("path_suggestions"))
             .order(egui::Order::Foreground)

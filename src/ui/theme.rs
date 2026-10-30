@@ -349,7 +349,8 @@ pub fn parse_hex(hex: &str) -> Option<Color32> {
 }
 
 /// Flat Material look: no strokes anywhere, state is shown by fills only.
-pub fn apply(ctx: &egui::Context, theme: &SerpantinumTheme) {
+/// `popup` is the solid palette that menus and tooltips are drawn in, whatever the window's opacity.
+pub fn apply(ctx: &egui::Context, theme: &SerpantinumTheme, popup: &SerpantinumTheme) {
     super::material::set_radius_scale(theme.border_radius / BASE_RADIUS);
     let mut visuals = if theme.light { egui::Visuals::light() } else { egui::Visuals::dark() };
     visuals.window_corner_radius = egui::CornerRadius::same(super::material::radius_window());
@@ -360,8 +361,8 @@ pub fn apply(ctx: &egui::Context, theme: &SerpantinumTheme) {
         offset: [0, 8],
         blur: 32,
         spread: 0,
-        // A shadow would show through translucent surfaces
-        color: Color32::from_black_alpha(if theme.base.a() < 255 { 0 } else if theme.light { 50 } else { 110 }),
+        // Only popups cast it, and they stay solid
+        color: Color32::from_black_alpha(if popup.light { 50 } else { 110 }),
     };
     let w = &mut visuals.widgets;
     for state in [&mut w.noninteractive, &mut w.inactive, &mut w.hovered, &mut w.active, &mut w.open] {
@@ -377,7 +378,7 @@ pub fn apply(ctx: &egui::Context, theme: &SerpantinumTheme) {
     visuals.selection.stroke = egui::Stroke::new(0.0, theme.text);
     visuals.selection.bg_fill = theme.tint(super::material::ALPHA_SEL_BG);
     visuals.panel_fill = theme.base;
-    visuals.window_fill = theme.mantle;
+    visuals.window_fill = popup.mantle;
     visuals.extreme_bg_color = theme.surface1;
     visuals.override_text_color = Some(theme.text);
     ctx.set_visuals(visuals);

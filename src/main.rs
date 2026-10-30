@@ -142,7 +142,7 @@ fn open_window(mut request: instance::Request) -> eframe::Result {
         native_options,
         Box::new(move |cc| {
             ui::fonts::install(&cc.egui_ctx, settings.font.as_deref());
-            ui::theme::apply(&cc.egui_ctx, &theme);
+            ui::theme::apply(&cc.egui_ctx, &theme, &theme);
             cc.egui_ctx.set_zoom_factor(settings.scale);
 
             let mut app = SkiApp::new(initial_path, theme, settings, &cc.egui_ctx);
