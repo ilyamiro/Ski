@@ -486,11 +486,6 @@ pub(crate) fn paint_fill(painter: &egui::Painter, rect: Rect, radius: CornerRadi
 }
 
 pub fn paint_icon(painter: &egui::Painter, center: Pos2, icon: &str, size: f32, color: Color32) {
-    paint_icon_in(icon_style::current(), painter, center, icon, size, color);
-}
-
-/// An interface glyph as `style` draws it, whichever style is chosen.
-pub fn paint_icon_in(style: IconStyle, painter: &egui::Painter, center: Pos2, icon: &str, size: f32, color: Color32) {
     // The close glyph is heavy; a hairline cross, a little smaller, reads lighter everywhere it appears
     if icon == icons::CLOSE {
         let d = size * 0.3;
@@ -499,7 +494,7 @@ pub fn paint_icon_in(style: IconStyle, painter: &egui::Painter, center: Pos2, ic
         painter.line_segment([center + Vec2::new(-d, d), center + Vec2::new(d, -d)], stroke);
         return;
     }
-    icon_style::paint_glyph(style, painter, center, icon, size, color);
+    icon_style::paint_glyph(icon_style::current(), painter, center, icon, size, color);
 }
 
 /// The type icon of a file in the chosen icon style. In the classic style office documents are a drawn

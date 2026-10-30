@@ -6,7 +6,6 @@ use eframe::egui::{self, Color32, CornerRadius, Pos2, Rect, Vec2};
 
 use crate::app::{app_row, Dialog, SkiApp, ViewMode};
 use crate::fs::apps::{self, AppEntry};
-use crate::fs::file_item::{FileItem, ICON_SAMPLES};
 use crate::fs::scanner::{SortBy, SortOrder};
 use crate::keymap::{self, Action};
 use crate::settings::{Density, Settings, StartLocation};
@@ -36,7 +35,6 @@ impl SkiApp {
             capture: None,
             conflict_warning: None,
             theme_browser: None,
-            icon_gallery: None,
         });
     }
 
@@ -62,7 +60,6 @@ impl SkiApp {
             capture,
             conflict_warning,
             theme_browser,
-            icon_gallery,
         } = dialog else {
             return false;
         };
@@ -177,7 +174,7 @@ impl SkiApp {
                         ui.spacing_mut().item_spacing = egui::vec2(6.0, 8.0);
                         match *tab {
                             0 => self.general_tab(ui),
-                            1 => self.appearance_tab(ui, font_query, hex, theme_browser, icon_gallery),
+                            1 => self.appearance_tab(ui, font_query, hex, theme_browser),
                             2 => self.files_view_tab(ui),
                             3 => self.behavior_tab(ui),
                             4 => self.keybindings_tab(ui, keybind_search, capture, conflict_warning),
@@ -324,83 +321,24 @@ impl SkiApp {
         });
     }
 
-    /// The icon style cards; returns the style whose icons were asked to be shown in full.
-    fn icon_style_cards(&mut self, ui: &mut egui::Ui) -> Option<IconStyle> {
+    /// The icon style cards; each has a button that opens a window with every icon of its style.
+    fn icon_style_cards(&mut self, ui: &mut egui::Ui) {
         let theme = self.theme;
         let gap = 8.0;
         let per_row = 4usize;
         let card_w = ((ui.available_width() - gap * (per_row - 1) as f32) / per_row as f32).floor().clamp(80.0, 140.0);
-        let mut details = None;
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing = egui::vec2(gap, gap);
             for style in IconStyle::ALL {
                 let (card, show_all) = icon_style_card(ui, ("icon_style_card", style as u8), card_w, style, &theme, self.settings.icon_style == style);
                 if show_all {
-                    details = Some(style);
+                    self.icon_gallery = Some(style);
                 } else if card.clicked() {
                     self.settings.icon_style = style;
                     self.persist_settings();
                 }
             }
         });
-        details
-    }
-
-    /// Every icon Ski has, drawn in `style`: folders at the sizes they are shown at, a file of each
-    /// kind and every interface glyph. Returns true when Back was clicked.
-    fn icon_gallery_page(&mut self, ui: &mut egui::Ui, style: IconStyle) -> bool {
-        let theme = self.theme;
-        let back = ui
-            .horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 8.0;
-                let back = material::icon_button(ui, "icon_gallery_back", icons::ARROW_BACK, &theme, true, tr("Back")).clicked();
-                ui.label(egui::RichText::new(trf("{} icons", &[&style.label()])).size(material::FONT_TITLE).color(theme.text));
-                back
-            })
-            .inner;
-        let in_use = self.settings.icon_style == style;
-        let label = if in_use { tr("In use") } else { tr("Use this style") };
-        if material::button(ui, "icon_gallery_use", Some(icons::CHECK), label, &theme, ButtonKind::Tonal, !in_use).clicked() {
-            self.settings.icon_style = style;
-            self.persist_settings();
-        }
-
-        material::section_label(ui, tr("Folders"), &theme);
-        let sizes = [16.0, 24.0, 32.0, 48.0, 64.0, 96.0];
-        let width = sizes.iter().map(|s| s * 1.2 + 16.0).sum::<f32>().min(ui.available_width());
-        let (rect, _) = ui.allocate_exact_size(egui::vec2(width, 96.0 * 1.15 + 16.0), egui::Sense::hover());
-        let painter = ui.painter().with_clip_rect(rect);
-        painter.rect_filled(rect, CornerRadius::same(material::radius_md()), theme.base);
-        let mut x = rect.left() + 8.0;
-        for size in sizes {
-            icon_style::paint_folder(style, &painter, egui::pos2(x + size * 0.6, rect.center().y), size, theme.blue);
-            x += size * 1.2 + 16.0;
-        }
-
-        material::section_label(ui, tr("Files"), &theme);
-        icon_tiles(ui, &theme, 92.0, 92.0, ICON_SAMPLES.len(), |i, ui, rect| {
-            let (name, kind) = ICON_SAMPLES[i];
-            let item = FileItem::sample(name, kind);
-            let caption = if name.is_empty() { kind.label() } else { name };
-            let stage = egui::Rect::from_min_size(rect.min, egui::vec2(rect.width(), rect.height() - 22.0));
-            let icon = material::item_icon_animated(&item, &theme, 0.0);
-            material::paint_item_icon_in(style, &ui.painter().with_clip_rect(stage), &item, stage.center(), 44.0, icon, 1.0);
-            let galley = material::truncated(ui, caption, material::FONT_CAPTION, theme.subtext0, rect.width() - 8.0);
-            let pos = egui::pos2(rect.center().x - galley.size().x / 2.0, rect.bottom() - 13.0 - galley.size().y / 2.0);
-            ui.painter().galley(pos, galley, theme.subtext0);
-        });
-
-        material::section_label(ui, tr("Interface"), &theme);
-        let mut glyphs: Vec<&str> = Vec::new();
-        for glyph in icons::ALL {
-            if !glyphs.contains(glyph) {
-                glyphs.push(glyph);
-            }
-        }
-        icon_tiles(ui, &theme, 40.0, 40.0, glyphs.len(), |i, ui, rect| {
-            material::paint_icon_in(style, ui.painter(), rect.center(), glyphs[i], material::ICON_MD, theme.text);
-        });
-        back
     }
 
     /// Every palette that is not on the Appearance page, dark and light apart, with a search.
@@ -448,25 +386,12 @@ impl SkiApp {
         back
     }
 
-    fn appearance_tab(
-        &mut self,
-        ui: &mut egui::Ui,
-        font_query: &mut String,
-        hex: &mut String,
-        theme_browser: &mut Option<String>,
-        icon_gallery: &mut Option<IconStyle>,
-    ) {
+    fn appearance_tab(&mut self, ui: &mut egui::Ui, font_query: &mut String, hex: &mut String, theme_browser: &mut Option<String>) {
         let theme = self.theme;
 
         if let Some(query) = theme_browser {
             if self.theme_browser_page(ui, query) {
                 *theme_browser = None;
-            }
-            return;
-        }
-        if let Some(style) = *icon_gallery {
-            if self.icon_gallery_page(ui, style) {
-                *icon_gallery = None;
             }
             return;
         }
@@ -489,9 +414,7 @@ impl SkiApp {
         }
 
         material::section_label(ui, tr("Icon style"), &theme);
-        if let Some(style) = self.icon_style_cards(ui) {
-            *icon_gallery = Some(style);
-        }
+        self.icon_style_cards(ui);
 
         material::section_label(ui, tr("Accent color"), &theme);
         group_card(ui, &theme, |ui| {
@@ -1450,21 +1373,6 @@ fn icon_style_card(
     let pos = egui::pos2(rect.center().x - galley.size().x / 2.0, rect.bottom() - 13.0 - galley.size().y / 2.0);
     ui.painter().galley(pos, galley, color);
     (resp, show_all.clicked())
-}
-
-/// `count` tiles of `w`×`h` wrapped into rows, each painted by `paint` on the window's base color,
-/// the background icons are drawn against in the file list.
-fn icon_tiles(ui: &mut egui::Ui, theme: &SerpantinumTheme, w: f32, h: f32, count: usize, mut paint: impl FnMut(usize, &mut egui::Ui, egui::Rect)) {
-    ui.horizontal_wrapped(|ui| {
-        ui.spacing_mut().item_spacing = egui::vec2(6.0, 6.0);
-        for i in 0..count {
-            let (rect, _) = ui.allocate_exact_size(egui::vec2(w, h), egui::Sense::hover());
-            if ui.is_rect_visible(rect) {
-                ui.painter().rect_filled(rect, CornerRadius::same(material::radius_md()), theme.base);
-                paint(i, ui, rect);
-            }
-        }
-    });
 }
 
 fn category_row(

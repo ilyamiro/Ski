@@ -11,6 +11,7 @@ mod dnd;
 mod drives_ui;
 mod file_actions;
 mod folder_sizes;
+mod icon_gallery;
 mod jobs_ui;
 mod perms;
 mod plugin_ui;
@@ -218,8 +219,6 @@ pub(crate) enum Dialog {
         conflict_warning: Option<(String, crate::keymap::Action, crate::keymap::Action, Option<usize>)>,
         /// The "Browse more themes" page of Appearance, open with its search text.
         theme_browser: Option<String>,
-        /// The page of Appearance showing every icon in one icon style.
-        icon_gallery: Option<crate::ui::icon_style::IconStyle>,
     },
     Shortcuts,
     /// A copy or move found its target name taken and waits for the answer.
@@ -406,6 +405,8 @@ pub struct SkiApp {
     menu: Option<ContextMenu>,
     pub(crate) dialog: Option<Dialog>,
     picker: Option<Picker>,
+    /// The window showing every icon of an icon style, open on that style.
+    pub(crate) icon_gallery: Option<crate::ui::icon_style::IconStyle>,
     /// The selection summary the pill still shows while it fades out.
     pill_text: String,
     sizes: folder_sizes::SizeScheduler,
@@ -552,6 +553,7 @@ impl SkiApp {
             menu: None,
             dialog: None,
             picker: None,
+            icon_gallery: None,
             pill_text: String::new(),
             sizes: Default::default(),
             visible_rows: 0..0,
@@ -2179,6 +2181,7 @@ impl eframe::App for SkiApp {
         self.render_menu(&ctx);
         self.render_dialog(&ctx);
         self.render_picker(&ctx);
+        self.render_icon_gallery(&ctx);
         self.render_toast(&ctx);
         self.render_drop_overlay(&ctx);
         self.update_system_dnd(&ctx);

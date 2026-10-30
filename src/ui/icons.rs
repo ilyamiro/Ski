@@ -190,38 +190,3 @@ pub const CAD: &str = "\u{f0eeb}";
 pub const TAG: &str = "\u{f04f9}";
 pub const SOURCE_BRANCH: &str = "\u{f062c}";
 
-/// Every glyph above, for the icon gallery in Settings. Some names share a glyph; the gallery shows
-/// each glyph once.
-pub const ALL: &[&str] = &[
-    FOLDER, FILE, DOCUMENT, CODE, IMAGE, AUDIO, VIDEO, ARCHIVE, EXECUTABLE, SYMLINK, HOME, DESKTOP, DOWNLOAD,
-    DOCUMENTS, STORAGE, ARROW_BACK, ARROW_FORWARD, ARROW_UP, SEARCH, PALETTE, SETTINGS, CLOSE, CHECK,
-    CHEVRON_LEFT, CHEVRON_RIGHT, CHEVRON_DOWN, ADD, REMOVE, MORE, VIEW_LIST, GRID_VIEW, SORT_VARIANT,
-    ROUNDED_CORNER, SIDEBAR, STATUS_BAR, ANIMATION, RUN, RULER, CURSOR, VIEW_COLUMN, RESIZE, VISIBILITY,
-    VISIBILITY_OFF, SORT_ASC, SORT_DESC, HEART, HEART_OUTLINE, PIN, PIN_OFF, FOLDER_PLUS, FILE_PLUS, INFO,
-    COPY, OPEN, REFRESH, APPS, CUT, PASTE, FOLDER_MOVE, FOLDER_COPY, SELECT_ALL, COMPRESS, EXTRACT, RECENT,
-    TRASH, DELETE_FOREVER, RESTORE, RENAME, USB, UNDO, SEARCH_OFF, MENU, TUNE, KEYBOARD, NEW_WINDOW,
-    TRANSLATE, COG, TAB, NEW_TAB, TERMINAL, LINK, LOCK, LOCK_OPEN, EJECT, UNMOUNT, REDO, BOOKMARK,
-    BOOKMARK_PLUS, BOOKMARK_OUTLINE, DUPLICATE, CANCEL, PAUSE, PLAY, SELECT_INVERSE, SELECT_OFF,
-    SELECT_PATTERN, FILTER, ALERT, FOLDER_OPEN, SHIELD, CASE_SENSITIVE, TEXT_SEARCH, DRAG, TEMPLATE, SYNC,
-    HISTORY, PDF, HTML, DISC, WORD, EXCEL, POWERPOINT, MARKDOWN, PYTHON, RUST, JAVASCRIPT, TYPESCRIPT, CSS,
-    JSON, LANG_C, LANG_CPP, CSHARP, HASKELL, LANG_R, GO, JAVA, KOTLIN, LUA, SHELL, POWERSHELL, NIX, PHP,
-    RUBY, SWIFT, VUE, SVELTE, DART, ZIG, ELIXIR, SCALA, PERL, XML, GIT, VECTOR, FONT, EBOOK, KEY,
-    CERTIFICATE, CONFIG, TABLE, DATABASE, LOG, PACKAGE, APPLICATION, TORRENT, DOCKER, ZIP, TEXT, CAD, TAG,
-    SOURCE_BRANCH,
-];
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn all_lists_every_glyph() {
-        let src = include_str!("icons.rs");
-        let src = src.split("#[cfg(test)]").next().unwrap();
-        for line in src.lines().filter(|l| l.starts_with("pub const ") && l.contains(": &str = \"\\u{")) {
-            let hex = line.split("\\u{").nth(1).unwrap().split('}').next().unwrap();
-            let glyph = char::from_u32(u32::from_str_radix(hex, 16).unwrap()).unwrap().to_string();
-            assert!(ALL.contains(&glyph.as_str()), "missing from ALL: {line}");
-        }
-    }
-}
