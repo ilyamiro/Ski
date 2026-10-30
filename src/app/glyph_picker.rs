@@ -6,10 +6,10 @@ use crate::ui::icon_style;
 const CELL: f32 = 48.0;
 const CARD_WIDTH: f32 = 480.0;
 const CARD_HEIGHT: f32 = 520.0;
-const CARD_MARGIN: f32 = 14.0;
+const CARD_MARGIN: f32 = 18.0;
 /// Above the title row, which is as tall as the close button: the title's own text then sits
 /// `CARD_MARGIN` from the top, as far as it does from the left.
-const TOP_MARGIN: f32 = 8.0;
+const TOP_MARGIN: f32 = 12.0;
 const TITLE_ROW: f32 = material::CLOSE_BUTTON;
 
 /// The folder being given a glyph, and the glyph picked so far.
