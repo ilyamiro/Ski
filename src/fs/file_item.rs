@@ -79,19 +79,56 @@ pub fn specific_icon(name: &str) -> Option<(&'static str, Tint)> {
     let lower = name.to_ascii_lowercase();
     match lower.as_str() {
         "makefile" | "cmakelists.txt" | "justfile" | "gemfile" | "procfile" | "cargo.lock" => return Some((icons::CONFIG, Tint::Muted)),
-        "dockerfile" | "containerfile" | ".dockerignore" => return Some((icons::DOCKER, Tint::Blue)),
+        "dockerfile" | "containerfile" | ".dockerignore" | "compose.yml" | "compose.yaml" => return Some((icons::DOCKER, Tint::Blue)),
         ".gitignore" | ".gitattributes" | ".gitmodules" | ".gitconfig" => return Some((icons::GIT, Tint::Peach)),
-        "license" | "licence" | "copying" | "readme" => return Some((icons::TEXT, Tint::Muted)),
+        "readme" => return Some((icons::TEXT, Tint::Muted)),
+        "package.json" | "package-lock.json" => return Some((icons::NPM, Tint::Red)),
+        "cargo.toml" => return Some((icons::RUST, Tint::Peach)),
+        "go.mod" => return Some((icons::GO, Tint::Blue)),
+        "pyproject.toml" => return Some((icons::PYTHON, Tint::Blue)),
+        "flake.lock" => return Some((icons::NIX, Tint::Blue)),
+        ".editorconfig" => return Some((icons::TOOLING, Tint::Muted)),
+        ".gitlab-ci.yml" | ".gitlab-ci.yaml" => return Some((icons::CI, Tint::Blue)),
         _ => {}
     }
     if lower.ends_with(".fb2.zip") {
         return Some((icons::EBOOK, Tint::Peach));
     }
+    // The license and changelog, bare or as text (`LICENSE.md`, but not `license.rs`)
+    let (stem, text) = match lower.split_once('.') {
+        Some((stem, ext)) => (stem, matches!(ext, "md" | "txt" | "rst" | "adoc" | "org")),
+        None => (lower.as_str(), true),
+    };
+    if text && matches!(stem, "license" | "licence" | "copying" | "unlicense") {
+        return Some((icons::LICENSE, Tint::Yellow));
+    }
+    if text && matches!(stem, "changelog" | "changes") {
+        return Some((icons::CHANGELOG, Tint::Green));
+    }
+    // Kinds known by how the name starts: every `.env.local` and `.env.production` along with
+    // `.env`, and the tools' own dotfiles
+    if lower == ".env" || lower.starts_with(".env.") {
+        return Some((icons::SECRETS, Tint::Yellow));
+    }
+    if [".prettier", ".eslint", "prettier.config.", "eslint.config."].iter().any(|p| lower.starts_with(p)) {
+        return Some((icons::TOOLING, Tint::Muted));
+    }
+    if lower.starts_with("docker-compose") && (lower.ends_with(".yml") || lower.ends_with(".yaml")) {
+        return Some((icons::DOCKER, Tint::Blue));
+    }
+    // Backups an editor leaves (`notes.txt~`), and shared libraries with their version after the
+    // extension (`libssl.so.3`)
+    if lower.ends_with('~') {
+        return Some((icons::BACKUP, Tint::Muted));
+    }
+    if lower.contains(".so.") {
+        return Some((icons::LIBRARY, Tint::Muted));
+    }
     let ext = lower.rsplit_once('.')?.1;
     Some(match ext {
         "pdf" => (icons::PDF, Tint::Red),
         "html" | "htm" | "xhtml" => (icons::HTML, Tint::Peach),
-        "iso" | "img" | "dmg" | "cue" | "nrg" => (icons::DISC, Tint::Blue),
+        "iso" | "img" | "dmg" | "nrg" => (icons::DISC, Tint::Blue),
         "doc" | "docx" | "docm" | "dot" | "dotx" | "odt" | "ott" | "rtf" | "pages" | "wpd" => (icons::WORD, Tint::Blue),
         "xls" | "xlsx" | "xlsm" | "xlsb" | "ods" | "ots" | "numbers" => (icons::EXCEL, Tint::Green),
         "csv" | "tsv" => (icons::TABLE, Tint::Green),
@@ -101,7 +138,8 @@ pub fn specific_icon(name: &str) -> Option<(&'static str, Tint)> {
         "log" => (icons::LOG, Tint::Muted),
         "epub" | "mobi" | "azw" | "azw3" | "azw4" | "kfx" | "prc" | "fb2" | "djvu" | "djv" | "lit" | "lrf" | "chm" | "ibooks"
         | "cbz" | "cbr" | "cb7" | "cbt" => (icons::EBOOK, Tint::Peach),
-        "py" | "pyc" | "ipynb" | "pyw" => (icons::PYTHON, Tint::Blue),
+        "py" | "pyc" | "pyw" => (icons::PYTHON, Tint::Blue),
+        "ipynb" => (icons::JUPYTER, Tint::Peach),
         "rs" => (icons::RUST, Tint::Peach),
         "js" | "mjs" | "cjs" | "jsx" => (icons::JAVASCRIPT, Tint::Yellow),
         "ts" | "cts" | "tsx" => (icons::TYPESCRIPT, Tint::Blue),
@@ -130,7 +168,7 @@ pub fn specific_icon(name: &str) -> Option<(&'static str, Tint)> {
         "scala" | "sc" => (icons::SCALA, Tint::Red),
         "pl" | "pm" => (icons::PERL, Tint::Blue),
         "xml" | "xaml" | "xsl" | "xslt" | "plist" => (icons::XML, Tint::Peach),
-        "toml" | "yaml" | "yml" | "ini" | "conf" | "cfg" | "env" | "desktop" | "service" | "properties" => (icons::CONFIG, Tint::Muted),
+        "toml" | "yaml" | "yml" | "ini" | "conf" | "cfg" | "env" | "service" | "properties" => (icons::CONFIG, Tint::Muted),
         "sql" | "db" | "sqlite" | "sqlite3" => (icons::DATABASE, Tint::Mauve),
         "svg" | "svgz" | "ai" | "eps" => (icons::VECTOR, Tint::Peach),
         "ttf" | "otf" | "woff" | "woff2" | "eot" => (icons::FONT, Tint::Muted),
@@ -142,8 +180,48 @@ pub fn specific_icon(name: &str) -> Option<(&'static str, Tint)> {
         "zip" | "zipx" => (icons::ZIP, Tint::Peach),
         "tar" | "gz" | "bz2" | "xz" | "7z" | "rar" | "zst" | "tgz" | "tbz2" | "txz" | "lz" | "lzma" | "lz4" | "cab" | "cpio" => (icons::ARCHIVE, Tint::Peach),
         "dxf" | "dwg" | "stl" | "obj" | "step" | "stp" | "3mf" | "blend" | "fcstd" => (icons::CAD, Tint::Mauve),
+        "raw" | "cr2" | "cr3" | "crw" | "nef" | "nrw" | "arw" | "sr2" | "srf" | "dng" | "orf" | "rw2" | "raf" | "pef" | "srw" | "3fr" | "erf" | "kdc" | "dcr" | "mrw" | "x3f" => (icons::CAMERA_RAW, Tint::Peach),
+        "psd" | "xcf" | "kra" | "ora" => (icons::LAYERED_IMAGE, Tint::Blue),
+        "gif" => (icons::GIF, Tint::Green),
+        "mid" | "midi" => (icons::SHEET_MUSIC, Tint::Mauve),
+        "srt" | "vtt" | "ass" | "ssa" => (icons::SUBTITLES, Tint::Yellow),
+        "m3u" | "m3u8" | "pls" | "cue" | "xspf" => (icons::PLAYLIST, Tint::Peach),
+        "ml" | "mli" => (icons::OCAML, Tint::Peach),
+        "fs" | "fsi" | "fsx" => (icons::FSHARP, Tint::Blue),
+        "clj" | "cljs" | "cljc" | "edn" => (icons::CLOJURE, Tint::Green),
+        "erl" | "hrl" => (icons::ERLANG, Tint::Red),
+        "jl" => (icons::JULIA, Tint::Mauve),
+        "nim" | "nims" | "nimble" => (icons::NIM, Tint::Yellow),
+        "v" | "vsh" => (icons::LANG_V, Tint::Blue),
+        "odin" => (icons::ODIN, Tint::Blue),
+        "asm" | "s" => (icons::ASSEMBLY, Tint::Red),
+        "wasm" | "wat" => (icons::WASM, Tint::Mauve),
+        "graphql" | "gql" => (icons::GRAPHQL, Tint::Mauve),
+        "proto" => (icons::PROTOBUF, Tint::Green),
+        "tf" | "tfvars" | "hcl" => (icons::TERRAFORM, Tint::Mauve),
+        "diff" | "patch" => (icons::DIFF, Tint::Green),
+        "parquet" | "avro" | "arrow" | "feather" | "h5" | "hdf5" | "npy" | "npz" => (icons::DATASET, Tint::Peach),
+        "kdbx" | "kdb" => (icons::PASSWORDS, Tint::Green),
+        "ics" | "ical" => (icons::CALENDAR, Tint::Red),
+        "vcf" | "vcard" => (icons::CONTACT, Tint::Mauve),
+        "eml" | "msg" | "mbox" => (icons::EMAIL, Tint::Blue),
+        "url" | "webloc" | "desktop" => (icons::SHORTCUT, Tint::Blue),
+        "qcow2" | "qcow" | "vdi" | "vmdk" | "vhd" | "vhdx" | "ova" => (icons::VIRTUAL_DISK, Tint::Mauve),
+        "bin" | "so" | "dll" | "dylib" | "o" | "a" | "ko" => (icons::LIBRARY, Tint::Muted),
+        "bak" | "swp" | "swo" | "tmp" | "temp" | "old" | "orig" => (icons::BACKUP, Tint::Muted),
+        "part" | "crdownload" | "partial" => (icons::PARTIAL, Tint::Yellow),
         _ => return None,
     })
+}
+
+/// Like `specific_icon`, also knowing the kinds that their folder gives away: the workflows of
+/// GitHub Actions are YAML files in `.github/workflows`.
+pub fn specific_icon_at(path: &Path, name: &str) -> Option<(&'static str, Tint)> {
+    let lower = name.to_ascii_lowercase();
+    if (lower.ends_with(".yml") || lower.ends_with(".yaml")) && path.parent().is_some_and(|dir| dir.ends_with(".github/workflows")) {
+        return Some((icons::CI, Tint::Blue));
+    }
+    specific_icon(name)
 }
 
 /// A file of every kind that has an icon of its own, for the icon gallery in Settings: the plain icon
@@ -166,10 +244,14 @@ pub const ICON_SAMPLES: &[(&str, FileType)] = &[
     ("README.md", FileType::Document),
     ("book.epub", FileType::Document),
     ("app.log", FileType::Document),
+    ("LICENSE", FileType::Other),
+    ("CHANGELOG.md", FileType::Document),
+    ("film.srt", FileType::Other),
     ("index.html", FileType::Code),
     ("style.css", FileType::Code),
     ("app.js", FileType::Code),
     ("app.ts", FileType::Code),
+    ("tsconfig.json", FileType::Code),
     ("package.json", FileType::Code),
     ("layout.xml", FileType::Code),
     ("main.rs", FileType::Code),
@@ -196,20 +278,53 @@ pub const ICON_SAMPLES: &[(&str, FileType)] = &[
     ("app.ex", FileType::Code),
     ("Main.scala", FileType::Code),
     ("tool.pl", FileType::Code),
+    ("main.ml", FileType::Code),
+    ("Program.fs", FileType::Code),
+    ("core.clj", FileType::Code),
+    ("server.erl", FileType::Code),
+    ("model.jl", FileType::Code),
+    ("app.nim", FileType::Code),
+    ("main.v", FileType::Code),
+    ("main.odin", FileType::Code),
+    ("boot.asm", FileType::Code),
+    ("module.wasm", FileType::Other),
+    ("schema.graphql", FileType::Code),
+    ("api.proto", FileType::Code),
+    ("main.tf", FileType::Code),
+    ("analysis.ipynb", FileType::Code),
+    ("fix.patch", FileType::Other),
     ("config.toml", FileType::Other),
     ("store.db", FileType::Other),
     ("Dockerfile", FileType::Other),
     (".gitignore", FileType::Other),
+    (".env", FileType::Other),
+    (".editorconfig", FileType::Other),
+    (".gitlab-ci.yml", FileType::Code),
     ("logo.svg", FileType::Image),
+    ("IMG_0001.cr2", FileType::Image),
+    ("poster.psd", FileType::Image),
+    ("cat.gif", FileType::Image),
+    ("song.mid", FileType::Audio),
+    ("mix.m3u", FileType::Other),
     ("Inter.ttf", FileType::Other),
     ("id.pem", FileType::Other),
     ("cert.crt", FileType::Other),
+    ("vault.kdbx", FileType::Other),
     ("disk.iso", FileType::Other),
+    ("vm.qcow2", FileType::Other),
     ("photos.zip", FileType::Archive),
     ("app.deb", FileType::Archive),
     ("Setup.exe", FileType::Executable),
     ("linux.torrent", FileType::Other),
     ("model.stl", FileType::Other),
+    ("table.parquet", FileType::Other),
+    ("event.ics", FileType::Other),
+    ("card.vcf", FileType::Other),
+    ("message.eml", FileType::Other),
+    ("site.url", FileType::Other),
+    ("libfoo.so", FileType::Other),
+    ("notes.bak", FileType::Other),
+    ("movie.part", FileType::Other),
 ];
 
 impl FileType {
@@ -466,7 +581,9 @@ fn detect_file_type(filename: &str) -> FileType {
         | "toml" | "yaml" | "yml" | "nix" | "sh" | "bash" | "zsh" | "fish" | "ksh" | "csh" | "tcsh"
         | "ps1" | "psm1" | "psd1" | "lua" | "go" | "java" | "kt" | "kts" | "swift" | "sql"
         | "php" | "rb" | "erb" | "gemspec" | "hs" | "lhs" | "r" | "rmd" | "vue" | "svelte" | "dart"
-        | "zig" | "ex" | "exs" | "scala" | "sc" | "pl" | "pm" | "xml" | "xaml" => FileType::Code,
+        | "zig" | "ex" | "exs" | "scala" | "sc" | "pl" | "pm" | "xml" | "xaml"
+        | "ml" | "mli" | "fs" | "fsi" | "fsx" | "clj" | "cljs" | "cljc" | "edn" | "erl" | "hrl" | "jl" | "nim" | "nims"
+        | "v" | "vsh" | "odin" | "asm" | "s" | "wat" | "graphql" | "gql" | "proto" | "tf" | "tfvars" | "hcl" => FileType::Code,
         _ => FileType::Other,
     }
 }
@@ -579,5 +696,44 @@ mod tests {
         assert_eq!(specific_icon("App.vue"), Some((icons::VUE, Tint::Green)));
         assert_eq!(specific_icon("script.ps1"), Some((icons::POWERSHELL, Tint::Blue)));
         assert_eq!(specific_icon("logo.svg"), Some((icons::VECTOR, Tint::Peach)));
+    }
+
+    #[test]
+    fn project_files_are_known_by_name() {
+        assert_eq!(specific_icon("package.json"), Some((icons::NPM, Tint::Red)));
+        assert_eq!(specific_icon("Cargo.toml"), Some((icons::RUST, Tint::Peach)));
+        assert_eq!(specific_icon("go.mod"), Some((icons::GO, Tint::Blue)));
+        assert_eq!(specific_icon("pyproject.toml"), Some((icons::PYTHON, Tint::Blue)));
+        assert_eq!(specific_icon("flake.lock"), Some((icons::NIX, Tint::Blue)));
+        assert_eq!(specific_icon("docker-compose.prod.yml"), Some((icons::DOCKER, Tint::Blue)));
+        assert_eq!(specific_icon("compose.yaml"), Some((icons::DOCKER, Tint::Blue)));
+        assert_eq!(specific_icon(".eslintrc.json"), Some((icons::TOOLING, Tint::Muted)));
+        assert_eq!(specific_icon(".prettierrc"), Some((icons::TOOLING, Tint::Muted)));
+        for name in [".env", ".env.local", ".ENV.production"] {
+            assert_eq!(specific_icon(name), Some((icons::SECRETS, Tint::Yellow)), "{name}");
+        }
+        assert_eq!(specific_icon("my.env"), Some((icons::CONFIG, Tint::Muted)));
+        for name in ["LICENSE", "LICENSE.md", "COPYING.txt"] {
+            assert_eq!(specific_icon(name), Some((icons::LICENSE, Tint::Yellow)), "{name}");
+        }
+        assert_eq!(specific_icon("CHANGELOG.md"), Some((icons::CHANGELOG, Tint::Green)));
+        // A source file that happens to share the name keeps its language
+        assert_eq!(specific_icon("license.rs"), Some((icons::RUST, Tint::Peach)));
+        assert_eq!(specific_icon("changes.py"), Some((icons::PYTHON, Tint::Blue)));
+        assert_eq!(specific_icon("README"), Some((icons::TEXT, Tint::Muted)));
+    }
+
+    #[test]
+    fn new_kinds_get_their_own_icons() {
+        assert_eq!(specific_icon("disc.cue"), Some((icons::PLAYLIST, Tint::Peach)));
+        assert_eq!(specific_icon("notebook.ipynb"), Some((icons::JUPYTER, Tint::Peach)));
+        assert_eq!(specific_icon("ski.desktop"), Some((icons::SHORTCUT, Tint::Blue)));
+        assert_eq!(specific_icon("libssl.so.3"), Some((icons::LIBRARY, Tint::Muted)));
+        assert_eq!(specific_icon("notes.txt~"), Some((icons::BACKUP, Tint::Muted)));
+        assert_eq!(specific_icon("DSC_1.NEF"), Some((icons::CAMERA_RAW, Tint::Peach)));
+        assert_eq!(detect_file_type("main.odin"), FileType::Code);
+        let workflow = Path::new("/repo/.github/workflows/ci.yml");
+        assert_eq!(specific_icon_at(workflow, "ci.yml"), Some((icons::CI, Tint::Blue)));
+        assert_eq!(specific_icon_at(Path::new("/repo/ci.yml"), "ci.yml"), Some((icons::CONFIG, Tint::Muted)));
     }
 }

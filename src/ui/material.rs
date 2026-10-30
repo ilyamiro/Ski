@@ -9,7 +9,7 @@ use eframe::egui::{
 use super::icon_style::{self, IconStyle};
 use super::theme::SerpantinumTheme;
 use crate::i18n::tr;
-use crate::fs::file_item::{office_kind, specific_icon, FileItem, FileType, Office, Tint};
+use crate::fs::file_item::{office_kind, specific_icon_at, FileItem, FileType, Office, Tint};
 use crate::fs::scanner::{SortBy, SortOrder};
 use crate::ui::icons;
 
@@ -1085,7 +1085,7 @@ pub fn item_icon_animated(item: &FileItem, theme: &SerpantinumTheme, sel_t: f32)
     if item.file_type == FileType::Symlink {
         return (icons::SYMLINK, lerp_color(theme.subtext0, theme.mauve, sel_t));
     }
-    if let Some((glyph, tint)) = specific_icon(&item.name) {
+    if let Some((glyph, tint)) = specific_icon_at(&item.path, &item.name) {
         let color = match tint {
             Tint::Red => theme.red,
             Tint::Peach => theme.peach,
