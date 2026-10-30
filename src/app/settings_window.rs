@@ -36,13 +36,8 @@ fn settings_log(ctx: &egui::Context, width: f32, visible: bool, t: f32) {
     *last = (width, t, frames);
 }
 
-fn shrink_to_nothing(ctx: &egui::Context) {
-    ctx.send_viewport_cmd(egui::ViewportCommand::MinInnerSize(egui::vec2(1.0, 1.0)));
-    ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(1.0, 1.0)));
-}
-
-/// A pointer back to the app for the Settings window's own redraws.
-struct AppPtr(*mut SkiApp);
+/// A pointer back to the app for the redraws of a window of its own.
+pub(super) struct AppPtr(*mut SkiApp);
 
 // SAFETY: eframe runs every viewport's UI on the one thread that owns the app, one frame at a
 // time and never inside the main window's `update`, so the pointer is never used from two places.
@@ -50,7 +45,11 @@ unsafe impl Send for AppPtr {}
 unsafe impl Sync for AppPtr {}
 
 impl AppPtr {
-    fn get(&self) -> *mut SkiApp {
+    pub(super) fn new(app: &mut SkiApp) -> Self {
+        Self(app)
+    }
+
+    pub(super) fn get(&self) -> *mut SkiApp {
         self.0
     }
 }
@@ -62,25 +61,19 @@ impl SkiApp {
     /// inside the main window's frame would only move when that one did).
     pub(super) fn render_settings_window(&mut self, ctx: &egui::Context) {
         let id = egui::ViewportId::from_hash_of("ski_settings");
-        let declared = egui::Id::unique("ski_settings_declared");
         if self.settings_win.is_none() {
-            ctx.data_mut(|d| d.insert_temp(declared, false));
             if self.theme_editor {
                 self.close_theme_editor();
             }
+            // The icon gallery is declared by Settings and goes with it
+            self.icon_gallery = None;
             return;
-        }
-        // A window shrunk when it was closed may still be alive until this one has a frame
-        if !ctx.data_mut(|d| d.get_temp::<bool>(declared)).unwrap_or(false) {
-            ctx.data_mut(|d| d.insert_temp(declared, true));
-            ctx.send_viewport_cmd_to(id, egui::ViewportCommand::MinInnerSize(SETTINGS_MIN_SIZE));
-            ctx.send_viewport_cmd_to(id, egui::ViewportCommand::InnerSize(SETTINGS_SIZE));
         }
         if self.settings_raise {
             ctx.request_repaint_of(id);
         }
         let builder = chrome::viewport(tr("Settings")).with_inner_size(SETTINGS_SIZE).with_min_inner_size(SETTINGS_MIN_SIZE);
-        let app = AppPtr(self);
+        let app = AppPtr::new(self);
         ctx.show_viewport_deferred(id, builder, move |ui, _class| {
             // SAFETY: see `AppPtr`; the app outlives every window
             let app = unsafe { &mut *app.get() };
@@ -91,8 +84,7 @@ impl SkiApp {
     fn settings_viewport_ui(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
         let Some(mut state) = self.settings_win.take() else {
-            shrink_to_nothing(&ctx);
-            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            chrome::close_own_viewport(&ctx);
             return;
         };
         let theme = self.theme;
@@ -178,17 +170,16 @@ impl SkiApp {
         }
 
         if close {
-            ctx.data_mut(|d| d.insert_temp(egui::Id::unique("ski_settings_declared"), false));
             self.capturing_key = false;
             self.close_theme_editor();
-            // The window is only dropped by a frame of the main window, which may be a long way off
-            // (it is on another workspace), and Wayland cannot hide it meanwhile: shrink it so the
-            // compositor's blur does not stay up over the wallpaper as an empty pane
-            shrink_to_nothing(&ctx);
-            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            self.icon_gallery = None;
+            chrome::close_own_viewport(&ctx);
             ctx.request_repaint_of(egui::ViewportId::ROOT);
         } else {
             self.settings_win = Some(state);
+            // Declared here rather than by the main window, so it opens and keeps up while the
+            // main window is out of sight
+            self.render_icon_gallery(&ctx);
         }
     }
 }

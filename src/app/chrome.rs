@@ -19,6 +19,20 @@ pub fn viewport(title: impl Into<String>) -> egui::ViewportBuilder {
         .with_transparent(true)
 }
 
+/// Closes the deferred window whose pass this is, without waiting on the window that declares it.
+///
+/// eframe only drops a deferred window when a pass of its parent no longer declares it, and the
+/// parent (the main window) may be on another workspace, where it gets no frame callbacks and
+/// runs no pass; Wayland cannot hide a window meanwhile, so it stays up as an empty pane. So the
+/// window declares itself as its own child with nothing to draw, and asks for one more pass of
+/// its own: that pass does not declare it, and egui drops it at the end like any unused child.
+/// If its parent declares it again first (it was opened again), the parent takes it back.
+pub(super) fn close_own_viewport(ctx: &egui::Context) {
+    // An empty builder: none of the window's settings change, so it is neither altered nor remade
+    ctx.show_viewport_deferred(ctx.viewport_id(), egui::ViewportBuilder::default(), |_, _| {});
+    ctx.request_repaint();
+}
+
 /// The places column, `width` wide while it slides in or out.
 pub(super) fn sidebar<R>(ui: &mut egui::Ui, id: &str, width: f32, theme: &SerpantinumTheme, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
     let panel = egui::Panel::left(id)

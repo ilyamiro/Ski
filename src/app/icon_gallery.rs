@@ -1,6 +1,7 @@
 //! A window of its own showing every icon in an icon style: the styles down the side, and the
 //! folders and a file of each kind drawn in the chosen one.
 use super::*;
+use super::settings_window::AppPtr;
 use crate::fs::file_item::{FileType, ICON_SAMPLES};
 use crate::ui::icon_style::{self, IconStyle};
 
@@ -18,113 +19,136 @@ const TILE_HEIGHT: f32 = 96.0;
 const CAPTION: f32 = 26.0;
 
 impl SkiApp {
+    /// Declares the icon gallery each frame of the Settings window, which it is opened from; its
+    /// contents are drawn by its own redraws, so it keeps up when the other windows are out of sight.
     pub(super) fn render_icon_gallery(&mut self, ctx: &egui::Context) {
-        let Some(mut style) = self.icon_gallery else { return };
-        let theme = self.theme;
+        if self.icon_gallery.is_none() {
+            return;
+        }
         let builder = chrome::viewport(tr("Icon style")).with_inner_size([920.0, 660.0]).with_min_inner_size([600.0, 420.0]);
+        let app = AppPtr::new(self);
+        ctx.show_viewport_deferred(egui::ViewportId::from_hash_of("ski_icon_gallery"), builder, move |ui, _class| {
+            // SAFETY: see `AppPtr`; the app outlives every window
+            let app = unsafe { &mut *app.get() };
+            app.icon_gallery_ui(ui);
+        });
+    }
+
+    fn icon_gallery_ui(&mut self, ui: &mut egui::Ui) {
+        let ctx = ui.ctx().clone();
+        let Some(mut style) = self.icon_gallery else {
+            chrome::close_own_viewport(&ctx);
+            return;
+        };
+        let theme = self.theme;
         let mut close = false;
         let mut chosen = None;
         let in_use = self.settings.icon_style;
-        ctx.show_viewport_immediate(egui::ViewportId::from_hash_of("ski_icon_gallery"), builder, |ui, _class| {
-            let ctx = ui.ctx().clone();
-            if ctx.input(|i| i.viewport().close_requested() || i.key_pressed(egui::Key::Escape)) {
-                close = true;
+        if ctx.input(|i| i.viewport().close_requested() || i.key_pressed(egui::Key::Escape)) {
+            close = true;
+        }
+        Self::window_resize_edges(&ctx);
+
+        chrome::sidebar(ui, "ig_styles", chrome::SIDEBAR_WIDTH, &theme, |ui| {
+            // The title shares the header's row, its left edge on the rows' icon column
+            let (row, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), CONTROL_HEIGHT), egui::Sense::hover());
+            chrome::drag_area(ui, row, ui.scope_id().with("ig_side_drag"));
+            material::paint_label(ui, row.left() + material::INSET_ICON - 15.0, row.center().y, tr("Icon style"), material::FONT_TITLE, theme.text, row.width());
+            ui.add_space(8.0 - ui.spacing().item_spacing.y);
+            ui.spacing_mut().item_spacing.y = 2.0;
+            for s in IconStyle::ALL {
+                // Each style shows its own folder where a row's icon goes
+                let resp = nav_item(ui, ("ig_style", s as u8), "", s.label(), &theme, s == style);
+                let at = egui::pos2(resp.rect.left() + material::INSET_ICON, resp.rect.center().y);
+                icon_style::paint_folder(s, ui.painter(), at, 18.0, theme.blue);
+                if resp.clicked() {
+                    style = s;
+                }
             }
-            Self::window_resize_edges(&ctx);
+        });
 
-            chrome::sidebar(ui, "ig_styles", chrome::SIDEBAR_WIDTH, &theme, |ui| {
-                // The title shares the header's row, its left edge on the rows' icon column
-                let (row, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), CONTROL_HEIGHT), egui::Sense::hover());
-                chrome::drag_area(ui, row, ui.scope_id().with("ig_side_drag"));
-                material::paint_label(ui, row.left() + material::INSET_ICON - 15.0, row.center().y, tr("Icon style"), material::FONT_TITLE, theme.text, row.width());
-                ui.add_space(8.0 - ui.spacing().item_spacing.y);
-                ui.spacing_mut().item_spacing.y = 2.0;
-                for s in IconStyle::ALL {
-                    // Each style shows its own folder where a row's icon goes
-                    let resp = nav_item(ui, ("ig_style", s as u8), "", s.label(), &theme, s == style);
-                    let at = egui::pos2(resp.rect.left() + material::INSET_ICON, resp.rect.center().y);
-                    icon_style::paint_folder(s, ui.painter(), at, 18.0, theme.blue);
-                    if resp.clicked() {
-                        style = s;
+        chrome::header(ui, "ig_header", &theme, |ui| {
+            let (row, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), CONTROL_HEIGHT), egui::Sense::hover());
+            // No title bar of its own: the empty parts of the header drag the window
+            chrome::drag_area(ui, row.expand2(egui::vec2(HEADER_MARGIN as f32, 4.0)), ui.scope_id().with("ig_drag"));
+            // The header's own margins are uneven (made for the main window's buttons); these
+            // put the title and the close button the same distance from the window's edges
+            let left = row.left() - HEADER_MARGIN as f32 + EDGE;
+            let right = row.right() + 8.0 - EDGE;
+            material::paint_label(ui, left, row.center().y, &trf("{} icons", &[&style.label()]), material::FONT_TITLE, theme.text, row.width() / 2.0);
+            let close_rect = egui::Rect::from_center_size(egui::pos2(right - material::CLOSE_BUTTON / 2.0, row.center().y), egui::vec2(material::CLOSE_BUTTON, material::CLOSE_BUTTON));
+            let closed = ui.scope_builder(egui::UiBuilder::new().max_rect(close_rect), |ui| {
+                material::filled_icon_button(ui, "ig_close", icons::CLOSE, &theme, material::CLOSE_BUTTON, tr("Close"), None).clicked()
+            });
+            close |= closed.inner;
+            // The choice is a chip, the height of the row's other controls: lit while the style is in use
+            let label = if in_use == style { tr("In use") } else { tr("Use this style") };
+            let width = material::chip_natural_width(ui, Some(icons::CHECK), label, &theme);
+            let chip_rect = egui::Rect::from_center_size(
+                egui::pos2(close_rect.left() - CLOSE_GAP - width / 2.0, row.center().y),
+                egui::vec2(width, material::CHIP_HEIGHT),
+            );
+            let clicked = ui.scope_builder(egui::UiBuilder::new().max_rect(chip_rect), |ui| {
+                material::chip_width(ui, ("ig_use", style as u8), Some(icons::CHECK), label, &theme, in_use == style, Some(width)).clicked()
+            });
+            if clicked.inner && in_use != style {
+                chosen = Some(style);
+            }
+        });
+
+        chrome::content(ui, &theme, |ui| {
+            egui::ScrollArea::vertical().auto_shrink([false, false]).id_salt("ig_scroll").show(ui, |ui| {
+                ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
+                // The content panel keeps PAGE_MARGIN from the sides; the sections keep EDGE
+                let inset = EDGE - PAGE_MARGIN as f32;
+                let full = ui.available_width();
+                let width = full - 2.0 * inset;
+                let column = |ui: &mut egui::Ui, h: f32| {
+                    let (rect, _) = ui.allocate_exact_size(egui::vec2(full, h), egui::Sense::hover());
+                    egui::Rect::from_min_max(egui::pos2(rect.left() + inset, rect.top()), egui::pos2(rect.right() - inset, rect.bottom()))
+                };
+
+                let label = column(ui, 28.0);
+                section(ui, &theme, label, tr("Folders"));
+                let strip = column(ui, strip_height());
+                folders(ui, &theme, strip, style);
+
+                ui.add_space(GAP);
+                let label = column(ui, 28.0);
+                section(ui, &theme, label, tr("Files"));
+                // As many tiles as fit a row, stretched so every row ends on the same line
+                let per_row = ((width + GAP) / (TILE_MIN + GAP)).floor().max(1.0) as usize;
+                let tile_w = (width - GAP * (per_row - 1) as f32) / per_row as f32;
+                for (r, row) in ICON_SAMPLES.chunks(per_row).enumerate() {
+                    if r > 0 {
+                        ui.add_space(GAP);
+                    }
+                    let line = column(ui, TILE_HEIGHT);
+                    if !ui.is_rect_visible(line) {
+                        continue;
+                    }
+                    for (i, (name, kind)) in row.iter().enumerate() {
+                        let tile = egui::Rect::from_min_size(egui::pos2(line.left() + i as f32 * (tile_w + GAP), line.top()), egui::vec2(tile_w, TILE_HEIGHT));
+                        file_tile(ui, &theme, tile, style, name, *kind);
                     }
                 }
-            });
-
-            chrome::header(ui, "ig_header", &theme, |ui| {
-                let (row, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), CONTROL_HEIGHT), egui::Sense::hover());
-                // No title bar of its own: the empty parts of the header drag the window
-                chrome::drag_area(ui, row.expand2(egui::vec2(HEADER_MARGIN as f32, 4.0)), ui.scope_id().with("ig_drag"));
-                // The header's own margins are uneven (made for the main window's buttons); these
-                // put the title and the close button the same distance from the window's edges
-                let left = row.left() - HEADER_MARGIN as f32 + EDGE;
-                let right = row.right() + 8.0 - EDGE;
-                material::paint_label(ui, left, row.center().y, &trf("{} icons", &[&style.label()]), material::FONT_TITLE, theme.text, row.width() / 2.0);
-                let close_rect = egui::Rect::from_center_size(egui::pos2(right - material::CLOSE_BUTTON / 2.0, row.center().y), egui::vec2(material::CLOSE_BUTTON, material::CLOSE_BUTTON));
-                let closed = ui.scope_builder(egui::UiBuilder::new().max_rect(close_rect), |ui| {
-                    material::filled_icon_button(ui, "ig_close", icons::CLOSE, &theme, material::CLOSE_BUTTON, tr("Close"), None).clicked()
-                });
-                close |= closed.inner;
-                // The choice is a chip, the height of the row's other controls: lit while the style is in use
-                let label = if in_use == style { tr("In use") } else { tr("Use this style") };
-                let width = material::chip_natural_width(ui, Some(icons::CHECK), label, &theme);
-                let chip_rect = egui::Rect::from_center_size(
-                    egui::pos2(close_rect.left() - CLOSE_GAP - width / 2.0, row.center().y),
-                    egui::vec2(width, material::CHIP_HEIGHT),
-                );
-                let clicked = ui.scope_builder(egui::UiBuilder::new().max_rect(chip_rect), |ui| {
-                    material::chip_width(ui, ("ig_use", style as u8), Some(icons::CHECK), label, &theme, in_use == style, Some(width)).clicked()
-                });
-                if clicked.inner && in_use != style {
-                    chosen = Some(style);
-                }
-            });
-
-            chrome::content(ui, &theme, |ui| {
-                egui::ScrollArea::vertical().auto_shrink([false, false]).id_salt("ig_scroll").show(ui, |ui| {
-                    ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
-                    // The content panel keeps PAGE_MARGIN from the sides; the sections keep EDGE
-                    let inset = EDGE - PAGE_MARGIN as f32;
-                    let full = ui.available_width();
-                    let width = full - 2.0 * inset;
-                    let column = |ui: &mut egui::Ui, h: f32| {
-                        let (rect, _) = ui.allocate_exact_size(egui::vec2(full, h), egui::Sense::hover());
-                        egui::Rect::from_min_max(egui::pos2(rect.left() + inset, rect.top()), egui::pos2(rect.right() - inset, rect.bottom()))
-                    };
-
-                    let label = column(ui, 28.0);
-                    section(ui, &theme, label, tr("Folders"));
-                    let strip = column(ui, strip_height());
-                    folders(ui, &theme, strip, style);
-
-                    ui.add_space(GAP);
-                    let label = column(ui, 28.0);
-                    section(ui, &theme, label, tr("Files"));
-                    // As many tiles as fit a row, stretched so every row ends on the same line
-                    let per_row = ((width + GAP) / (TILE_MIN + GAP)).floor().max(1.0) as usize;
-                    let tile_w = (width - GAP * (per_row - 1) as f32) / per_row as f32;
-                    for (r, row) in ICON_SAMPLES.chunks(per_row).enumerate() {
-                        if r > 0 {
-                            ui.add_space(GAP);
-                        }
-                        let line = column(ui, TILE_HEIGHT);
-                        if !ui.is_rect_visible(line) {
-                            continue;
-                        }
-                        for (i, (name, kind)) in row.iter().enumerate() {
-                            let tile = egui::Rect::from_min_size(egui::pos2(line.left() + i as f32 * (tile_w + GAP), line.top()), egui::vec2(tile_w, TILE_HEIGHT));
-                            file_tile(ui, &theme, tile, style, name, *kind);
-                        }
-                    }
-                    ui.add_space(EDGE);
-                });
+                ui.add_space(EDGE);
             });
         });
 
         if let Some(style) = chosen {
             self.settings.icon_style = style;
             self.persist_settings();
+            // The other windows show the style too, and get their turn when they can
+            ctx.request_repaint_of(egui::ViewportId::ROOT);
+            ctx.request_repaint_of(egui::ViewportId::from_hash_of("ski_settings"));
         }
-        self.icon_gallery = if close { None } else { Some(style) };
+        if close {
+            self.icon_gallery = None;
+            chrome::close_own_viewport(&ctx);
+        } else {
+            self.icon_gallery = Some(style);
+        }
     }
 }
 

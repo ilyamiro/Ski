@@ -2340,7 +2340,6 @@ impl eframe::App for SkiApp {
         self.render_glyph_picker(&ctx);
         self.theme = window_theme;
         self.render_picker(&ctx);
-        self.render_icon_gallery(&ctx);
         self.render_settings_window(&ctx);
         self.render_drop_overlay(&ctx);
         self.update_system_dnd(&ctx);
