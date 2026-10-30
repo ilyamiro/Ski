@@ -7,6 +7,10 @@ const CELL: f32 = 48.0;
 const CARD_WIDTH: f32 = 480.0;
 const CARD_HEIGHT: f32 = 520.0;
 const CARD_MARGIN: f32 = 14.0;
+/// Above the title row, which is as tall as the close button: the title's own text then sits
+/// `CARD_MARGIN` from the top, as far as it does from the left.
+const TOP_MARGIN: f32 = 8.0;
+const TITLE_ROW: f32 = material::CLOSE_BUTTON;
 
 /// The folder being given a glyph, and the glyph picked so far.
 pub(crate) struct GlyphPicker {
@@ -67,15 +71,16 @@ impl SkiApp {
                     .fill(theme.mantle)
                     .corner_radius(egui::CornerRadius::same(material::radius_window()))
                     .shadow(ctx.global_style().visuals.window_shadow)
-                    .inner_margin(egui::Margin::same(CARD_MARGIN as i8))
+                    .inner_margin(egui::Margin { left: CARD_MARGIN as i8, right: CARD_MARGIN as i8, top: TOP_MARGIN as i8, bottom: CARD_MARGIN as i8 })
                     .show(ui, |ui| {
-                        let inner = egui::vec2(width - 2.0 * CARD_MARGIN, height - 2.0 * CARD_MARGIN);
+                        let inner = egui::vec2(width - 2.0 * CARD_MARGIN, height - TOP_MARGIN - CARD_MARGIN);
+                        let origin = ui.cursor().min;
                         ui.set_width(inner.x);
                         ui.set_min_height(inner.y);
                         ui.spacing_mut().item_spacing = egui::vec2(6.0, 8.0);
 
                         // Title and close button
-                        let (row, _) = ui.allocate_exact_size(egui::vec2(inner.x, 36.0), egui::Sense::hover());
+                        let (row, _) = ui.allocate_exact_size(egui::vec2(inner.x, TITLE_ROW), egui::Sense::hover());
                         material::paint_label(ui, row.left(), row.center().y, &trf("Glyph for “{}”", &[&name]), material::FONT_TITLE, theme.text, row.width() - 48.0);
                         let close_rect = egui::Rect::from_center_size(egui::pos2(row.right() - material::CLOSE_BUTTON / 2.0, row.center().y), egui::vec2(material::CLOSE_BUTTON, material::CLOSE_BUTTON));
                         cancelled |= ui.scope_builder(egui::UiBuilder::new().max_rect(close_rect), |ui| {
@@ -83,7 +88,7 @@ impl SkiApp {
                         }).inner;
 
                         // The grid fills what the buttons below leave
-                        let grid_h = inner.y - 36.0 - material::BUTTON_HEIGHT - 3.0 * 8.0;
+                        let grid_h = inner.y - TITLE_ROW - material::BUTTON_HEIGHT - 2.0 * 8.0;
                         let per_row = ((inner.x / CELL).floor() as usize).max(1);
                         let rows = glyphs.len().div_ceil(per_row);
                         let pad = (inner.x - per_row as f32 * CELL) / 2.0;
@@ -112,19 +117,20 @@ impl SkiApp {
                             }
                         });
 
-                        ui.spacing_mut().item_spacing = egui::vec2(6.0, 8.0);
-                        ui.add_space(8.0);
-                        ui.horizontal(|ui| {
-                            if let Some(c) = picker.chosen {
-                                ui.label(egui::RichText::new(c.to_string()).font(icons::font(24.0)).color(theme.mauve));
+                        // The buttons sit on the card's bottom edge, inside its margin
+                        let foot = egui::Rect::from_min_max(egui::pos2(origin.x, origin.y + inner.y - material::BUTTON_HEIGHT), origin + inner);
+                        ui.scope_builder(egui::UiBuilder::new().max_rect(foot).layout(egui::Layout::right_to_left(egui::Align::Center)), |ui| {
+                            ui.spacing_mut().item_spacing = egui::vec2(6.0, 8.0);
+                            let ready = picker.chosen.is_some();
+                            confirmed |= material::button(ui, "gp_go", Some(icons::CHECK), tr("Set icon"), &theme, ButtonKind::Filled, ready).clicked() && ready;
+                            if has_glyph {
+                                reset |= material::button(ui, "gp_reset", None, tr("Reset"), &theme, ButtonKind::Text, true).clicked();
                             }
-                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                let ready = picker.chosen.is_some();
-                                confirmed |= material::button(ui, "gp_go", Some(icons::CHECK), tr("Set icon"), &theme, ButtonKind::Filled, ready).clicked() && ready;
-                                if has_glyph {
-                                    reset |= material::button(ui, "gp_reset", None, tr("Reset"), &theme, ButtonKind::Text, true).clicked();
-                                }
-                            });
+                            if let Some(c) = picker.chosen {
+                                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                                    ui.label(egui::RichText::new(c.to_string()).font(icons::font(24.0)).color(theme.mauve));
+                                });
+                            }
                         });
                     });
             });
