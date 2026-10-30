@@ -497,7 +497,7 @@ pub fn paint_icon(painter: &egui::Painter, center: Pos2, icon: &str, size: f32, 
 }
 
 /// The type icon of a file; office documents are a drawn page (`assets/icons`), everything else is a glyph.
-fn paint_item_icon(painter: &egui::Painter, item: &FileItem, center: Pos2, size: f32, (glyph, color): (&str, Color32), fade: f32) {
+pub fn paint_item_icon(painter: &egui::Painter, item: &FileItem, center: Pos2, size: f32, (glyph, color): (&str, Color32), fade: f32) {
     if item.is_dir {
         return paint_folder(painter, center, size, color.gamma_multiply(fade));
     }
@@ -510,24 +510,19 @@ fn paint_item_icon(painter: &egui::Painter, item: &FileItem, center: Pos2, size:
     painter.image(tex.id(), shown, Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), Color32::WHITE.gamma_multiply(fade));
 }
 
-/// A folder drawn in two layers: a darker back panel with the tab, a front panel, and a light line along the
-/// front's top edge that makes the front read as standing proud of the back.
-fn paint_folder(painter: &egui::Painter, center: Pos2, size: f32, color: Color32) {
+/// A folder drawn in two flat layers: a slightly darker back panel with the tab, and the front panel over it.
+pub fn paint_folder(painter: &egui::Painter, center: Pos2, size: f32, color: Color32) {
     let w = size * 1.05;
     let h = w * 0.8;
     let body = Rect::from_center_size(center, Vec2::new(w, h));
-    let radius = (w * 0.1).round() as u8;
-    let back = lerp_color(color, Color32::BLACK, 0.28).gamma_multiply(color.a() as f32 / 255.0);
-    let tab = Rect::from_min_size(body.min, Vec2::new(w * 0.44, h * 0.3));
+    let radius = (w * 0.12).round() as u8;
+    let back = lerp_color(color, Color32::BLACK, 0.2).gamma_multiply(color.a() as f32 / 255.0);
+    let tab = Rect::from_min_size(body.min, Vec2::new(w * 0.4, h * 0.3));
     painter.rect_filled(tab, CornerRadius { nw: radius, ne: radius, sw: 0, se: 0 }, back);
     let back_body = Rect::from_min_max(Pos2::new(body.left(), body.top() + h * 0.12), body.max);
-    painter.rect_filled(back_body, CornerRadius { nw: 0, ne: radius, sw: radius, se: radius }, back);
+    painter.rect_filled(back_body, CornerRadius::same(radius), back);
     let front = Rect::from_min_max(Pos2::new(body.left(), body.top() + h * 0.3), body.max);
     painter.rect_filled(front, CornerRadius::same(radius), color);
-    let lit = lerp_color(color, Color32::WHITE, 0.4).gamma_multiply(color.a() as f32 / 255.0);
-    let y = front.top() + 1.0;
-    let inset = w * 0.1;
-    painter.line_segment([Pos2::new(front.left() + inset, y), Pos2::new(front.right() - inset, y)], egui::Stroke::new((size / 22.0).max(1.0), lit));
 }
 
 /// Sharpest resolution the icons are rasterized at is the first one that covers the drawn size.

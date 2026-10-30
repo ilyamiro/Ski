@@ -204,7 +204,8 @@ impl SkiApp {
                         egui::Image::from_texture(egui::load::SizedTexture::new(tex.id(), size)).corner_radius(egui::CornerRadius::same(material::radius_sm())).paint_at(ui, drawn);
                     }
                     None => {
-                        material::paint_icon(ui.painter(), rect.center(), item.file_type.icon(), 48.0, theme.subtext0);
+                        let look = material::item_icon_animated(item, &theme, 0.0);
+                        material::paint_item_icon(ui.painter(), item, rect.center(), 48.0, look, 1.0);
                         ctx.request_repaint_after(std::time::Duration::from_millis(100));
                     }
                 }
@@ -260,7 +261,11 @@ impl SkiApp {
                                             toggle = Some(index);
                                         }
                                     }
-                                    material::paint_icon(ui.painter(), egui::pos2(x + 28.0, y), if node.is_dir { icons::FOLDER } else { icons::FILE }, material::ICON_SM, if node.is_dir { theme.blue } else { theme.subtext0 });
+                                    if node.is_dir {
+                                        material::paint_folder(ui.painter(), egui::pos2(x + 28.0, y), material::ICON_SM, theme.blue);
+                                    } else {
+                                        material::paint_icon(ui.painter(), egui::pos2(x + 28.0, y), icons::FILE, material::ICON_SM, theme.subtext0);
+                                    }
                                     let size = if node.is_dir { format!("{} · {}", trn(node.files, "{} file", "{} files"), format_bytes(node.size)) } else { format_bytes(node.size) };
                                     let size_w = 150.0;
                                     let name_x = x + 44.0;
@@ -283,7 +288,8 @@ impl SkiApp {
             Body::Nothing => {
                 let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 160.0), egui::Sense::hover());
                 ui.painter().rect_filled(rect, egui::CornerRadius::same(material::radius_container()), theme.surface0);
-                material::paint_icon(ui.painter(), rect.center() - egui::vec2(0.0, 12.0), item.file_type.icon(), 52.0, theme.subtext0);
+                let look = material::item_icon_animated(item, &theme, 0.0);
+                material::paint_item_icon(ui.painter(), item, rect.center() - egui::vec2(0.0, 12.0), 52.0, look, 1.0);
                 ui.painter().text(rect.center() + egui::vec2(0.0, 40.0), egui::Align2::CENTER_CENTER, tr("No preview available"), egui::FontId::proportional(material::FONT_BODY), theme.subtext1);
             }
         }

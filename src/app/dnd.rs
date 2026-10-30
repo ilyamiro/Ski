@@ -227,7 +227,7 @@ impl SkiApp {
                 }
                 None => {
                     let (glyph, color) = material::item_icon_animated(item, theme, 0.0);
-                    material::paint_icon(painter, card.center(), glyph, 20.0, color);
+                    material::paint_item_icon(painter, item, card.center(), 20.0, (glyph, color), 1.0);
                 }
             }
         }

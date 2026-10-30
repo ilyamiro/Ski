@@ -5539,9 +5539,9 @@ impl SkiApp {
                         .paint_at(ui, egui::Rect::from_center_size(tile.center(), shown));
                 }
                 None => {
-                    let color = if item.is_dir { theme.blue } else { theme.subtext0 };
-                    let glyph = item.file_type.icon();
-                    material::paint_icon(ui.painter(), tile.center(), glyph, 44.0, color);
+                    // The same drawing as in the list
+                    let (glyph, color) = material::item_icon_animated(item, &theme, 0.0);
+                    material::paint_item_icon(ui.painter(), item, tile.center(), 44.0, (glyph, color), 1.0);
                 }
             }
             ui.add_space(6.0);
