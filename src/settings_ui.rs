@@ -177,6 +177,7 @@ impl SkiApp {
         let full = ui.available_width();
         let column = full.min(PAGE_WIDTH);
         let side = ((full - column) / 2.0).floor();
+        let started = std::time::Instant::now();
         let enter_t = material::animate_enter(&ctx, ui.make_persistent_id(("set_tab_enter", *tab)), material::ANIM_FAST);
         ui.set_opacity(ui.opacity() * enter_t);
         egui::ScrollArea::vertical()
@@ -206,6 +207,10 @@ impl SkiApp {
             });
         // Left from a row that starts at the page's edge goes back to the category list
         let pane = ui.min_rect();
+        let took = started.elapsed();
+        if took.as_millis() > 8 || pane.width() > full + 0.5 {
+            crate::app::settings_trace(&format!("page tab={} full={full:.1} column={column:.1} side={side} pane_w={:.1} build={took:?}", *tab, pane.width()));
+        }
         let focused = ctx.memory(|m| m.focused());
         if let Some(rect) = focused.and_then(|id| ctx.read_response(id)).map(|r| r.rect)
             && rect.left() <= pane.left() + side + 24.0

@@ -14,6 +14,7 @@ mod folder_sizes;
 mod glyph_picker;
 mod icon_gallery;
 mod settings_window;
+pub(crate) use settings_window::settings_trace;
 mod theme_editor;
 mod jobs_ui;
 mod network_ui;

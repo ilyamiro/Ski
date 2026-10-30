@@ -38,6 +38,18 @@ pub(super) fn header<R>(ui: &mut egui::Ui, id: &str, theme: &SerpantinumTheme, a
     backdrop(ui, theme.base, |ui| panel.show(ui, add))
 }
 
+/// A header on a `fill` of its own, taller than the plain one, for windows whose title needs
+/// room above it and a band that sets it apart from the page.
+pub(super) fn banner<R>(ui: &mut egui::Ui, id: &str, fill: egui::Color32, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    let panel = egui::Panel::top(id)
+        .show_separator_line(false)
+        .frame(egui::Frame::new().inner_margin(egui::Margin { left: HEADER_MARGIN, right: 8, top: BANNER_TOP, bottom: 6 }));
+    backdrop(ui, fill, |ui| panel.show(ui, add))
+}
+
+/// Space above a banner's row; whatever sits beside it must start as far down.
+pub(super) const BANNER_TOP: i8 = 8;
+
 /// A strip under the header of a fixed `height`, with the header's side margins.
 pub(super) fn header_strip<R>(ui: &mut egui::Ui, id: &str, height: f32, theme: &SerpantinumTheme, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
     let panel = egui::Panel::top(id)
