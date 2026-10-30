@@ -6,6 +6,7 @@ use eframe::egui::{self, Color32, CornerRadius, Pos2, Rect, Vec2};
 
 use crate::app::{app_row, Dialog, SkiApp, ViewMode};
 use crate::fs::apps::{self, AppEntry};
+use crate::fs::file_item::{FileItem, ICON_SAMPLES};
 use crate::fs::scanner::{SortBy, SortOrder};
 use crate::keymap::{self, Action};
 use crate::settings::{Density, Settings, StartLocation};
@@ -31,6 +32,7 @@ impl SkiApp {
     pub(crate) fn open_settings_at(&mut self, tab: usize) {
         self.capturing_key = false;
         apps::preload_category_defaults();
+        self.icon_card_samples = pick_icon_card_samples();
         self.dialog = Some(Dialog::Settings {
             tab,
             font_query: String::new(),
@@ -347,13 +349,14 @@ impl SkiApp {
 
     fn icon_style_cards(&mut self, ui: &mut egui::Ui) {
         let theme = self.theme;
+        let samples = self.icon_card_samples.map(|i| FileItem::sample(ICON_SAMPLES[i].0, ICON_SAMPLES[i].1));
         let gap = 8.0;
         let per_row = 4usize;
         let card_w = ((ui.available_width() - gap * (per_row - 1) as f32) / per_row as f32).floor().clamp(80.0, 140.0);
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing = egui::vec2(gap, gap);
             for style in IconStyle::ALL {
-                if icon_style_card(ui, ("icon_style_card", style as u8), card_w, style, &theme, self.settings.icon_style == style).clicked() {
+                if icon_style_card(ui, ("icon_style_card", style as u8), card_w, style, &theme, self.settings.icon_style == style, &samples).clicked() {
                     self.settings.icon_style = style;
                     self.persist_settings();
                 }
@@ -1362,6 +1365,15 @@ fn keycap_pill(
 }
 
 /// What a preset looks like on its own, without the accent the user picked.
+/// Two different entries of `ICON_SAMPLES`, by chance.
+fn pick_icon_card_samples() -> [usize; 2] {
+    use std::hash::{BuildHasher, Hasher};
+    let n = ICON_SAMPLES.len();
+    let roll = || std::collections::hash_map::RandomState::new().build_hasher().finish() as usize;
+    let a = roll() % n;
+    [a, (a + 1 + roll() % (n - 1)) % n]
+}
+
 fn preset_preview(id: &str) -> SerpantinumTheme {
     SerpantinumTheme::from_settings(&Settings { theme: id.to_owned(), accent: None, ..Settings::default() })
 }
@@ -1449,6 +1461,7 @@ fn icon_style_card(
     style: IconStyle,
     theme: &SerpantinumTheme,
     selected: bool,
+    samples: &[FileItem; 2],
 ) -> egui::Response {
     let (rect, resp) = ui.allocate_exact_size(egui::vec2(width, 82.0), egui::Sense::click());
     let id = ui.make_persistent_id(id_source);
@@ -1465,9 +1478,11 @@ fn icon_style_card(
     painter.rect_filled(stage, CornerRadius::same(material::radius_md()), theme.base);
     let at = |x: f32| egui::pos2(stage.left() + stage.width() * x, stage.center().y);
     icon_style::paint_folder(style, &painter, at(0.27), 30.0, theme.blue);
-    // A link too, since some styles draw links as something else entirely
-    icon_style::paint_file(style, &painter, at(0.6), icons::PDF, 20.0, theme.red);
-    icon_style::paint_file(style, &painter, at(0.84), icons::SYMLINK, 20.0, theme.subtext0);
+    // Two kinds drawn by chance when Settings opens, the same on every card so the styles compare
+    for (item, x) in samples.iter().zip([0.6, 0.84]) {
+        let icon = material::item_icon_animated(item, theme, 0.0);
+        material::paint_item_icon_in(style, &painter, item, at(x), 20.0, icon, 1.0);
+    }
     let color = material::lerp_color(theme.subtext0, theme.text, sel.max(fx.hover));
     let galley = material::truncated(ui, style.label(), material::FONT_CAPTION, color, rect.width() - 12.0);
     let pos = egui::pos2(rect.center().x - galley.size().x / 2.0, rect.bottom() - 13.0 - galley.size().y / 2.0);

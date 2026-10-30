@@ -468,6 +468,8 @@ pub struct SkiApp {
     picker: Option<Picker>,
     /// The window showing every icon of an icon style, open on that style.
     pub(crate) icon_gallery: Option<crate::ui::icon_style::IconStyle>,
+    /// Which two file kinds (from `ICON_SAMPLES`) the icon style cards show beside the folder; drawn again each time Settings opens.
+    pub(crate) icon_card_samples: [usize; 2],
     /// The theme editor is open over Settings, and which color's picker is open in it.
     pub(crate) theme_editor: bool,
     theme_picker: Option<&'static str>,
@@ -629,6 +631,7 @@ impl SkiApp {
             dialog: None,
             picker: None,
             icon_gallery: None,
+            icon_card_samples: [0, 1],
             theme_editor: false,
             theme_picker: None,
             theme_draft: None,
