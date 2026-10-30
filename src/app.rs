@@ -2969,7 +2969,12 @@ impl SkiApp {
                         let is_dir = pin.is_dir() || network::is_remote(pin) && network::is_disconnected(pin);
                         let selected = browsing && is_dir && self.current_path == *pin;
                         let name = pin.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| pin.display().to_string());
-                        let icon = if is_dir { icons::FOLDER } else { FileItem::from_path(pin).map_or(icons::FILE, |i| i.file_type.icon()) };
+                        let own = crate::fs::places::folder_glyph(pin).map(String::from);
+                        let icon = match &own {
+                            Some(glyph) if is_dir => glyph.as_str(),
+                            _ if is_dir => icons::FOLDER,
+                            _ => FileItem::from_path(pin).map_or(icons::FILE, |i| i.file_type.icon()),
+                        };
                         let resp = nav_item(ui, ("pin", pin), icon, &name, &self.theme, selected);
                         rects.push(resp.rect);
                         if is_dir {
@@ -3008,12 +3013,15 @@ impl SkiApp {
                     let ticking = editing && place.builtin.is_some();
                     let reserve = if ticking || place.drive.as_ref().is_some_and(|d| d.mounted && d.removable) { material::NAV_TRAILING } else { 0.0 };
                     let hidden = place.builtin.is_some_and(|b| !self.place_shown(b));
+                    // A glyph chosen for the folder replaces the place's own icon
+                    let own = crate::fs::places::folder_glyph(&place.path).map(String::from);
+                    let place_icon = own.as_deref().unwrap_or(place.icon);
                     let resp = ui
                         .scope(|ui| {
                             if hidden {
                                 ui.multiply_opacity(0.45);
                             }
-                            material::nav_item_with(ui, ("place", idx), place.icon, &tr_dyn(&place.name), &self.theme, browsing && here, reserve)
+                            material::nav_item_with(ui, ("place", idx), place_icon, &tr_dyn(&place.name), &self.theme, browsing && here, reserve)
                         })
                         .inner;
                     if ticking && let Some(builtin) = place.builtin {
