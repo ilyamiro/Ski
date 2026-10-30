@@ -6,7 +6,7 @@ use crate::ui::icon_style;
 const CELL: f32 = 48.0;
 const CARD_WIDTH: f32 = 480.0;
 const CARD_HEIGHT: f32 = 520.0;
-const CARD_MARGIN: f32 = 20.0;
+const CARD_MARGIN: f32 = 14.0;
 
 /// The folder being given a glyph, and the glyph picked so far.
 pub(crate) struct GlyphPicker {
