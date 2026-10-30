@@ -96,7 +96,11 @@ pub fn paint_file(style: IconStyle, painter: &egui::Painter, center: Pos2, glyph
         IconStyle::Halloween => tombstone(painter, center, glyph, size, color),
         IconStyle::Winter => winter_file(painter, center, glyph, size, color),
         IconStyle::Pixel => {
-            let block = (size * painter.ctx().pixels_per_point() / 16.0).round().max(2.0);
+            // About 24 cells across, enough for a logo, in blocks of whole screen pixels: one on small
+            // icons, where a single pixel is all the detail there is, and from two up once a block of
+            // two still leaves the logo its cells
+            let px = size * painter.ctx().pixels_per_point();
+            let block = if px < 28.0 { 1.0 } else { (px / 24.0).round().max(2.0) };
             if !paint_pixel_glyph(painter, center, glyph, size, block, color, true) {
                 plain(painter, center, glyph, size, color);
             }
@@ -693,22 +697,479 @@ fn nerd_font() -> Option<&'static ab_glyph::FontRef<'static>> {
     FONT.get_or_init(|| ab_glyph::FontRef::try_from_slice(icons::FONT_DATA).ok()).as_ref()
 }
 
-/// The glyph rasterized onto a `grid`×`grid` canvas with hard edges: true where it is inked.
+/// How much of each cell of a `side`×`side` canvas the glyph covers, drawn `scale` times the canvas
+/// (the font's glyphs fill their em) with its middle `shift` cells off the canvas's middle.
+fn glyph_coverage(font: &ab_glyph::FontRef<'static>, id: ab_glyph::GlyphId, side: usize, scale: f32, shift: Vec2) -> Option<Vec<f32>> {
+    use ab_glyph::{Font, ScaleFont};
+    let px = side as f32 * scale;
+    let bounds = font.outline(id)?.bounds;
+    let scaled = font.as_scaled(px);
+    let (sx, sy) = (scaled.h_scale_factor(), scaled.v_scale_factor());
+    let middle = Vec2::splat(side as f32 / 2.0) + shift;
+    let at = ab_glyph::point(middle.x - (bounds.min.x + bounds.max.x) / 2.0 * sx, middle.y + (bounds.min.y + bounds.max.y) / 2.0 * sy);
+    let outline = font.outline_glyph(id.with_scale_and_position(px, at))?;
+    let min = outline.px_bounds().min;
+    let mut cover = vec![0.0; side * side];
+    outline.draw(|x, y, c| {
+        let (x, y) = (x as i32 + min.x as i32, y as i32 + min.y as i32);
+        if (0..side as i32).contains(&x) && (0..side as i32).contains(&y) {
+            cover[y as usize * side + x as usize] = c;
+        }
+    });
+    Some(cover)
+}
+
+/// A connected run of ink or of blank space, as `regions` finds it.
+#[derive(Clone, Copy)]
+struct Region {
+    inked: bool,
+    /// Blank space reaching the edge is outside the shape; any other blank space is a hole in it.
+    border: bool,
+    area: usize,
+}
+
+/// The shape split into its parts and the holes in them, the things that make a logo what it is: a
+/// region index for every pixel, and the regions. Ink joins on diagonals, the way a sprite reads;
+/// blank space only edge to edge, so a diagonal of ink still closes a hole.
+fn regions(ink: &[bool], side: usize) -> (Vec<u32>, Vec<Region>) {
+    // One pass joining each pixel to those above and to its left, then one numbering the joined sets
+    fn root(parent: &mut [u32], mut i: u32) -> u32 {
+        while parent[i as usize] != i {
+            parent[i as usize] = parent[parent[i as usize] as usize];
+            i = parent[i as usize];
+        }
+        i
+    }
+    let mut parent: Vec<u32> = (0..(side * side) as u32).collect();
+    for y in 0..side {
+        for x in 0..side {
+            let i = y * side + x;
+            let inked = ink[i];
+            let mut join = |j: usize| {
+                if ink[j] == inked {
+                    let (a, b) = (root(&mut parent, i as u32), root(&mut parent, j as u32));
+                    parent[a.max(b) as usize] = a.min(b);
+                }
+            };
+            if x > 0 {
+                join(i - 1);
+            }
+            if y > 0 {
+                join(i - side);
+                if inked && x > 0 {
+                    join(i - side - 1);
+                }
+                if inked && x + 1 < side {
+                    join(i - side + 1);
+                }
+            }
+        }
+    }
+    let mut label = vec![u32::MAX; side * side];
+    let mut found: Vec<Region> = Vec::new();
+    for i in 0..side * side {
+        let r = root(&mut parent, i as u32) as usize;
+        if label[r] == u32::MAX {
+            label[r] = found.len() as u32;
+            found.push(Region { inked: ink[i], border: false, area: 0 });
+        }
+        let id = label[r];
+        label[i] = id;
+        let (x, y) = (i % side, i / side);
+        let region = &mut found[id as usize];
+        region.area += 1;
+        region.border |= x == 0 || y == 0 || x == side - 1 || y == side - 1;
+    }
+    (label, found)
+}
+
+/// The finely drawn glyph's regions as a sprite can show them: parts with no more than a quarter of a
+/// cell between them are one part, the hairline between them too thin to keep, while holes are taken
+/// as drawn.
+fn shape_regions(ink: &[bool], side: usize) -> (Vec<u32>, Vec<Region>) {
+    // Ink spread a quarter of a cell right and down closes exactly the gaps that narrow
+    const NEAR: usize = FINE / 4;
+    let near: Vec<bool> = (0..side * side)
+        .map(|i| {
+            let (x, y) = (i % side, i / side);
+            (0..=NEAR.min(y)).any(|dy| (0..=NEAR.min(x)).any(|dx| ink[(y - dy) * side + x - dx]))
+        })
+        .collect();
+    let (parts, part_regions) = regions(&near, side);
+    let (blanks, blank_regions) = regions(ink, side);
+    let offset = part_regions.len() as u32;
+    let mut found: Vec<Region> = part_regions.into_iter().chain(blank_regions).map(|r| Region { area: 0, ..r }).collect();
+    let label: Vec<u32> = (0..side * side).map(|i| if ink[i] { parts[i] } else { offset + blanks[i] }).collect();
+    for &l in &label {
+        found[l as usize].area += 1;
+    }
+    (label, found)
+}
+
+/// Each finely drawn pixel of a cell is this many of the cell.
+const FINE: usize = 8;
+
+/// The glyph drawn into `grid`×`grid` cells by its regions rather than its coverage. A cell goes to
+/// the part, hole or outside that has most of it; where two parts would then touch, or a hole would
+/// run into another or out of the shape, the cell held more weakly goes the other way, so thin gaps
+/// survive; and a part or hole of half a cell or more that no cell went to is given its strongest
+/// cell; and a part that came out in pieces is joined up again. `fine` is the glyph drawn `FINE` times
+/// finer than the cells, and `label` its regions as `shape_regions` finds them. Returns the cells, how
+/// much of each the glyph covers, and how badly the cells keep its features.
+fn sprite_cells(fine: &[bool], label: &[u32], found: &[Region], grid: usize) -> (Vec<bool>, Vec<f32>, f32) {
+    let side = grid * FINE;
+    // Parts smaller than a quarter of a cell and holes smaller than half of one are only edges,
+    // specks and slivers; they count as plain ink or blank space
+    let minor = |r: u32| {
+        let region = found[r as usize];
+        region.area * if region.inked { 4 } else { 2 } < FINE * FINE
+    };
+    const INK: u32 = u32::MAX - 1;
+    const BLANK: u32 = u32::MAX;
+    let n = grid * grid;
+    let mut owner = vec![BLANK; n];
+    let mut strength = vec![0.0f32; n];
+    let mut cover = vec![0.0f32; n];
+    let mut tallies: Vec<Vec<(u32, usize)>> = vec![Vec::new(); n];
+    for (i, &l) in label.iter().enumerate() {
+        let cell = (i / side / FINE) * grid + (i % side) / FINE;
+        let key = if minor(l) { if fine[i] { INK } else { BLANK } } else { l };
+        let tally = &mut tallies[cell];
+        match tally.iter_mut().find(|(k, _)| *k == key) {
+            Some(t) => t.1 += 1,
+            None => tally.push((key, 1)),
+        }
+        if fine[i] {
+            cover[cell] += 1.0 / (FINE * FINE) as f32;
+        }
+    }
+    let inked = |k: u32| k == INK || (k != BLANK && found[k as usize].inked);
+    for (cell, tally) in tallies.iter().enumerate() {
+        if let Some(&(k, c)) = tally.iter().max_by_key(|(_, c)| *c) {
+            owner[cell] = k;
+            strength[cell] = c as f32 / (FINE * FINE) as f32;
+        }
+    }
+
+    // Regions that must not meet: two parts touching even at a corner, two blank regions sharing an edge
+    for _ in 0..3 {
+        let mut changed = false;
+        for cell in 0..n {
+            let (x, y) = ((cell % grid) as i32, (cell / grid) as i32);
+            for (dx, dy) in [(1, 0), (0, 1), (1, 1), (-1, 1)] {
+                let (nx, ny) = (x + dx, y + dy);
+                if !(0..grid as i32).contains(&nx) || !(0..grid as i32).contains(&ny) {
+                    continue;
+                }
+                let other = ny as usize * grid + nx as usize;
+                let (a, b) = (owner[cell], owner[other]);
+                let distinct = a != b && a < INK && b < INK && inked(a) == inked(b);
+                if !distinct || (!inked(a) && dx != 0 && dy != 0) {
+                    continue;
+                }
+                let weak = if strength[cell] <= strength[other] { cell } else { other };
+                owner[weak] = if inked(owner[weak]) { BLANK } else { INK };
+                strength[weak] = 0.0;
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+
+    // A feature of half a cell or more that lost every cell gets back the one it fills most
+    for (r, region) in found.iter().enumerate() {
+        let r = r as u32;
+        if region.area * 2 < FINE * FINE || (!region.inked && region.border) || owner.contains(&r) {
+            continue;
+        }
+        let best = (0..n).filter_map(|cell| tallies[cell].iter().find(|(k, _)| *k == r).map(|(_, c)| (cell, *c))).max_by_key(|(_, c)| *c);
+        if let Some((cell, _)) = best {
+            let held = owner[cell];
+            // Unless that would take the last cell of another feature
+            if held >= INK || owner.iter().filter(|&&o| o == held).count() > 1 {
+                owner[cell] = r;
+            }
+        }
+    }
+
+    // A stroke thinner than a cell holds no cell by a majority and would vanish. Every cell a part
+    // reaches into is offered to it, clear of other parts and of holes, and the offer is thinned to a
+    // line a cell wide, leaving the cells the part holds outright as they are
+    for (r, region) in found.iter().enumerate() {
+        let r = r as u32;
+        if !region.inked || region.area * 2 < FINE * FINE {
+            continue;
+        }
+        let near_other = |cell: usize| {
+            let (x, y) = ((cell % grid) as i32, (cell / grid) as i32);
+            (-1..=1).any(|dy| {
+                (-1..=1).any(|dx| {
+                    let (nx, ny) = (x + dx, y + dy);
+                    (0..grid as i32).contains(&nx) && (0..grid as i32).contains(&ny) && {
+                        let o = owner[ny as usize * grid + nx as usize];
+                        o < INK && o != r && found[o as usize].inked
+                    }
+                })
+            })
+        };
+        let free = |o: u32| o >= INK || (!found[o as usize].inked && found[o as usize].border);
+        let held: Vec<bool> = owner.iter().map(|&o| o == r).collect();
+        let offered: Vec<bool> = (0..n)
+            .map(|cell| {
+                held[cell] || (free(owner[cell]) && tallies[cell].iter().any(|&(k, c)| k == r && c * 5 >= FINE * FINE) && !near_other(cell))
+            })
+            .collect();
+        // Strongest first, and none that would close off a hole that is not in the glyph
+        let share = |cell: usize| tallies[cell].iter().find(|(k, _)| *k == r).map_or(0, |(_, c)| *c);
+        let mut taken: Vec<usize> = thin(offered, &held, grid).into_iter().enumerate().filter(|&(cell, on)| on && !held[cell]).map(|(cell, _)| cell).collect();
+        taken.sort_by_key(|&cell| std::cmp::Reverse(share(cell)));
+        for cell in taken {
+            let before = owner[cell];
+            let blanks = blank_count(&owner, grid, inked);
+            owner[cell] = r;
+            if blank_count(&owner, grid, inked) > blanks {
+                owner[cell] = before;
+            } else {
+                strength[cell] = 0.0;
+            }
+        }
+    }
+
+    // A stroke about a cell wide falls half in one cell and half in the next, and either way breaks up.
+    // A part that came out in pieces is joined up again along the cells it runs through, where they
+    // are cheapest to take and keep clear of every other part
+    for (r, region) in found.iter().enumerate() {
+        let r = r as u32;
+        if !region.inked || region.area < FINE * FINE {
+            continue;
+        }
+        let share = |cell: usize| tallies[cell].iter().find(|(k, _)| *k == r).map_or(0.0, |(_, c)| *c as f32 / (FINE * FINE) as f32);
+        let neighbours = |cell: usize| {
+            let (x, y) = ((cell % grid) as i32, (cell / grid) as i32);
+            [(1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (1, -1), (-1, 1), (-1, -1)].into_iter().filter_map(move |(dx, dy)| {
+                let (nx, ny) = (x + dx, y + dy);
+                ((0..grid as i32).contains(&nx) && (0..grid as i32).contains(&ny)).then_some(ny as usize * grid + nx as usize)
+            })
+        };
+        let other_part = |o: u32| o < INK && o != r && found[o as usize].inked;
+        for _ in 0..grid {
+            let mine: Vec<bool> = owner.iter().map(|&o| o == r).collect();
+            let (piece, pieces) = regions(&mine, grid);
+            let mut sizes = vec![0; pieces.len()];
+            for (cell, &p) in piece.iter().enumerate() {
+                if mine[cell] {
+                    sizes[p as usize] += 1;
+                }
+            }
+            let Some(main) = (0..pieces.len()).filter(|&p| pieces[p].inked).max_by_key(|&p| sizes[p]) else { break };
+            if pieces.iter().filter(|p| p.inked).count() < 2 {
+                break;
+            }
+            // Cheapest path out of the biggest piece to any other, through cells the part touches
+            let mut cost = vec![u32::MAX; n];
+            let mut from = vec![usize::MAX; n];
+            let mut queue = std::collections::BinaryHeap::new();
+            for cell in 0..n {
+                if mine[cell] && piece[cell] as usize == main {
+                    cost[cell] = 0;
+                    queue.push(std::cmp::Reverse((0, cell)));
+                }
+            }
+            let mut reached = None;
+            while let Some(std::cmp::Reverse((c, cell))) = queue.pop() {
+                if c > cost[cell] {
+                    continue;
+                }
+                if mine[cell] && piece[cell] as usize != main {
+                    reached = Some(cell);
+                    break;
+                }
+                for next in neighbours(cell) {
+                    let open = mine[next] || (share(next) > 0.0 && !other_part(owner[next]) && !neighbours(next).any(|m| other_part(owner[m])));
+                    if !open {
+                        continue;
+                    }
+                    let step = if mine[next] { 0 } else { ((1.0 - share(next)) * 100.0) as u32 + 1 };
+                    if c + step < cost[next] {
+                        cost[next] = c + step;
+                        from[next] = cell;
+                        queue.push(std::cmp::Reverse((c + step, next)));
+                    }
+                }
+            }
+            let Some(mut cell) = reached else { break };
+            let (undo, blanks) = (owner.clone(), blank_count(&owner, grid, inked));
+            while cost[cell] > 0 {
+                owner[cell] = r;
+                cell = from[cell];
+            }
+            // Joining a stroke must not close off a hole the glyph does not have
+            if blank_count(&owner, grid, inked) > blanks {
+                owner = undo;
+                break;
+            }
+        }
+    }
+
+    // What the sprite gets wrong, feature by feature: a part or hole of the glyph that is gone, or
+    // broken in pieces, or two run together (any hole into the outside)
+    let cells: Vec<bool> = owner.iter().map(|&o| inked(o)).collect();
+    let (piece, pieces) = regions(&cells, grid);
+    const OUTSIDE: u32 = u32::MAX - 2;
+    let key = |o: u32| match o {
+        INK | BLANK => None,
+        o if !found[o as usize].inked && found[o as usize].border => Some(OUTSIDE),
+        o => Some(o),
+    };
+    let weight = |o: u32| if o == OUTSIDE || found[o as usize].area >= FINE * FINE { 1.0 } else { 0.4 };
+    let mut held: Vec<Vec<u32>> = vec![Vec::new(); pieces.len()];
+    let mut spread_over: std::collections::HashMap<u32, Vec<u32>> = std::collections::HashMap::new();
+    for cell in 0..n {
+        if let Some(k) = key(owner[cell]) {
+            let p = piece[cell];
+            if !held[p as usize].contains(&k) {
+                held[p as usize].push(k);
+            }
+            let over = spread_over.entry(k).or_default();
+            if !over.contains(&p) {
+                over.push(p);
+            }
+        }
+    }
+    let mut faults = 0.0;
+    for keys in &held {
+        if keys.len() > 1 {
+            faults += keys.iter().map(|&k| weight(k)).sum::<f32>() - keys.iter().map(|&k| weight(k)).fold(0.0, f32::max);
+        }
+    }
+    for (r, region) in found.iter().enumerate() {
+        let r = r as u32;
+        if region.area * 2 < FINE * FINE || key(r) != Some(r) {
+            continue;
+        }
+        faults += weight(r) * spread_over.get(&r).map_or(1.0, |over| over.len() as f32 - 1.0);
+    }
+    (cells, cover, faults)
+}
+
+/// How many separate runs of blank space the cells, inked as `inked` says of their owners, leave.
+fn blank_count(owner: &[u32], side: usize, inked: impl Fn(u32) -> bool) -> usize {
+    let cells: Vec<bool> = owner.iter().map(|&o| inked(o)).collect();
+    regions(&cells, side).1.iter().filter(|r| !r.inked).count()
+}
+
+/// `on` thinned to lines a cell wide, keeping its connections and the cells `keep` marks (Zhang and
+/// Suen's thinning); the loose ends the thinning leaves, one cell long, are cut off.
+fn thin(mut on: Vec<bool>, keep: &[bool], side: usize) -> Vec<bool> {
+    let at = |on: &[bool], x: i32, y: i32| (0..side as i32).contains(&x) && (0..side as i32).contains(&y) && on[y as usize * side + x as usize];
+    // The eight neighbours clockwise from above
+    let ring = |on: &[bool], cell: usize| {
+        let (x, y) = ((cell % side) as i32, (cell / side) as i32);
+        [(0, -1), (1, -1), (1, 0), (1, 1), (0, 1), (-1, 1), (-1, 0), (-1, -1)].map(|(dx, dy)| at(on, x + dx, y + dy))
+    };
+    loop {
+        let mut changed = false;
+        for pass in 0..2 {
+            let gone: Vec<usize> = (0..side * side)
+                .filter(|&cell| on[cell] && !keep[cell])
+                .filter(|&cell| {
+                    let p = ring(&on, cell);
+                    let count = p.iter().filter(|&&b| b).count();
+                    let turns = (0..8).filter(|&i| !p[i] && p[(i + 1) % 8]).count();
+                    let (n, e, s, w) = (p[0], p[2], p[4], p[6]);
+                    let clear = if pass == 0 { !(n && e && s) && !(e && s && w) } else { !(n && e && w) && !(n && s && w) };
+                    (2..=6).contains(&count) && turns == 1 && clear
+                })
+                .collect();
+            changed |= !gone.is_empty();
+            for cell in gone {
+                on[cell] = false;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    let spurs: Vec<usize> = (0..side * side).filter(|&cell| on[cell] && !keep[cell] && ring(&on, cell).iter().filter(|&&b| b).count() == 1).collect();
+    for cell in spurs {
+        on[cell] = false;
+    }
+    on
+}
+
+/// The glyph as a `grid`×`grid` sprite: true where it is inked. A glyph lands on so few cells that
+/// where its strokes and holes fall across them decides whether they survive, so it is tried at every
+/// eighth of a cell and a few slightly smaller sizes, and the fit kept that keeps the parts and holes
+/// of the finely drawn glyph, follows its outline most closely and leaves no stray specks.
 fn pixel_cells(glyph: &str, grid: usize) -> Option<Vec<bool>> {
     use ab_glyph::Font;
     let font = nerd_font()?;
-    let outline = font.outline_glyph(font.glyph_id(glyph.chars().next()?).with_scale(grid as f32))?;
-    let bounds = outline.px_bounds();
-    let dx = ((grid as f32 - bounds.width()) / 2.0).round() as i32;
-    let dy = ((grid as f32 - bounds.height()) / 2.0).round() as i32;
-    let mut cells = vec![false; grid * grid];
-    outline.draw(|x, y, coverage| {
-        let (x, y) = (x as i32 + dx, y as i32 + dy);
-        if coverage >= 0.5 && (0..grid as i32).contains(&x) && (0..grid as i32).contains(&y) {
-            cells[y as usize * grid + x as usize] = true;
+    let id = font.glyph_id(glyph.chars().next()?);
+    if id.0 == 0 {
+        return None;
+    }
+    // The glyph drawn finely once at each size, on a canvas a cell bigger than the sprite, so each
+    // eighth of a cell it can move under the cells is a whole fine pixel
+    let wide = (grid + 1) * FINE;
+    let mut fits = Vec::new();
+    let mut canvases = Vec::new();
+    for (k, scale) in [1.0, 0.96, 0.92, 0.88].into_iter().enumerate() {
+        let canvas: Vec<bool> = glyph_coverage(font, id, wide, scale * grid as f32 / (grid + 1) as f32, Vec2::ZERO)?.into_iter().map(|c| c >= 0.5).collect();
+        // Ink summed over every rectangle from the corner, so any cell's coverage is four lookups
+        let mut sum = vec![0u32; (wide + 1) * (wide + 1)];
+        for y in 0..wide {
+            for x in 0..wide {
+                sum[(y + 1) * (wide + 1) + x + 1] = canvas[y * wide + x] as u32 + sum[y * (wide + 1) + x + 1] + sum[(y + 1) * (wide + 1) + x] - sum[y * (wide + 1) + x];
+            }
         }
-    });
-    Some(cells)
+        let ink = |x0: usize, y0: usize, x1: usize, y1: usize| sum[y1 * (wide + 1) + x1] + sum[y0 * (wide + 1) + x0] - sum[y0 * (wide + 1) + x1] - sum[y1 * (wide + 1) + x0];
+        let total = ink(0, 0, wide, wide);
+        for oy in 0..=FINE {
+            for ox in 0..=FINE {
+                // Only where the whole glyph is on the sprite
+                if ink(ox, oy, ox + grid * FINE, oy + grid * FINE) < total {
+                    continue;
+                }
+                // Sharp fits first: the fewest cells left half covered
+                let blur: f32 = (0..grid * grid)
+                    .map(|cell| {
+                        let (x, y) = (ox + cell % grid * FINE, oy + cell / grid * FINE);
+                        let c = ink(x, y, x + FINE, y + FINE) as f32 / (FINE * FINE) as f32;
+                        c.min(1.0 - c)
+                    })
+                    .sum();
+                let shift = Vec2::new(FINE as f32 / 2.0 - ox as f32, FINE as f32 / 2.0 - oy as f32) / FINE as f32;
+                fits.push((blur + (1.0 - scale) * grid as f32 * 2.0 + shift.length() * 0.5, k, ox, oy));
+            }
+        }
+        // Its parts and holes are the same wherever it sits on the sprite, so they are found once
+        let (label, found) = shape_regions(&canvas, wide);
+        canvases.push((scale, canvas, label, found));
+    }
+    fits.sort_by(|a, b| a.0.total_cmp(&b.0));
+
+    // Then the sharpest two at each size drawn out properly, and judged as sprites
+    let mut best: Option<(f32, Vec<bool>)> = None;
+    let finalists = (0..canvases.len()).flat_map(|k| fits.iter().filter(move |f| f.1 == k).take(2));
+    for &(_, k, ox, oy) in finalists {
+        let (scale, canvas, label, found) = &canvases[k];
+        let side = grid * FINE;
+        let window = |i: usize| (oy + i / side) * wide + ox + i % side;
+        let fine: Vec<bool> = (0..side * side).map(|i| canvas[window(i)]).collect();
+        let label: Vec<u32> = (0..side * side).map(|i| label[window(i)]).collect();
+        let (cells, cover, faults) = sprite_cells(&fine, &label, found, grid);
+        let (_, got) = regions(&cells, grid);
+        let specks = got.iter().filter(|r| r.area == 1 && (r.inked || !r.border)).count() as f32;
+        let off: f32 = cells.iter().zip(&cover).map(|(&on, &c)| if on { 1.0 - c } else { c }).sum();
+        let shift = Vec2::new(FINE as f32 / 2.0 - ox as f32, FINE as f32 / 2.0 - oy as f32) / FINE as f32;
+        let score = faults * grid as f32 + specks * 1.5 + off + (1.0 - scale) * grid as f32 * 2.0 + shift.length() * 0.5;
+        if best.as_ref().is_none_or(|(s, _)| score < *s) {
+            best = Some((score, cells));
+        }
+    }
+    best.map(|(_, cells)| cells)
 }
 
 /// The sprite's drop shadow on a canvas one block bigger: the glyph moved one block down and right,
@@ -755,16 +1216,73 @@ fn pixel_rect(painter: &egui::Painter, center: Pos2, cells: Vec2, block: f32) ->
     Rect::from_min_size(Pos2::new((min.x * ppp).round() / ppp, (min.y * ppp).round() / ppp), size)
 }
 
+/// The glyph thresholded straight onto the cells, centred: a stand-in for the few frames until its
+/// fitted sprite is ready.
+fn quick_cells(glyph: &str, grid: usize) -> Option<Vec<bool>> {
+    use ab_glyph::Font;
+    let font = nerd_font()?;
+    let id = font.glyph_id(glyph.chars().next()?);
+    Some(glyph_coverage(font, id, grid, 1.0, Vec2::ZERO)?.into_iter().map(|c| c >= 0.5).collect())
+}
+
+type Fitted = Option<std::sync::Arc<Vec<bool>>>;
+
+/// The fitted sprite of a glyph on `grid` cells, once it is ready. Fitting takes a few milliseconds a
+/// sprite, too long for the frame that first shows a folder of many kinds of files, so it is done on
+/// worker threads, and the window repainted as each sprite comes in.
+fn fitted_cells(ctx: &egui::Context, glyph: char, grid: usize) -> Option<std::sync::Arc<Vec<bool>>> {
+    use std::collections::HashMap;
+    use std::sync::{mpsc, Arc, Mutex};
+    type Job = (char, usize, egui::Context);
+    static DONE: OnceLock<Mutex<HashMap<(char, usize), Fitted>>> = OnceLock::new();
+    static QUEUE: OnceLock<Mutex<mpsc::Sender<Job>>> = OnceLock::new();
+    let done = DONE.get_or_init(Default::default);
+    if let Some(fitted) = done.lock().ok()?.get(&(glyph, grid)) {
+        return fitted.clone();
+    }
+    let queue = QUEUE.get_or_init(|| {
+        let (send, receive) = mpsc::channel::<Job>();
+        let receive = Arc::new(Mutex::new(receive));
+        let workers = std::thread::available_parallelism().map_or(1, |n| n.get().saturating_sub(1).clamp(1, 4));
+        for _ in 0..workers {
+            let receive = receive.clone();
+            std::thread::spawn(move || loop {
+                let Ok((glyph, grid, ctx)) = receive.lock().map_err(drop).and_then(|r| r.recv().map_err(drop)) else { return };
+                let cells = pixel_cells(&glyph.to_string(), grid).map(Arc::new);
+                if let Ok(mut done) = DONE.get_or_init(Default::default).lock() {
+                    done.insert((glyph, grid), cells);
+                }
+                ctx.request_repaint();
+            });
+        }
+        Mutex::new(send)
+    });
+    // Asked for once: a pending sprite is marked so the next frames do not ask again
+    done.lock().ok()?.insert((glyph, grid), None);
+    queue.lock().ok()?.send((glyph, grid, ctx.clone())).ok()?;
+    None
+}
+
 /// Returns false when the glyph is not in the font, so the caller can fall back to text.
 fn paint_pixel_glyph(painter: &egui::Painter, center: Pos2, glyph: &str, size: f32, block: f32, color: Color32, shadow: bool) -> bool {
-    let grid = (size * painter.ctx().pixels_per_point() / block).round().clamp(6.0, 64.0) as usize;
-    let Some(tex) = mask_texture(painter.ctx(), format!("pixel-glyph-{glyph}-{grid}"), grid, || pixel_cells(glyph, grid)) else { return false };
+    use ab_glyph::Font;
+    let Some(c) = glyph.chars().next() else { return false };
+    if nerd_font().is_none_or(|font| font.glyph_id(c).0 == 0) {
+        return false;
+    }
+    let ctx = painter.ctx();
+    let grid = (size * ctx.pixels_per_point() / block).round().clamp(6.0, 64.0) as usize;
+    let fitted = fitted_cells(ctx, c, grid);
+    // The stand-in and the fitted sprite are kept apart, so the fitted one replaces it when it comes
+    let name = if fitted.is_some() { format!("{glyph}-{grid}") } else { format!("{glyph}-{grid}-quick") };
+    let cells = || fitted.as_ref().map(|cells| cells.to_vec()).or_else(|| quick_cells(glyph, grid));
+    let Some(tex) = mask_texture(ctx, format!("pixel-glyph-{name}"), grid, cells) else { return false };
     let rect = pixel_rect(painter, center, Vec2::splat(grid as f32), block);
     let uv = Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0));
     if shadow {
         // A hard drop shadow one block down and right, like a sprite
-        let make = || pixel_cells(glyph, grid).map(|cells| pixel_shadow(&cells, grid));
-        if let Some(tex) = mask_texture(painter.ctx(), format!("pixel-shadow-{glyph}-{grid}"), grid + 1, make) {
+        let make = || cells().map(|cells| pixel_shadow(&cells, grid));
+        if let Some(tex) = mask_texture(ctx, format!("pixel-shadow-{name}"), grid + 1, make) {
             let step = rect.width() / grid as f32;
             let area = Rect::from_min_size(rect.min, rect.size() + Vec2::splat(step));
             painter.image(tex.id(), area, uv, darken(color, 0.7).gamma_multiply(0.55));
@@ -1070,6 +1588,43 @@ mod tests {
     #[test]
     fn pixel_folder_sprite_is_rectangular() {
         assert!(PIXEL_FOLDER.iter().all(|row| row.len() == 16));
+    }
+
+    /// The parts and holes of a glyph's pixel sprite on `grid` cells.
+    fn sprite_features(glyph: &str, grid: usize) -> (usize, usize) {
+        let cells = pixel_cells(glyph, grid).unwrap();
+        let (_, found) = regions(&cells, grid);
+        (found.iter().filter(|r| r.inked).count(), found.iter().filter(|r| !r.inked && !r.border).count())
+    }
+
+    #[test]
+    fn pixel_sprites_keep_what_makes_a_logo() {
+        for grid in [16, 20, 24] {
+            // Python's two snakes, each with its eye
+            assert_eq!(sprite_features(icons::PYTHON, grid), (2, 2), "python on {grid}");
+            // The gear of Rust in one piece, the R and the gear's middle open
+            let (parts, holes) = sprite_features(icons::RUST, grid);
+            assert!(parts == 1 && holes >= 2, "rust on {grid}: {parts} parts, {holes} holes");
+            // The facets of Elixir's drop meet in hairlines too fine to show, so it is one drop
+            assert_eq!(sprite_features(icons::ELIXIR, grid).0, 1, "elixir on {grid}");
+        }
+        // With room enough, Docker's containers stand apart from each other and from the whale
+        assert!(sprite_features(icons::DOCKER, 24).0 >= 8);
+        // Java's strokes, thinner than a cell, are drawn rather than lost
+        assert!(sprite_features(icons::JAVA, 24).0 >= 6);
+    }
+
+    #[test]
+    fn thinning_keeps_lines_joined_and_held_cells() {
+        // A bar two cells thick, its left end held
+        let side = 8;
+        let on: Vec<bool> = (0..side * side).map(|i| (3..5).contains(&(i / side)) && (1..7).contains(&(i % side))).collect();
+        let keep: Vec<bool> = (0..side * side).map(|i| i == 3 * side + 1 || i == 4 * side + 1).collect();
+        let thin = thin(on.clone(), &keep, side);
+        assert!(keep.iter().zip(&thin).all(|(&k, &t)| !k || t));
+        let (_, found) = regions(&thin, side);
+        assert_eq!(found.iter().filter(|r| r.inked).count(), 1);
+        assert!(thin.iter().filter(|&&t| t).count() < on.iter().filter(|&&o| o).count());
     }
 
     #[test]
