@@ -5721,8 +5721,12 @@ impl SkiApp {
                                 ui.set_width(full - 32.0);
                                 ui.horizontal_top(|ui| {
                                     ui.spacing_mut().item_spacing.x = 0.0;
-                                    let (label_rect, _) = ui.allocate_exact_size(egui::vec2(102.0, 18.0), egui::Sense::hover());
-                                    ui.painter().text(label_rect.left_center(), egui::Align2::LEFT_CENTER, *label, egui::FontId::proportional(12.5), theme.subtext1);
+                                    ui.allocate_ui_with_layout(egui::vec2(label_w, 18.0), egui::Layout::top_down(egui::Align::Min), |ui| {
+                                        ui.set_width(label_w - 10.0);
+                                        ui.add_space(label_drop);
+                                        ui.add(egui::Label::new(egui::RichText::new(*label).font(label_font.clone()).color(theme.subtext1)).wrap());
+                                    });
+                                    ui.add_space(10.0);
                                     ui.add(egui::Label::new(egui::RichText::new(value).size(material::FONT_BODY).color(theme.text)).wrap().selectable(true));
                                 });
                             });
@@ -5829,6 +5833,17 @@ pub(crate) fn app_row(
     let galley = ui.painter().layout_job(job);
     ui.painter().galley(egui::pos2(rect.left() + 48.0, rect.center().y - galley.size().y / 2.0), galley, color);
     resp
+                // The labels take the room the longest one needs (translations run longer than English), up
+                // to a share of the card; past that a label wraps instead of running into its value
+                let label_font = egui::FontId::proportional(12.5);
+                let widest = groups
+                    .iter()
+                    .flat_map(|(_, rows)| rows.iter())
+                    .map(|(label, _)| ui.painter().layout_no_wrap(label.to_string(), label_font.clone(), theme.subtext1).size().x)
+                    .fold(0.0, f32::max);
+                let label_w = (widest + 14.0).clamp(102.0, ((full - 32.0) * 0.45).max(102.0));
+                // A one-line label sits centred on the value's first line, as it did in its 18px slot
+                let label_drop = ((18.0 - ui.painter().layout_no_wrap("A".into(), label_font.clone(), theme.subtext1).size().y) / 2.0).max(0.0);
 }
 
 /// Single-line name entry shared by the new-item and rename dialogs. On the first frame it takes
