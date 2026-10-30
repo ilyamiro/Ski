@@ -96,7 +96,7 @@ pub fn paint_file(style: IconStyle, painter: &egui::Painter, center: Pos2, glyph
         IconStyle::Halloween => tombstone(painter, center, glyph, size, color),
         IconStyle::Winter => winter_file(painter, center, glyph, size, color),
         IconStyle::Pixel => {
-            let block = (size * painter.ctx().pixels_per_point() / 13.0).round().max(2.0);
+            let block = (size * painter.ctx().pixels_per_point() / 16.0).round().max(2.0);
             if !paint_pixel_glyph(painter, center, glyph, size, block, color, true) {
                 plain(painter, center, glyph, size, color);
             }
@@ -177,17 +177,36 @@ fn gradient(painter: &egui::Painter, pts: &[Pos2], top: Color32, bottom: Color32
     painter.add(Shape::mesh(mesh));
 }
 
+/// A soft round glow: `fill` in the middle, fading out to nothing at `r`.
+fn glow(painter: &egui::Painter, at: Pos2, r: f32, fill: Color32) {
+    let n = 32;
+    let mut mesh = egui::Mesh::default();
+    mesh.colored_vertex(at, fill);
+    for ring in [(0.5, fill.gamma_multiply(0.55)), (1.0, Color32::TRANSPARENT)] {
+        for i in 0..n {
+            mesh.colored_vertex(at + Vec2::angled(i as f32 / n as f32 * 2.0 * PI) * r * ring.0, ring.1);
+        }
+    }
+    for i in 0..n {
+        let (a, b) = (1 + i, 1 + (i + 1) % n);
+        mesh.add_triangle(0, a, b);
+        mesh.add_triangle(a, b, b + n);
+        mesh.add_triangle(a, b + n, a + n);
+    }
+    painter.add(Shape::mesh(mesh));
+}
+
 /// Corners rounded off with a few points of a quadratic curve each.
 fn rounded(pts: &[Pos2], r: f32) -> Vec<Pos2> {
     let n = pts.len();
-    let mut out = Vec::with_capacity(n * 5);
+    let mut out = Vec::with_capacity(n * 7);
     for i in 0..n {
         let (prev, p, next) = (pts[(i + n - 1) % n], pts[i], pts[(i + 1) % n]);
         let rr = r.min((prev - p).length() / 2.0).min((next - p).length() / 2.0);
         let a = p + (prev - p).normalized() * rr;
         let b = p + (next - p).normalized() * rr;
-        for j in 0..=4 {
-            let t = j as f32 / 4.0;
+        for j in 0..=6 {
+            let t = j as f32 / 6.0;
             out.push(a.lerp(p, t).lerp(p.lerp(b, t), t));
         }
     }
@@ -345,11 +364,11 @@ fn halloween_folder(painter: &egui::Painter, center: Pos2, size: f32, color: Col
             darken(color, 0.5),
         );
         if size >= 32.0 {
-            let hub = Pos2::new(stem_x + sw + r * 0.55, front_top - r * 1.0);
-            let curl: Vec<Pos2> = (0..=16)
+            let hub = Pos2::new(stem_x + sw + r * 0.4, front_top - r * 0.95);
+            let curl: Vec<Pos2> = (0..=20)
                 .map(|i| {
-                    let t = i as f32 / 16.0;
-                    hub + Vec2::angled(PI + t * 1.7 * PI) * r * 0.75 * (1.0 - t * 0.6)
+                    let t = i as f32 / 20.0;
+                    hub + Vec2::angled(PI + t * 1.6 * PI) * r * 0.6 * (1.0 - t * 0.55)
                 })
                 .collect();
             painter.add(Shape::line(curl, Stroke::new((size / 45.0).max(1.0), darken(color, 0.45))));
@@ -416,8 +435,8 @@ fn halloween_folder(painter: &egui::Painter, center: Pos2, size: f32, color: Col
 
     if size >= 40.0 {
         cobweb(painter, Pos2::new(front.left() + r * 0.35, front.bottom() - r * 0.35), fh * 0.32, size, color);
-        let sx = body.right() - body.width() * 0.06;
-        spider(painter, Pos2::new(sx, front_top - size * 0.1), body.top() - size * 0.08, size, color);
+        let sx = body.right() - body.width() * 0.03;
+        spider(painter, Pos2::new(sx, front_top - size * 0.06), body.top() - size * 0.08, size, color);
     }
 }
 
@@ -442,7 +461,7 @@ fn spider(painter: &egui::Painter, at: Pos2, thread_top: f32, size: f32, color: 
     let dark = darken(color, 0.72);
     let leg = Stroke::new((size / 60.0).max(1.0), dark);
     painter.line_segment([Pos2::new(at.x, thread_top), at], Stroke::new(leg.width * 0.6, white(color, 0.5)));
-    let r = size * 0.045;
+    let r = size * 0.036;
     for side in [-1.0f32, 1.0] {
         for (dy, reach) in [(-0.6, 1.0), (-0.2, 1.2), (0.2, 1.2), (0.6, 1.0)] {
             let knee = Pos2::new(at.x + side * r * 2.0 * reach, at.y + r * (dy - 0.7));
@@ -520,7 +539,7 @@ fn tombstone(painter: &egui::Painter, center: Pos2, glyph: &str, size: f32, colo
     if size >= 36.0 {
         let p = |x: f32, y: f32| stone.min + Vec2::new(stone.width() * x, stone.height() * y);
         let crack = Stroke::new((size / 48.0).max(1.0), darken(color, 0.75));
-        painter.add(Shape::line(vec![p(0.72, 0.08), p(0.62, 0.22), p(0.7, 0.32), p(0.6, 0.46)], crack));
+        painter.add(Shape::line(vec![p(0.86, 0.22), p(0.79, 0.31), p(0.84, 0.38), p(0.78, 0.48)], crack));
         // Moss creeping up from the ground
         for (x, y, rr) in [(0.16, 0.86, 0.05), (0.26, 0.9, 0.035), (0.84, 0.88, 0.04)] {
             painter.circle_filled(p(x, y), size * rr, mix(face_c, grass, 0.7));
@@ -553,7 +572,7 @@ fn tombstone(painter: &egui::Painter, center: Pos2, glyph: &str, size: f32, colo
     }
     // Bats roost on about half of the stones
     if size >= 56.0 && seed % 2 == 0 {
-        bat(painter, Pos2::new(stone.right() + size * 0.02, stone.top() + size * 0.02), size * 0.32, darken(color, 0.8));
+        bat(painter, Pos2::new(stone.right() - size * 0.02, stone.top() - size * 0.02), size * 0.26, darken(color, 0.62));
     }
 }
 
@@ -562,7 +581,7 @@ fn ghost(painter: &egui::Painter, center: Pos2, size: f32, color: Color32) {
     let rw = size * 0.3;
     let head = center + Vec2::new(0.0, -size * 0.12);
     let hem = center.y + size * 0.3;
-    painter.circle_filled(head + Vec2::new(0.0, rw * 0.5), rw * 1.6, color.gamma_multiply(0.12));
+    glow(painter, head + Vec2::new(0.0, rw * 0.5), rw * 1.75, color.gamma_multiply(0.22));
     let sheet = color;
     for side in [-1.0, 1.0] {
         painter.add(Shape::ellipse_filled(head + Vec2::new(side * rw * 1.05, rw * 0.75), Vec2::new(rw * 0.32, rw * 0.2), sheet));
@@ -586,23 +605,35 @@ fn ghost(painter: &egui::Painter, center: Pos2, size: f32, color: Color32) {
 
 // ---- Winter ----
 
-/// A row of snow along `y` from `left` to `right`: a band with lumps on top and drops hanging below.
+/// A row of snow along `y` from `left` to `right`: a band with soft drifts on top and drops hanging
+/// below, over a cool shadow that gives it volume and keeps it apart from a pale background.
 fn snow_cap(painter: &egui::Painter, left: f32, right: f32, y: f32, depth: f32, color: Color32, seed: u32) {
-    let snow = lighten(color, 0.9);
-    painter.rect_filled(Rect::from_min_max(Pos2::new(left, y - depth * 0.5), Pos2::new(right, y + depth * 0.4)), CornerRadius::same(radius(depth * 0.4)), snow);
-    // A few soft drifts of uneven height, overlapping so they read as one blanket
+    let snow = lighten(color, 0.92);
+    let shade = mix(lighten(color, 0.5), snow, 0.4);
     let lumps = ((right - left) / (depth * 2.4)).round().max(2.0) as u32;
     let step = (right - left) / lumps as f32;
-    for i in 0..lumps {
-        let x = left + step * (i as f32 + 0.5) + step * 0.15 * noise(seed, i + 20);
-        let rr = step * (0.62 + 0.12 * noise(seed, i));
-        painter.add(Shape::ellipse_filled(Pos2::new(x, y - depth * 0.2), Vec2::new(rr, depth * (0.7 + 0.15 * noise(seed, i + 40))), snow));
-    }
-    // and here and there a drop of it running down the side
-    for i in 0..lumps.saturating_sub(1) {
-        if noise(seed, i + 50) > 0.0 {
-            let x = left + step * (i as f32 + 1.0);
-            painter.add(Shape::ellipse_filled(Pos2::new(x, y + depth * 0.5), Vec2::new(depth * 0.3, depth * 0.45), snow));
+    // A few drifts of uneven height, overlapping so they read as one blanket, and kept within the
+    // ends so the snow does not hang out past what it lies on
+    let drifts: Vec<(Pos2, Vec2)> = (0..lumps)
+        .map(|i| {
+            let rr = step * (0.58 + 0.08 * noise(seed, i));
+            let x = (left + step * (i as f32 + 0.5) + step * 0.12 * noise(seed, i + 20)).clamp(left + rr * 0.85, right - rr * 0.85);
+            (Pos2::new(x, y - depth * 0.3), Vec2::new(rr, depth * (0.68 + 0.14 * noise(seed, i + 40))))
+        })
+        .collect();
+    let drops: Vec<Pos2> = (0..lumps.saturating_sub(1))
+        .filter(|i| noise(seed, i + 50) > 0.0)
+        .map(|i| Pos2::new(left + step * (i as f32 + 1.0) + step * 0.2 * noise(seed, i + 60), y + depth * 0.45))
+        .collect();
+    let band = Rect::from_min_max(Pos2::new(left, y - depth * 0.45), Pos2::new(right, y + depth * 0.35));
+    for (fill, dy) in [(shade, depth * 0.2), (snow, 0.0)] {
+        let dy = Vec2::new(0.0, dy);
+        painter.rect_filled(band.translate(dy), CornerRadius::same(radius(depth * 0.4)), fill);
+        for d in &drops {
+            painter.add(Shape::ellipse_filled(*d + dy, Vec2::new(depth * 0.26, depth * 0.4), fill));
+        }
+        for (at, r) in &drifts {
+            painter.add(Shape::ellipse_filled(*at + dy, *r, fill));
         }
     }
 }
@@ -620,7 +651,7 @@ fn winter_folder(painter: &egui::Painter, center: Pos2, size: f32, color: Color3
     let f = folder_box(center, size);
     let (body, r) = (f.body, f.r);
     let seed = seed_of("winter");
-    poly(painter, f.tab(), darken(color, 0.22));
+    poly(painter, rounded(&f.tab(), r * 0.6), darken(color, 0.22));
     let front = f.front();
     painter.rect_filled(front, CornerRadius::same(radius(r)), color);
     let ribbon = darken(color, 0.38);
@@ -641,8 +672,8 @@ fn winter_folder(painter: &egui::Painter, center: Pos2, size: f32, color: Color3
             poly(painter, vec![Pos2::new(x - size * 0.025, front.top() + r * 0.3), Pos2::new(x + size * 0.025, front.top() + r * 0.3), Pos2::new(x, front.top() + r * 0.3 + long)], lighten(color, 0.7));
         }
     }
-    snow_cap(painter, front.left() + r * 0.2, front.right() - r * 0.2, front.top() + r * 0.15, r * 1.0, color, seed);
-    snow_cap(painter, body.left() + r * 0.3, f.tab_right, body.top() + r * 0.2, r * 0.7, color, seed ^ 7);
+    snow_cap(painter, front.left() + r * 0.15, front.right() - r * 0.15, front.top() + r * 0.2, r * 0.9, color, seed);
+    snow_cap(painter, body.left() + r * 0.35, f.tab_right - r * 0.1, body.top() + r * 0.25, r * 0.5, color, seed ^ 7);
     // The bow, sitting on the snow above the ribbon
     let bow = Pos2::new(rx, front.top() - r * 0.1);
     let wing = band * 1.6;
@@ -738,12 +769,12 @@ const PIXEL_FOLDER: [&str; 13] = [
     "obbbbbbboooooooo",
     "ohhhhhhhhhhhhhho",
     "ohffffffffffffso",
-    "offfffffffffffso",
-    "offfffffffffffso",
-    "offfffffffffffso",
-    "offfffffffffffso",
-    "offfffffffffffso",
-    "offfffffffffffso",
+    "ohffffffffffffso",
+    "ohffffffffffffso",
+    "ohffffffffffffso",
+    "ohffffffffffffso",
+    "ohffffffffffffso",
+    "ohffffffffffffso",
     "osssssssssssssso",
     ".oooooooooooooo.",
 ];
@@ -836,7 +867,10 @@ fn sketch_folder(painter: &egui::Painter, center: Pos2, size: f32, color: Color3
     let amp = size * 0.018;
     painter.rect_filled(f.front(), CornerRadius::ZERO, color.gamma_multiply(0.2));
     let tab = Rect::from_min_max(f.body.min, Pos2::new(f.tab_right, f.front_top));
-    hatch(painter, tab.shrink(stroke.width), (size * 0.11).max(3.0), Stroke::new(stroke.width * 0.6, color.gamma_multiply(0.7)));
+    painter.rect_filled(tab, CornerRadius::ZERO, color.gamma_multiply(0.1));
+    if size >= 24.0 {
+        hatch(painter, tab.shrink(stroke.width), (size * 0.06).max(2.5), Stroke::new(stroke.width * 0.45, color.gamma_multiply(0.6)));
+    }
     let seed = seed_of("folder");
     sketch_path(painter, &f.silhouette(), true, stroke, amp, seed);
     let lip = [Pos2::new(f.body.left(), f.front_top), Pos2::new(f.tab_right + f.r, f.front_top)];
@@ -863,8 +897,8 @@ fn outline_stroke(size: f32, color: Color32) -> Stroke {
 }
 
 /// Shine over the top part of a shape: white fading out downwards.
-fn shine(painter: &egui::Painter, rect: Rect, r: f32, color: Color32) {
-    gradient(painter, &rounded(&corners(rect), r), white(color, 0.55), white(color, 0.04));
+fn shine(painter: &egui::Painter, pts: &[Pos2], r: f32, color: Color32) {
+    gradient(painter, &rounded(pts, r), white(color, 0.55), white(color, 0.0));
 }
 
 fn glossy_folder(painter: &egui::Painter, center: Pos2, size: f32, color: Color32) {
@@ -876,7 +910,7 @@ fn glossy_folder(painter: &egui::Painter, center: Pos2, size: f32, color: Color3
     let front = rounded(&corners(f.front()), r);
     gradient(painter, &front, lighten(color, 0.35), darken(color, 0.18));
     let gloss = Rect::from_min_max(f.front().min + Vec2::splat(r * 0.45), Pos2::new(f.front().right() - r * 0.45, f.front().top() + f.front().height() * 0.45));
-    shine(painter, gloss, r * 0.7, color);
+    shine(painter, &corners(gloss), r * 0.7, color);
     painter.add(Shape::closed_line(front, outline_stroke(size, color)));
 }
 
@@ -884,8 +918,15 @@ fn glossy_file(painter: &egui::Painter, center: Pos2, glyph: &str, size: f32, co
     let (rect, fold, outline) = page(center, size);
     let shape = rounded(&outline, size * 0.05);
     gradient(painter, &shape, lighten(color, 0.4), darken(color, 0.12));
-    let gloss = Rect::from_min_max(rect.min + Vec2::splat(size * 0.05), Pos2::new(rect.right() - fold - size * 0.02, rect.top() + rect.height() * 0.42));
-    shine(painter, gloss, size * 0.05, color);
+    let m = size * 0.05;
+    let gloss = [
+        rect.min + Vec2::splat(m),
+        Pos2::new(rect.right() - fold - m * 0.4, rect.top() + m),
+        Pos2::new(rect.right() - m, rect.top() + fold + m * 0.4),
+        Pos2::new(rect.right() - m, rect.top() + rect.height() * 0.45),
+        Pos2::new(rect.left() + m, rect.top() + rect.height() * 0.45),
+    ];
+    shine(painter, &gloss, m, color);
     gradient(painter, &fold_triangle(rect, fold), lighten(color, 0.7), lighten(color, 0.2));
     painter.add(Shape::closed_line(shape, outline_stroke(size, color)));
     plain(painter, center + Vec2::new(0.0, size * 0.07), glyph, page_glyph(size), ink(color));
@@ -910,17 +951,16 @@ fn clay_folder(painter: &egui::Painter, center: Pos2, size: f32, color: Color32)
     painter.rect_filled(front.translate(depth), CornerRadius::same(radius(r)), under);
     poly(painter, tab, darken(color, 0.18));
     painter.rect_filled(front, CornerRadius::same(radius(r)), color);
-    // A soft fold where the lid meets the front, and a dull highlight
+    soft_light(painter, front, r, color);
+    // A dull highlight where the lid meets the front
     let lip = Rect::from_min_max(front.min + Vec2::new(r * 0.6, r * 0.35), Pos2::new(front.right() - r * 0.6, front.top() + r * 0.7));
     painter.rect_filled(lip, CornerRadius::same(radius(lip.height() / 2.0)), lighten(color, 0.4));
-    painter.rect_filled(
-        Rect::from_min_max(Pos2::new(front.left() + r * 0.5, front.bottom() - r * 0.55), Pos2::new(front.right() - r * 0.5, front.bottom() - r * 0.3)),
-        CornerRadius::same(radius(r * 0.15)),
-        darken(color, 0.12),
-    );
-    if size >= 28.0 {
-        painter.circle_filled(Pos2::new(front.right() - r * 0.9, front.center().y), size * 0.025, lighten(color, 0.4));
-    }
+}
+
+/// Clay catching the light: a little brighter on top, shading off towards the bottom.
+fn soft_light(painter: &egui::Painter, rect: Rect, r: f32, color: Color32) {
+    let lit = rect.shrink(r * 0.12);
+    gradient(painter, &rounded(&corners(lit), r * 0.9), white(color, 0.0), Color32::from_black_alpha((0.1 * color.a() as f32) as u8));
 }
 
 fn clay_file(painter: &egui::Painter, center: Pos2, glyph: &str, size: f32, color: Color32) {
@@ -928,6 +968,7 @@ fn clay_file(painter: &egui::Painter, center: Pos2, glyph: &str, size: f32, colo
     let r = CornerRadius::same(radius(size * 0.24));
     painter.rect_filled(tile.translate(clay_depth(size)), r, darken(color, 0.42));
     painter.rect_filled(tile, r, color);
+    soft_light(painter, tile, size * 0.24, color);
     let hi = Rect::from_min_size(tile.min + Vec2::new(size * 0.14, size * 0.08), Vec2::new(size * 0.3, size * 0.07));
     painter.rect_filled(hi, CornerRadius::same(radius(hi.height() / 2.0)), lighten(color, 0.45));
     plain(painter, tile.center() + Vec2::new(0.0, size * 0.03), glyph, page_glyph(size) * 1.05, ink(color));
@@ -948,13 +989,16 @@ fn origami_folder(painter: &egui::Painter, center: Pos2, size: f32, color: Color
     let (top_x, bottom_x) = (front.left() + front.width() * 0.56, front.left() + front.width() * 0.44);
     poly(painter, vec![front.left_top(), Pos2::new(top_x, front.top()), Pos2::new(bottom_x, front.bottom()), front.left_bottom()], lighten(color, 0.14));
     poly(painter, vec![Pos2::new(top_x, front.top()), front.right_top(), front.right_bottom(), Pos2::new(bottom_x, front.bottom())], darken(color, 0.06));
-    let tip = Pos2::new(front.center().x, front.top() + front.height() * 0.42);
-    poly(painter, vec![front.left_top(), front.right_top(), tip], darken(color, 0.2));
+    // The flap's tip lands on the crease between the facets
+    let depth = 0.42;
+    let tip = Pos2::new(top_x + (bottom_x - top_x) * depth, front.top() + front.height() * depth);
     // Its shadow on the front, just under the flap
-    poly(painter, vec![tip, Pos2::new(tip.x - front.width() * 0.08, front.top() + front.height() * 0.38), Pos2::new(tip.x + front.width() * 0.08, front.top() + front.height() * 0.38)], darken(color, 0.32));
+    let drop = Vec2::new(0.0, front.height() * 0.06);
+    poly(painter, vec![front.left_top() + drop, front.right_top() + drop, tip + drop], darken(color, 0.3));
+    poly(painter, vec![front.left_top(), front.right_top(), tip], darken(color, 0.2));
     if size >= 28.0 {
-        let crease = Stroke::new((size / 70.0).max(0.7), lighten(color, 0.45));
-        painter.line_segment([tip, Pos2::new(bottom_x, front.bottom())], crease);
+        let crease = Stroke::new((size / 70.0).max(0.7), lighten(color, 0.4));
+        painter.line_segment([tip + drop, Pos2::new(bottom_x, front.bottom())], crease);
     }
 }
 
@@ -969,8 +1013,9 @@ fn origami_file(painter: &egui::Painter, center: Pos2, glyph: &str, size: f32, c
     );
     // The corner folded over onto the page, and the shadow it throws
     let corner = Pos2::new(rect.right() - fold, rect.top() + fold);
-    poly(painter, vec![Pos2::new(rect.right() - fold, rect.top()), Pos2::new(rect.right(), rect.top() + fold), corner + Vec2::new(-fold * 0.15, fold * 0.15)], darken(color, 0.35));
-    poly(painter, vec![Pos2::new(rect.right() - fold, rect.top()), corner + Vec2::new(-fold * 0.15, fold * 0.15), corner], lighten(color, 0.3));
+    let (a, b) = (Pos2::new(rect.right() - fold, rect.top()), Pos2::new(rect.right(), rect.top() + fold));
+    poly(painter, vec![a, b, corner + Vec2::new(-fold * 0.12, fold * 0.12)], darken(color, 0.3));
+    poly(painter, vec![a, b, corner], lighten(color, 0.3));
     plain(painter, center + Vec2::new(0.0, size * 0.07), glyph, page_glyph(size), ink(color));
 }
 
