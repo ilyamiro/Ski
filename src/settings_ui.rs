@@ -1405,9 +1405,9 @@ fn theme_card(
     let editable = kind == CardKind::Editable;
     let swatch_rect = egui::Rect::from_min_size(r.min + egui::vec2(8.0, 8.0), egui::vec2(r.width() - 16.0 - if editable { EDIT_ROOM } else { 0.0 }, 46.0));
     let painter = ui.painter();
+    painter.rect_filled(swatch_rect, CornerRadius::same(material::radius_md()), preview.base);
     if kind == CardKind::Create {
-        // A plus on a plain tile, in the colors in use
-        painter.rect_filled(swatch_rect, CornerRadius::same(material::radius_md()), preview.base);
+        // A plus on the plain tile, in the colors in use
         let ink = material::lerp_color(preview.subtext1, preview.text, fx.hover);
         material::paint_icon(painter, swatch_rect.center(), icons::ADD, 24.0, ink);
     } else {

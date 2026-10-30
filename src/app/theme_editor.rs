@@ -26,6 +26,9 @@ pub(crate) struct ThemeDraft {
     focus_name: bool,
 }
 
+/// The space between the name, the buttons and the close button in the top row.
+const GAP: f32 = 12.0;
+
 enum Exit {
     Stay,
     Close,
@@ -164,38 +167,37 @@ impl SkiApp {
         }
         let save_label = tr("Save");
         let save_w = ui.painter().layout_no_wrap(save_label.to_owned(), egui::FontId::proportional(material::FONT_BODY), theme.text).size().x + 32.0 + 24.0;
-        let save_rect = egui::Rect::from_center_size(egui::pos2(close_rect.left() - 12.0 - save_w / 2.0, row.center().y), egui::vec2(save_w, material::BUTTON_HEIGHT));
+        let save_rect = egui::Rect::from_center_size(egui::pos2(close_rect.left() - GAP - save_w / 2.0, row.center().y), egui::vec2(save_w, material::BUTTON_HEIGHT));
         let named = !draft.name.trim().is_empty();
         if ui.scope_builder(egui::UiBuilder::new().max_rect(save_rect), |ui| {
             material::button(ui, "theme_editor_save", Some(icons::CHECK), save_label, &theme, ButtonKind::Filled, named).clicked()
         }).inner {
             exit = Exit::Save;
         }
-        // A saved theme can be deleted, after a second click: an icon button right beside Save, red once armed
+        // A saved theme can be deleted: an icon button right beside Save
         let mut name_right = save_rect.left();
         if draft.id.is_some() {
-            let armed_id = ui.make_persistent_id("theme_delete_armed");
-            let armed = ui.data(|d| d.get_temp::<bool>(armed_id)).unwrap_or(false);
             let size = material::BUTTON_HEIGHT;
-            let delete_rect = egui::Rect::from_center_size(egui::pos2(save_rect.left() - 8.0 - size / 2.0, row.center().y), egui::vec2(size, size));
+            let delete_rect = egui::Rect::from_center_size(egui::pos2(save_rect.left() - GAP - size / 2.0, row.center().y), egui::vec2(size, size));
             name_right = delete_rect.left();
-            let (tip, tint) = if armed { (tr("Click again to delete"), Some(theme.red)) } else { (tr("Delete"), None) };
             let clicked = ui.scope_builder(egui::UiBuilder::new().max_rect(delete_rect), |ui| {
-                material::filled_icon_button(ui, "theme_delete", icons::DELETE_FOREVER, &theme, size, tip, tint).clicked()
+                material::filled_icon_button(ui, "theme_delete", icons::DELETE_FOREVER, &theme, size, tr("Delete"), Some(theme.red)).clicked()
             }).inner;
             if clicked {
-                if armed {
-                    exit = Exit::Delete;
-                }
-                ui.data_mut(|d| d.insert_temp(armed_id, !armed));
+                exit = Exit::Delete;
             }
         }
-        let name_rect = egui::Rect::from_min_max(row.min, egui::pos2(name_right - 12.0, row.max.y));
+        // As tall as the buttons beside it, on the same center line
+        let name_rect = egui::Rect::from_min_max(
+            egui::pos2(row.left(), row.center().y - material::BUTTON_HEIGHT / 2.0),
+            egui::pos2(name_right - GAP, row.center().y + material::BUTTON_HEIGHT / 2.0),
+        );
+        let text_h = ui.fonts_mut(|f| f.row_height(&egui::FontId::proportional(material::FONT_TITLE)));
         let name = ui
-            .scope_builder(egui::UiBuilder::new().max_rect(name_rect).layout(egui::Layout::left_to_right(egui::Align::Center)), |ui| {
-                material::input_frame(&theme)
+            .scope_builder(egui::UiBuilder::new().max_rect(name_rect), |ui| {
+                material::input_frame_sized(&theme, material::BUTTON_HEIGHT, text_h)
                     .show(ui, |ui| {
-                        ui.set_width(name_rect.width() - 30.0);
+                        ui.set_width(name_rect.width() - 28.0);
                         ui.add(
                             egui::TextEdit::singleline(&mut draft.name)
                                 .frame(egui::Frame::NONE)

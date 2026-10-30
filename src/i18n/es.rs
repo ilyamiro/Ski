@@ -782,5 +782,4 @@ pub const CATALOG: &[(&str, &str)] = &[
     ("Pick a theme to start with", "Elige un tema para empezar"),
     ("New theme", "Nuevo tema"),
     ("Theme name", "Nombre del tema"),
-    ("Click again to delete", "Haz clic de nuevo para eliminar"),
 ];
