@@ -655,6 +655,14 @@ impl SkiApp {
                 }
             });
         }
+        // Under the servers, off until ticked here or from the sidebar's hidden places
+        group_card(ui, &theme, |ui| {
+            let place = crate::fs::places::SidebarPlace::ConnectToServer;
+            let shown = self.place_shown(place);
+            if material::check_row(ui, ("sb_place", place), icons::LAN_CONNECT, tr("Connect to server…"), &theme, shown).clicked() {
+                change = Some((place, !shown));
+            }
+        });
         if let Some((place, shown)) = change {
             self.show_place(place, shown, false);
         }

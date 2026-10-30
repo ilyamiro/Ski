@@ -77,6 +77,8 @@ enum MenuTarget {
     Drive(Drive, String, PathBuf),
     /// A server of the sidebar's Network section.
     Server(Box<network_ui::NetRow>),
+    /// The Connect to server entry under the servers.
+    ConnectEntry,
 }
 
 type MenuEntry = (&'static str, &'static str, MenuAction);
@@ -3015,10 +3017,12 @@ impl SkiApp {
                 }
             }
             // Servers, after the drives
-            if !first {
-                material::divider(ui, &self.theme);
+            if self.network_listed() {
+                if !first {
+                    material::divider(ui, &self.theme);
+                }
+                net_events = self.network_sidebar(ui, browsing, &mut zones);
             }
-            net_events = self.network_sidebar(ui, browsing, &mut zones);
             if !plugin_rows.is_empty() {
                 material::divider(ui, &self.theme);
                 for (plugin, entry) in &plugin_rows {
@@ -4545,6 +4549,10 @@ impl SkiApp {
                 }
             }
             MenuTarget::Server(row) => self.server_menu(row),
+            MenuTarget::ConnectEntry => vec![
+                vec![(icons::LAN_CONNECT, tr("Connect to server…"), MenuAction::ConnectToServer)],
+                self.sidebar_entries(Some(SidebarPlace::ConnectToServer)),
+            ],
             MenuTarget::Pin(path) => match FileItem::from_path(path) {
                 Some(item) => single_groups(&item, true, false),
                 None => vec![vec![(icons::PIN_OFF, tr("Unpin from sidebar"), MenuAction::Unpin(path.clone()))]],
@@ -4565,7 +4573,7 @@ impl SkiApp {
         }
         if self.sidebar_editing {
             entries.push((icons::CHECK, tr("Stop showing hidden places"), MenuAction::EditSidebar(false)));
-        } else if self.places.iter().any(|p| p.builtin.is_some_and(|b| !self.place_shown(b))) {
+        } else if self.places.iter().filter_map(|p| p.builtin).chain([SidebarPlace::ConnectToServer]).any(|b| !self.place_shown(b)) {
             entries.push((icons::VISIBILITY, tr("Show hidden places"), MenuAction::EditSidebar(true)));
         }
         entries.push((icons::SIDEBAR, tr("Sidebar settings…"), MenuAction::SidebarSettings));
@@ -4573,7 +4581,15 @@ impl SkiApp {
     }
 
     pub(crate) fn place_shown(&self, place: SidebarPlace) -> bool {
-        !self.settings.hidden_places.contains(&place)
+        if place.opt_in() { self.settings.shown_places.contains(&place) } else { !self.settings.hidden_places.contains(&place) }
+    }
+
+    /// The name a built-in place goes by in the sidebar.
+    pub(crate) fn place_name(&self, place: SidebarPlace) -> String {
+        if place == SidebarPlace::ConnectToServer {
+            return tr("Connect to server…").to_owned();
+        }
+        self.places.iter().find(|p| p.builtin == Some(place)).map(|p| tr_dyn(&p.name).to_owned()).unwrap_or_default()
     }
 
     /// Whether the sidebar lists `place`: always, unless it is a hidden built-in one and the hidden
@@ -4587,14 +4603,17 @@ impl SkiApp {
         if shown == self.place_shown(place) {
             return;
         }
-        if shown {
-            self.settings.hidden_places.retain(|p| *p != place);
+        // An opt-in place is listed when shown, any other when hidden
+        let (list, listed) = if place.opt_in() { (&mut self.settings.shown_places, shown) } else { (&mut self.settings.hidden_places, !shown) };
+        if listed {
+            list.push(place);
         } else {
-            self.settings.hidden_places.push(place);
-            if offer_undo && !self.sidebar_editing {
-                let name = self.places.iter().find(|p| p.builtin == Some(place)).map(|p| tr_dyn(&p.name).to_owned()).unwrap_or_default();
-                self.set_toast_action(trf("{} hidden from sidebar", &[&name]), ToastAction::ShowPlace(place));
-            }
+            list.retain(|p| *p != place);
+        }
+        // Hiding it from its menu offers to put it back at once
+        if !shown && offer_undo && !self.sidebar_editing {
+            let name = self.place_name(place);
+            self.set_toast_action(trf("{} hidden from sidebar", &[&name]), ToastAction::ShowPlace(place));
         }
         self.persist_settings();
     }
@@ -6352,6 +6371,20 @@ mod tests {
         again.reopen_tab();
         assert_eq!(again.tabs.len(), 1, "a folder that is gone is not reopened");
         std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    /// Connect to server is off until turned on; hiding other places does not touch it.
+    #[test]
+    fn connect_to_server_is_opt_in() {
+        let ctx = egui::Context::default();
+        let mut app = SkiApp::new(std::env::temp_dir(), SerpantinumTheme::default(), Settings::default(), &ctx);
+        assert!(!app.place_shown(SidebarPlace::ConnectToServer));
+        assert!(app.place_shown(SidebarPlace::Home));
+        app.settings.hidden_places.push(SidebarPlace::ConnectToServer);
+        app.settings.hidden_places.push(SidebarPlace::Home);
+        assert!(!app.place_shown(SidebarPlace::ConnectToServer) && !app.place_shown(SidebarPlace::Home));
+        app.settings.shown_places.push(SidebarPlace::ConnectToServer);
+        assert!(app.place_shown(SidebarPlace::ConnectToServer));
     }
 
     #[test]

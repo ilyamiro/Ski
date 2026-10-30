@@ -36,6 +36,15 @@ pub enum SidebarPlace {
     Music,
     Videos,
     Computer,
+    /// The Connect to server entry under the servers.
+    ConnectToServer,
+}
+
+impl SidebarPlace {
+    /// Off until the user turns it on, so it is kept in the list of places shown, not hidden.
+    pub fn opt_in(self) -> bool {
+        self == SidebarPlace::ConnectToServer
+    }
 }
 
 /// Sidebar sections, separated by dividers.

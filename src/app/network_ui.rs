@@ -84,6 +84,9 @@ pub(super) enum NetEvent {
     Disconnect(Mount),
     Menu(egui::Pos2, NetRow),
     ConnectDialog,
+    /// The Connect to server entry's tick box, while the hidden places are listed.
+    ShowConnect(bool),
+    ConnectMenu(egui::Pos2),
 }
 
 impl SkiApp {
@@ -402,10 +405,42 @@ impl SkiApp {
                 events.push(NetEvent::Menu(pos, row.clone()));
             }
         }
-        if material::nav_item(ui, "net_connect", icons::LAN_CONNECT, tr("Connect to server…"), &theme, false).clicked() {
-            events.push(NetEvent::ConnectDialog);
+        // Off by default (Settings → Sidebar); listed faded with a tick box while the hidden places are
+        let shown = self.place_shown(SidebarPlace::ConnectToServer);
+        if shown || self.sidebar_editing {
+            let editing = self.sidebar_editing;
+            let reserve = if editing { material::NAV_TRAILING } else { 0.0 };
+            let resp = ui
+                .scope(|ui| {
+                    if !shown {
+                        ui.multiply_opacity(0.45);
+                    }
+                    material::nav_item_with(ui, "net_connect", icons::LAN_CONNECT, tr("Connect to server…"), &theme, false, reserve)
+                })
+                .inner;
+            if editing {
+                let tick = egui::Rect::from_center_size(egui::pos2(resp.rect.right() - 22.0, resp.rect.center().y), egui::Vec2::splat(30.0));
+                let ticked = ui.scope_builder(egui::UiBuilder::new().max_rect(tick), |ui| material::checkbox(ui, "net_connect_tick", shown, true, &theme)).inner;
+                if ticked.on_hover_text(if shown { tr("Hide from sidebar") } else { tr("Show in sidebar") }).clicked() {
+                    events.push(NetEvent::ShowConnect(!shown));
+                    return events;
+                }
+            }
+            if resp.clicked() {
+                events.push(NetEvent::ConnectDialog);
+            }
+            if resp.secondary_clicked()
+                && let Some(pos) = resp.interact_pointer_pos()
+            {
+                events.push(NetEvent::ConnectMenu(pos));
+            }
         }
         events
+    }
+
+    /// Whether the Network section has anything to list.
+    pub(super) fn network_listed(&self) -> bool {
+        self.sidebar_editing || self.place_shown(SidebarPlace::ConnectToServer) || !self.net.servers.saved.is_empty() || !self.net.mounts.is_empty()
     }
 
     pub(super) fn apply_network_events(&mut self, ctx: &egui::Context, events: Vec<NetEvent>) {
@@ -420,6 +455,8 @@ impl SkiApp {
                 NetEvent::Disconnect(mount) => self.disconnect(ctx, mount),
                 NetEvent::Menu(pos, row) => self.open_menu(ctx, pos, MenuTarget::Server(Box::new(row))),
                 NetEvent::ConnectDialog => self.open_connect_dialog(),
+                NetEvent::ShowConnect(shown) => self.show_place(SidebarPlace::ConnectToServer, shown, false),
+                NetEvent::ConnectMenu(pos) => self.open_menu(ctx, pos, MenuTarget::ConnectEntry),
             }
         }
     }
