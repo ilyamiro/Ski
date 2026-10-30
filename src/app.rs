@@ -11,6 +11,7 @@ mod dnd;
 mod drives_ui;
 mod file_actions;
 mod folder_sizes;
+mod glyph_picker;
 mod icon_gallery;
 mod settings_window;
 mod theme_editor;
@@ -111,6 +112,7 @@ enum MenuAction {
     Properties(PathBuf),
     OpenWith(PathBuf),
     SetIcon(PathBuf),
+    SetGlyph(PathBuf),
     Copy(Vec<PathBuf>),
     Cut(Vec<PathBuf>),
     Paste,
@@ -455,6 +457,7 @@ pub struct SkiApp {
     menu: Option<ContextMenu>,
     pub(crate) dialog: Option<Dialog>,
     picker: Option<Picker>,
+    glyph_picker: Option<glyph_picker::GlyphPicker>,
     /// The window showing every icon of an icon style, open on that style.
     pub(crate) icon_gallery: Option<crate::ui::icon_style::IconStyle>,
     /// Which two file kinds (from `ICON_SAMPLES`) the icon style cards show beside the folder; drawn again each time Settings opens.
@@ -625,6 +628,7 @@ impl SkiApp {
             menu: None,
             dialog: None,
             picker: None,
+            glyph_picker: None,
             icon_gallery: None,
             icon_card_samples: [0, 1],
             settings_win: None,
@@ -2177,7 +2181,7 @@ impl eframe::App for SkiApp {
             self.navigate_to(dir);
         }
         material::track_input_mode(&ctx, self.dialog.is_some() || self.menu.is_some() || self.jobs_popover);
-        let escape_is_taken = self.dialog.is_some() || self.menu.is_some() || self.jobs_popover || self.picker.is_some()
+        let escape_is_taken = self.dialog.is_some() || self.menu.is_some() || self.jobs_popover || self.picker.is_some() || self.glyph_picker.is_some()
             || self.show_settings || self.capturing_key || self.is_editing_path || !self.search_query.is_empty() || !self.selection.is_empty();
         self.handle_keyboard_inputs(&ctx);
         self.chooser_escape(&ctx, escape_is_taken);
@@ -2333,6 +2337,7 @@ impl eframe::App for SkiApp {
         self.render_toast(&ctx);
         self.theme = window_theme;
         self.render_picker(&ctx);
+        self.render_glyph_picker(&ctx);
         self.render_icon_gallery(&ctx);
         self.render_settings_window(&ctx);
         self.render_drop_overlay(&ctx);
@@ -4200,6 +4205,7 @@ impl SkiApp {
             MenuAction::Properties(path) => self.open_properties(&path),
             MenuAction::OpenWith(path) => self.open_open_with(path),
             MenuAction::SetIcon(folder) => self.open_icon_dialog(folder),
+            MenuAction::SetGlyph(folder) => self.open_glyph_picker(folder),
             MenuAction::UseAsIcon(image) => {
                 if let Some(folder) = image.parent().map(Path::to_path_buf) {
                     self.apply_folder_icon(&folder, Some(&image));
@@ -4389,7 +4395,12 @@ impl SkiApp {
                 (icons::HEART_OUTLINE, tr("Add to bookmarks"), MenuAction::Bookmark(path.clone()))
             }
         };
-        let icon_entry = |path: &PathBuf| (icons::IMAGE, tr("Custom icon…"), MenuAction::SetIcon(path.clone()));
+        let icon_entry = |path: &PathBuf| -> MenuEntry {
+            (icons::IMAGE, tr("Custom icon"), MenuAction::Submenu(vec![
+                (icons::IMAGE, tr("Image…"), MenuAction::SetIcon(path.clone())),
+                (icons::PALETTE, tr("Glyph…"), MenuAction::SetGlyph(path.clone())),
+            ]))
+        };
         // Several entries fold into a submenu; a lone one stays where it is
         let fold = |icon: &'static str, label: &'static str, entries: Vec<MenuEntry>| -> Vec<MenuEntry> {
             match entries.len() {
@@ -5217,6 +5228,7 @@ impl SkiApp {
             self.folder_icons.insert(target.to_path_buf(), icon);
             save_folder_icons(&self.folder_icons);
         }
+        crate::fs::places::move_folder_glyph(old, target);
         if let Some(app) = self.open_overrides.remove(old) {
             self.open_overrides.insert(target.to_path_buf(), app);
             apps::save_overrides(&self.open_overrides);
@@ -5818,6 +5830,7 @@ impl SkiApp {
         match image {
             Some(img) => {
                 self.thumbs.ensure(img);
+                crate::fs::places::set_folder_glyph(folder, None);
                 self.folder_icons.insert(folder.to_path_buf(), img.to_path_buf());
                 self.set_toast(tr("Folder icon set"));
             }
@@ -5869,6 +5882,7 @@ impl SkiApp {
         let mut copied: Option<String> = None;
         let mut perm_action = perms::PermAction::default();
         let mut change_icon = false;
+        let mut change_glyph = false;
         let mut reset_icon = false;
         let mut toggle_bookmark_path: Option<PathBuf> = None;
         let mut close = false;
@@ -5921,10 +5935,25 @@ impl SkiApp {
             });
             if item.is_dir {
                 ui.add_space(6.0);
-                if material::button(ui, "props_icon", Some(icons::IMAGE), tr("Custom icon…"), &theme, ButtonKind::Tonal, true).clicked() {
-                    change_icon = true;
+                // The two ways to set an icon side by side, centred as a pair (the pair's width is
+                // known from the frame before)
+                let pair_id = ui.make_persistent_id("props_icon_pair");
+                let pair_w = ui.ctx().data(|d| d.get_temp::<f32>(pair_id)).unwrap_or(0.0);
+                let row = ui.horizontal(|ui| {
+                    ui.add_space(((full - pair_w) / 2.0).max(0.0));
+                    if material::button(ui, "props_icon", Some(icons::IMAGE), tr("Custom icon…"), &theme, ButtonKind::Tonal, true).clicked() {
+                        change_icon = true;
+                    }
+                    if material::button(ui, "props_glyph", Some(icons::PALETTE), tr("Glyph…"), &theme, ButtonKind::Tonal, true).clicked() {
+                        change_glyph = true;
+                    }
+                });
+                let used = row.response.rect.width() - ((full - pair_w) / 2.0).max(0.0);
+                if (used - pair_w).abs() > 0.5 {
+                    ui.ctx().data_mut(|d| d.insert_temp(pair_id, used));
+                    ui.ctx().request_repaint();
                 }
-                if self.folder_icons.contains_key(&item.path)
+                if (self.folder_icons.contains_key(&item.path) || crate::fs::places::folder_glyph(&item.path).is_some())
                     && material::button(ui, "props_icon_reset", Some(icons::TRASH), tr("Reset icon"), &theme, ButtonKind::Text, true).clicked()
                 {
                     reset_icon = true;
@@ -6020,6 +6049,11 @@ impl SkiApp {
         }
         if reset_icon {
             self.apply_folder_icon(&folder, None);
+            crate::fs::places::set_folder_glyph(&folder, None);
+        }
+        if change_glyph {
+            self.open_glyph_picker(folder);
+            return false;
         }
         if change_icon {
             self.open_icon_dialog(folder);

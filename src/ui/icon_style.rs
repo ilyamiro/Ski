@@ -697,6 +697,18 @@ fn nerd_font() -> Option<&'static ab_glyph::FontRef<'static>> {
     FONT.get_or_init(|| ab_glyph::FontRef::try_from_slice(icons::FONT_DATA).ok()).as_ref()
 }
 
+/// Every glyph of the Material Design set in the icon font, for choosing one.
+pub fn all_glyphs() -> &'static [char] {
+    use ab_glyph::Font;
+    static ALL: OnceLock<Vec<char>> = OnceLock::new();
+    ALL.get_or_init(|| {
+        let Some(font) = nerd_font() else { return Vec::new() };
+        let mut all: Vec<char> = font.codepoint_ids().map(|(_, c)| c).filter(|c| ('\u{f0001}'..='\u{f1af0}').contains(c)).collect();
+        all.sort_unstable();
+        all
+    })
+}
+
 /// How much of each cell of a `side`×`side` canvas the glyph covers, drawn `scale` times the canvas
 /// (the font's glyphs fill their em) with its middle `shift` cells off the canvas's middle.
 fn glyph_coverage(font: &ab_glyph::FontRef<'static>, id: ab_glyph::GlyphId, side: usize, scale: f32, shift: Vec2) -> Option<Vec<f32>> {

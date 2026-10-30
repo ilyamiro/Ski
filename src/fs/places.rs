@@ -195,6 +195,53 @@ pub fn save_folder_icons(icons: &HashMap<PathBuf, PathBuf>) {
     }
 }
 
+static FOLDER_GLYPHS: std::sync::RwLock<Option<HashMap<PathBuf, char>>> = std::sync::RwLock::new(None);
+
+/// Custom folder glyphs: folder path -> a glyph of the bundled icon font, saved in
+/// `~/.config/ski/folder_glyphs.json`. Held globally, like the icon style, so every place a folder's
+/// icon is drawn can look it up.
+fn with_glyphs<R>(f: impl FnOnce(&mut HashMap<PathBuf, char>) -> R) -> R {
+    let mut guard = FOLDER_GLYPHS.write().unwrap_or_else(|e| e.into_inner());
+    let map = guard.get_or_insert_with(|| {
+        config_file("folder_glyphs.json")
+            .and_then(|f| std::fs::read_to_string(f).ok())
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default()
+    });
+    f(map)
+}
+
+pub fn folder_glyph(folder: &std::path::Path) -> Option<char> {
+    with_glyphs(|m| m.get(folder).copied())
+}
+
+/// Set (or with `None` remove) a folder's glyph; true when something changed.
+pub fn set_folder_glyph(folder: &std::path::Path, glyph: Option<char>) -> bool {
+    with_glyphs(|m| {
+        let changed = match glyph {
+            Some(c) => m.insert(folder.to_path_buf(), c) != Some(c),
+            None => m.remove(folder).is_some(),
+        };
+        if changed && let Some(file) = config_file("folder_glyphs.json") {
+            if let Some(dir) = file.parent() {
+                let _ = std::fs::create_dir_all(dir);
+            }
+            if let Ok(json) = serde_json::to_string_pretty(&*m) {
+                let _ = std::fs::write(file, json);
+            }
+        }
+        changed
+    })
+}
+
+/// A folder that was renamed or moved keeps its glyph.
+pub fn move_folder_glyph(old: &std::path::Path, new: &std::path::Path) {
+    if let Some(c) = folder_glyph(old) {
+        set_folder_glyph(old, None);
+        set_folder_glyph(new, Some(c));
+    }
+}
+
 fn config_file(name: &str) -> Option<PathBuf> {
     dirs::config_dir().map(|d| d.join("ski").join(name))
 }

@@ -506,6 +506,9 @@ pub fn paint_item_icon(painter: &egui::Painter, item: &FileItem, center: Pos2, s
 /// The type icon of a file as `style` draws it, whichever style is chosen.
 pub fn paint_item_icon_in(style: IconStyle, painter: &egui::Painter, item: &FileItem, center: Pos2, size: f32, (glyph, color): (&str, Color32), fade: f32) {
     if item.is_dir {
+        if let Some(glyph) = crate::fs::places::folder_glyph(&item.path) {
+            return icon_style::paint_glyph(style, painter, center, glyph.encode_utf8(&mut [0; 4]), size, color.gamma_multiply(fade));
+        }
         return icon_style::paint_folder(style, painter, center, size, color.gamma_multiply(fade));
     }
     let office = office_kind(&item.name).filter(|_| style == IconStyle::Classic);
