@@ -1,17 +1,26 @@
 //! A window of its own showing every icon in an icon style: the styles down the side, and the
 //! folders and a file of each kind drawn in the chosen one.
 use super::*;
-use crate::fs::file_item::ICON_SAMPLES;
+use crate::fs::file_item::{FileType, ICON_SAMPLES};
 use crate::ui::icon_style::{self, IconStyle};
 
 /// The sizes a folder is shown at, from the list's smallest to the grid's largest.
 const FOLDER_SIZES: [f32; 6] = [16.0, 24.0, 32.0, 48.0, 64.0, 96.0];
+/// Space between the window's edges and the header's title and close button, and the content
+/// under them, so both start and end on the same lines.
+const EDGE: f32 = 16.0;
+/// Space between tiles, and between a section's label and what it labels.
+const GAP: f32 = 8.0;
+const TILE_MIN: f32 = 96.0;
+const TILE_HEIGHT: f32 = 96.0;
+/// Height of the caption strip along the bottom of a tile.
+const CAPTION: f32 = 26.0;
 
 impl SkiApp {
     pub(super) fn render_icon_gallery(&mut self, ctx: &egui::Context) {
         let Some(mut style) = self.icon_gallery else { return };
         let theme = self.theme;
-        let builder = chrome::viewport(tr("Icon style")).with_inner_size([900.0, 640.0]).with_min_inner_size([560.0, 400.0]);
+        let builder = chrome::viewport(tr("Icon style")).with_inner_size([920.0, 660.0]).with_min_inner_size([600.0, 420.0]);
         let mut close = false;
         let mut chosen = None;
         let in_use = self.settings.icon_style;
@@ -23,8 +32,12 @@ impl SkiApp {
             Self::window_resize_edges(&ctx);
 
             chrome::sidebar(ui, "ig_styles", chrome::SIDEBAR_WIDTH, &theme, |ui| {
+                // The title shares the header's row, its left edge on the rows' icon column
+                let (row, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), CONTROL_HEIGHT), egui::Sense::hover());
+                chrome::drag_area(ui, row, ui.scope_id().with("ig_side_drag"));
+                material::paint_label(ui, row.left() + material::INSET_ICON - 9.0, row.center().y, tr("Icon style"), material::FONT_TITLE, theme.text, row.width());
+                ui.add_space(8.0 - ui.spacing().item_spacing.y);
                 ui.spacing_mut().item_spacing.y = 2.0;
-                ui.add_space(CONTROL_HEIGHT + 8.0);
                 for s in IconStyle::ALL {
                     // Each style shows its own folder where a row's icon goes
                     let resp = nav_item(ui, ("ig_style", s as u8), "", s.label(), &theme, s == style);
@@ -37,58 +50,71 @@ impl SkiApp {
             });
 
             chrome::header(ui, "ig_header", &theme, |ui| {
+                let (row, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), CONTROL_HEIGHT), egui::Sense::hover());
                 // No title bar of its own: the empty parts of the header drag the window
-                chrome::drag_area(ui, ui.max_rect().expand2(egui::vec2(HEADER_MARGIN as f32, 4.0)), ui.scope_id().with("ig_drag"));
-                ui.allocate_ui_with_layout(egui::vec2(ui.available_width(), CONTROL_HEIGHT), egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                    ui.spacing_mut().item_spacing.x = TITLE_GAP;
-                    ui.label(egui::RichText::new(trf("{} icons", &[&style.label()])).size(material::FONT_TITLE).color(theme.text));
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if material::filled_icon_button(ui, "ig_close", icons::CLOSE, &theme, material::CLOSE_BUTTON, tr("Close"), None).clicked() {
-                            close = true;
-                        }
-                        ui.add_space(CLOSE_GAP - TITLE_GAP);
-                        let label = if in_use == style { tr("In use") } else { tr("Use this style") };
-                        if material::button(ui, "ig_use", Some(icons::CHECK), label, &theme, ButtonKind::Tonal, in_use != style).clicked() {
-                            chosen = Some(style);
-                        }
-                    });
+                chrome::drag_area(ui, row.expand2(egui::vec2(HEADER_MARGIN as f32, 4.0)), ui.scope_id().with("ig_drag"));
+                // The header's own margins are uneven (made for the main window's buttons); these
+                // put the title and the close button the same distance from the window's edges
+                let left = row.left() - HEADER_MARGIN as f32 + EDGE;
+                let right = row.right() + 8.0 - EDGE;
+                material::paint_label(ui, left, row.center().y, &trf("{} icons", &[&style.label()]), material::FONT_TITLE, theme.text, row.width() / 2.0);
+                let close_rect = egui::Rect::from_center_size(egui::pos2(right - material::CLOSE_BUTTON / 2.0, row.center().y), egui::vec2(material::CLOSE_BUTTON, material::CLOSE_BUTTON));
+                let closed = ui.scope_builder(egui::UiBuilder::new().max_rect(close_rect), |ui| {
+                    material::filled_icon_button(ui, "ig_close", icons::CLOSE, &theme, material::CLOSE_BUTTON, tr("Close"), None).clicked()
                 });
+                close |= closed.inner;
+                // The choice is a chip, the height of the row's other controls: lit while the style is in use
+                let label = if in_use == style { tr("In use") } else { tr("Use this style") };
+                let width = material::chip_natural_width(ui, Some(icons::CHECK), label, &theme);
+                let chip_rect = egui::Rect::from_center_size(
+                    egui::pos2(close_rect.left() - CLOSE_GAP - width / 2.0, row.center().y),
+                    egui::vec2(width, material::CHIP_HEIGHT),
+                );
+                let clicked = ui.scope_builder(egui::UiBuilder::new().max_rect(chip_rect), |ui| {
+                    material::chip_width(ui, ("ig_use", style as u8), Some(icons::CHECK), label, &theme, in_use == style, Some(width)).clicked()
+                });
+                if clicked.inner && in_use != style {
+                    chosen = Some(style);
+                }
             });
 
             chrome::content(ui, &theme, |ui| {
                 egui::ScrollArea::vertical().auto_shrink([false, false]).id_salt("ig_scroll").show(ui, |ui| {
-                    ui.spacing_mut().item_spacing = egui::vec2(6.0, 8.0);
-                    material::section_label(ui, tr("Folders"), &theme);
-                    let width = FOLDER_SIZES.iter().map(|s| s * 1.2 + 16.0).sum::<f32>().min(ui.available_width());
-                    let (rect, _) = ui.allocate_exact_size(egui::vec2(width, 96.0 * 1.15 + 16.0), egui::Sense::hover());
-                    let painter = ui.painter().with_clip_rect(rect);
-                    painter.rect_filled(rect, egui::CornerRadius::same(material::radius_md()), theme.surface0);
-                    let mut x = rect.left() + 8.0;
-                    for size in FOLDER_SIZES {
-                        icon_style::paint_folder(style, &painter, egui::pos2(x + size * 0.6, rect.center().y), size, theme.blue);
-                        x += size * 1.2 + 16.0;
-                    }
+                    ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
+                    // The content panel keeps PAGE_MARGIN from the sides; the sections keep EDGE
+                    let inset = EDGE - PAGE_MARGIN as f32;
+                    let full = ui.available_width();
+                    let width = full - 2.0 * inset;
+                    let column = |ui: &mut egui::Ui, h: f32| {
+                        let (rect, _) = ui.allocate_exact_size(egui::vec2(full, h), egui::Sense::hover());
+                        egui::Rect::from_min_max(egui::pos2(rect.left() + inset, rect.top()), egui::pos2(rect.right() - inset, rect.bottom()))
+                    };
 
-                    material::section_label(ui, tr("Files"), &theme);
-                    ui.horizontal_wrapped(|ui| {
-                        ui.spacing_mut().item_spacing = egui::vec2(6.0, 6.0);
-                        for (name, kind) in ICON_SAMPLES {
-                            let (rect, _) = ui.allocate_exact_size(egui::vec2(92.0, 92.0), egui::Sense::hover());
-                            if !ui.is_rect_visible(rect) {
-                                continue;
-                            }
-                            ui.painter().rect_filled(rect, egui::CornerRadius::same(material::radius_md()), theme.surface0);
-                            let item = FileItem::sample(name, *kind);
-                            let stage = egui::Rect::from_min_size(rect.min, egui::vec2(rect.width(), rect.height() - 22.0));
-                            let icon = material::item_icon_animated(&item, &theme, 0.0);
-                            material::paint_item_icon_in(style, &ui.painter().with_clip_rect(stage), &item, stage.center(), 44.0, icon, 1.0);
-                            // The plain icon of a type is named after the type
-                            let caption = if name.is_empty() { kind.label() } else { name };
-                            let galley = material::truncated(ui, caption, material::FONT_CAPTION, theme.subtext0, rect.width() - 8.0);
-                            let pos = egui::pos2(rect.center().x - galley.size().x / 2.0, rect.bottom() - 13.0 - galley.size().y / 2.0);
-                            ui.painter().galley(pos, galley, theme.subtext0);
+                    let label = column(ui, 28.0);
+                    section(ui, &theme, label, tr("Folders"));
+                    let strip = column(ui, 150.0);
+                    folders(ui, &theme, strip, style);
+
+                    ui.add_space(GAP);
+                    let label = column(ui, 28.0);
+                    section(ui, &theme, label, tr("Files"));
+                    // As many tiles as fit a row, stretched so every row ends on the same line
+                    let per_row = ((width + GAP) / (TILE_MIN + GAP)).floor().max(1.0) as usize;
+                    let tile_w = (width - GAP * (per_row - 1) as f32) / per_row as f32;
+                    for (r, row) in ICON_SAMPLES.chunks(per_row).enumerate() {
+                        if r > 0 {
+                            ui.add_space(GAP);
                         }
-                    });
+                        let line = column(ui, TILE_HEIGHT);
+                        if !ui.is_rect_visible(line) {
+                            continue;
+                        }
+                        for (i, (name, kind)) in row.iter().enumerate() {
+                            let tile = egui::Rect::from_min_size(egui::pos2(line.left() + i as f32 * (tile_w + GAP), line.top()), egui::vec2(tile_w, TILE_HEIGHT));
+                            file_tile(ui, &theme, tile, style, name, *kind);
+                        }
+                    }
+                    ui.add_space(EDGE);
                 });
             });
         });
@@ -99,4 +125,41 @@ impl SkiApp {
         }
         self.icon_gallery = if close { None } else { Some(style) };
     }
+}
+
+/// A section's label, on the left edge of what it labels and `GAP` above it.
+fn section(ui: &egui::Ui, theme: &SerpantinumTheme, rect: egui::Rect, text: &str) {
+    let galley = ui.painter().layout_no_wrap(text.to_owned(), egui::FontId::proportional(material::FONT_SECTION), theme.subtext1);
+    ui.painter().galley(egui::pos2(rect.left(), rect.bottom() - GAP - galley.size().y), galley, theme.subtext1);
+}
+
+/// The folder at every size it is shown at, standing on one line with its size under it, spaced
+/// evenly across `rect`.
+fn folders(ui: &egui::Ui, theme: &SerpantinumTheme, rect: egui::Rect, style: IconStyle) {
+    let painter = ui.painter().with_clip_rect(rect);
+    painter.rect_filled(rect, egui::CornerRadius::same(material::radius_md()), theme.surface0);
+    // A folder's box is 1.05 × its size wide and 0.84 × its size tall, centred on where it is drawn
+    let widths: Vec<f32> = FOLDER_SIZES.iter().map(|s| s * 1.05).collect();
+    let space = ((rect.width() - widths.iter().sum::<f32>()) / (widths.len() + 1) as f32).max(4.0);
+    let baseline = rect.bottom() - CAPTION;
+    let mut x = rect.left() + space;
+    for (size, w) in FOLDER_SIZES.iter().zip(&widths) {
+        let center = egui::pos2(x + w / 2.0, baseline - size * 0.42);
+        icon_style::paint_folder(style, &painter, center, *size, theme.blue);
+        painter.text(egui::pos2(center.x, rect.bottom() - CAPTION / 2.0), egui::Align2::CENTER_CENTER, format!("{size}"), egui::FontId::proportional(material::FONT_CAPTION), theme.subtext0);
+        x += w + space;
+    }
+}
+
+/// One file's icon over its name; the plain icon of a type is named after the type.
+fn file_tile(ui: &egui::Ui, theme: &SerpantinumTheme, tile: egui::Rect, style: IconStyle, name: &str, kind: FileType) {
+    ui.painter().rect_filled(tile, egui::CornerRadius::same(material::radius_md()), theme.surface0);
+    let item = FileItem::sample(name, kind);
+    let stage = egui::Rect::from_min_max(tile.min, egui::pos2(tile.right(), tile.bottom() - CAPTION));
+    let icon = material::item_icon_animated(&item, theme, 0.0);
+    material::paint_item_icon_in(style, &ui.painter().with_clip_rect(stage), &item, egui::pos2(stage.center().x, stage.center().y + 4.0), 44.0, icon, 1.0);
+    let caption = if name.is_empty() { kind.label() } else { name };
+    let galley = material::truncated(ui, caption, material::FONT_CAPTION, theme.subtext0, tile.width() - 12.0);
+    let pos = egui::pos2(tile.center().x - galley.size().x / 2.0, tile.bottom() - CAPTION / 2.0 - galley.size().y / 2.0);
+    ui.painter().galley(pos, galley, theme.subtext0);
 }

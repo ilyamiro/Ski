@@ -321,7 +321,6 @@ impl SkiApp {
         });
     }
 
-    /// The icon style cards; each has a button that opens a window with every icon of its style.
     fn icon_style_cards(&mut self, ui: &mut egui::Ui) {
         let theme = self.theme;
         let gap = 8.0;
@@ -330,10 +329,7 @@ impl SkiApp {
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing = egui::vec2(gap, gap);
             for style in IconStyle::ALL {
-                let (card, show_all) = icon_style_card(ui, ("icon_style_card", style as u8), card_w, style, &theme, self.settings.icon_style == style);
-                if show_all {
-                    self.icon_gallery = Some(style);
-                } else if card.clicked() {
+                if icon_style_card(ui, ("icon_style_card", style as u8), card_w, style, &theme, self.settings.icon_style == style).clicked() {
                     self.settings.icon_style = style;
                     self.persist_settings();
                 }
@@ -409,9 +405,16 @@ impl SkiApp {
         }
         self.theme_cards(ui, others);
         ui.add_space(2.0);
-        if material::button(ui, "theme_browse", Some(icons::PALETTE), tr("Browse more themes"), &theme, material::ButtonKind::Tonal, true).clicked() {
-            *theme_browser = Some(String::new());
-        }
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 8.0;
+            if material::button(ui, "theme_browse", Some(icons::PALETTE), tr("Browse more themes"), &theme, material::ButtonKind::Tonal, true).clicked() {
+                *theme_browser = Some(String::new());
+            }
+            // Every icon of every style, in a window of its own
+            if material::button(ui, "icon_gallery_open", Some(icons::GRID_VIEW), tr("Show all icons"), &theme, material::ButtonKind::Tonal, true).clicked() {
+                self.icon_gallery = Some(self.settings.icon_style);
+            }
+        });
 
         material::section_label(ui, tr("Icon style"), &theme);
         self.icon_style_cards(ui);
@@ -1339,7 +1342,7 @@ fn icon_style_card(
     style: IconStyle,
     theme: &SerpantinumTheme,
     selected: bool,
-) -> (egui::Response, bool) {
+) -> egui::Response {
     let (rect, resp) = ui.allocate_exact_size(egui::vec2(width, 82.0), egui::Sense::click());
     let id = ui.make_persistent_id(id_source);
     let fx = material::fx(ui, id, &resp, true, &material::FxSpec::CLICK);
@@ -1359,20 +1362,10 @@ fn icon_style_card(
     icon_style::paint_file(style, &painter, at(0.6), icons::PDF, 20.0, theme.red);
     icon_style::paint_file(style, &painter, at(0.84), icons::SYMLINK, 20.0, theme.subtext0);
     let color = material::lerp_color(theme.subtext0, theme.text, sel.max(fx.hover));
-    // A small button at the end of the caption row opens every icon of the style; it sits over the
-    // card, so it takes the click instead of choosing the style
-    let side = 20.0;
-    let button = egui::Rect::from_center_size(egui::pos2(r.right() - 6.0 - side / 2.0, rect.bottom() - 13.0), egui::vec2(side, side));
-    let show_all = ui.interact(button, id.with("show_all"), egui::Sense::click()).on_hover_text(tr("Show all icons"));
-    let hot = material::animate(ui.ctx(), id.with("show_all_hover"), show_all.hovered());
-    if hot > 0.0 {
-        ui.painter().circle_filled(button.center(), side / 2.0, theme.with_alpha(theme.text, (hot * 30.0) as u8));
-    }
-    material::paint_icon(ui.painter(), button.center(), icons::GRID_VIEW, material::ICON_SM, material::lerp_color(theme.subtext0, theme.text, hot));
-    let galley = material::truncated(ui, style.label(), material::FONT_CAPTION, color, rect.width() - 2.0 * (side + 10.0));
+    let galley = material::truncated(ui, style.label(), material::FONT_CAPTION, color, rect.width() - 12.0);
     let pos = egui::pos2(rect.center().x - galley.size().x / 2.0, rect.bottom() - 13.0 - galley.size().y / 2.0);
     ui.painter().galley(pos, galley, color);
-    (resp, show_all.clicked())
+    resp
 }
 
 fn category_row(
