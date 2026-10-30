@@ -405,19 +405,17 @@ impl SkiApp {
         }
         self.theme_cards(ui, others);
         ui.add_space(2.0);
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 8.0;
-            if material::button(ui, "theme_browse", Some(icons::PALETTE), tr("Browse more themes"), &theme, material::ButtonKind::Tonal, true).clicked() {
-                *theme_browser = Some(String::new());
-            }
-            // Every icon of every style, in a window of its own
-            if material::button(ui, "icon_gallery_open", Some(icons::GRID_VIEW), tr("Show all icons"), &theme, material::ButtonKind::Tonal, true).clicked() {
-                self.icon_gallery = Some(self.settings.icon_style);
-            }
-        });
+        if material::button(ui, "theme_browse", Some(icons::PALETTE), tr("Browse more themes"), &theme, material::ButtonKind::Tonal, true).clicked() {
+            *theme_browser = Some(String::new());
+        }
 
         material::section_label(ui, tr("Icon style"), &theme);
         self.icon_style_cards(ui);
+        ui.add_space(2.0);
+        // Every icon of every style, in a window of its own
+        if material::button(ui, "icon_gallery_open", Some(icons::GRID_VIEW), tr("Show all icons"), &theme, material::ButtonKind::Tonal, true).clicked() {
+            self.icon_gallery = Some(self.settings.icon_style);
+        }
 
         material::section_label(ui, tr("Accent color"), &theme);
         group_card(ui, &theme, |ui| {

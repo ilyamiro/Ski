@@ -4,8 +4,9 @@ use super::*;
 use crate::fs::file_item::{FileType, ICON_SAMPLES};
 use crate::ui::icon_style::{self, IconStyle};
 
-/// The sizes a folder is shown at, from the list's smallest to the grid's largest.
-const FOLDER_SIZES: [f32; 6] = [16.0, 24.0, 32.0, 48.0, 64.0, 96.0];
+/// The sizes a folder is shown at, from the list's smallest up; the largest still leaves room
+/// around it in a column the width of a file tile.
+const FOLDER_SIZES: [f32; 6] = [16.0, 24.0, 32.0, 48.0, 64.0, 80.0];
 /// Space between the window's edges and the header's title and close button, and the content
 /// under them, so both start and end on the same lines.
 const EDGE: f32 = 16.0;
@@ -92,7 +93,7 @@ impl SkiApp {
 
                     let label = column(ui, 28.0);
                     section(ui, &theme, label, tr("Folders"));
-                    let strip = column(ui, 150.0);
+                    let strip = column(ui, strip_height());
                     folders(ui, &theme, strip, style);
 
                     ui.add_space(GAP);
@@ -133,21 +134,37 @@ fn section(ui: &egui::Ui, theme: &SerpantinumTheme, rect: egui::Rect, text: &str
     ui.painter().galley(egui::pos2(rect.left(), rect.bottom() - GAP - galley.size().y), galley, theme.subtext1);
 }
 
-/// The folder at every size it is shown at, standing on one line with its size under it, spaced
-/// evenly across `rect`.
+/// Padding inside the folder strip, the same above the largest folder as at the sides.
+const STRIP_PAD: f32 = 16.0;
+/// From a folder's bottom edge to the middle of its size label under it.
+const SIZE_LABEL: f32 = 16.0;
+
+/// Height of the folder strip: the largest folder (0.84 × its size tall) and the labels under it.
+fn strip_height() -> f32 {
+    STRIP_PAD + FOLDER_SIZES[FOLDER_SIZES.len() - 1] * 0.84 + SIZE_LABEL + STRIP_PAD
+}
+
+/// The folder at every size it is shown at, all standing on one line with their size under them,
+/// in columns laid out like the file tiles' (six across with `GAP` between), so where the tiles
+/// run six to a row each folder sits over a column of them.
 fn folders(ui: &egui::Ui, theme: &SerpantinumTheme, rect: egui::Rect, style: IconStyle) {
     let painter = ui.painter().with_clip_rect(rect);
     painter.rect_filled(rect, egui::CornerRadius::same(material::radius_md()), theme.surface0);
-    // A folder's box is 1.05 × its size wide and 0.84 × its size tall, centred on where it is drawn
-    let widths: Vec<f32> = FOLDER_SIZES.iter().map(|s| s * 1.05).collect();
-    let space = ((rect.width() - widths.iter().sum::<f32>()) / (widths.len() + 1) as f32).max(4.0);
-    let baseline = rect.bottom() - CAPTION;
-    let mut x = rect.left() + space;
-    for (size, w) in FOLDER_SIZES.iter().zip(&widths) {
-        let center = egui::pos2(x + w / 2.0, baseline - size * 0.42);
-        icon_style::paint_folder(style, &painter, center, *size, theme.blue);
-        painter.text(egui::pos2(center.x, rect.bottom() - CAPTION / 2.0), egui::Align2::CENTER_CENTER, format!("{size}"), egui::FontId::proportional(material::FONT_CAPTION), theme.subtext0);
-        x += w + space;
+    let n = FOLDER_SIZES.len() as f32;
+    let largest = FOLDER_SIZES[FOLDER_SIZES.len() - 1];
+    let baseline = rect.top() + STRIP_PAD + largest * 0.84;
+    let column = (rect.width() - GAP * (n - 1.0)) / n;
+    // Too narrow a window for even columns: they follow the sizes instead, so none overlap
+    let even = column >= largest * 1.05;
+    let total: f32 = FOLDER_SIZES.iter().sum();
+    let mut x = rect.left();
+    for size in FOLDER_SIZES {
+        let share = if even { column } else { (rect.width() - GAP * (n - 1.0)) * size / total };
+        let cx = x + share / 2.0;
+        // A folder's box is 0.84 × its size tall, centred on where it is drawn
+        icon_style::paint_folder(style, &painter, egui::pos2(cx, baseline - size * 0.42), size, theme.blue);
+        painter.text(egui::pos2(cx, baseline + SIZE_LABEL), egui::Align2::CENTER_CENTER, format!("{size}"), egui::FontId::proportional(material::FONT_CAPTION), theme.subtext0);
+        x += share + GAP;
     }
 }
 
