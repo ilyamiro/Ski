@@ -14,6 +14,7 @@ pub(crate) struct GlyphPicker {
     pub chosen: Option<char>,
 }
 
+#[allow(deprecated)] // a stable id keeps the grid scrolled where it was
 impl SkiApp {
     pub(super) fn open_glyph_picker(&mut self, folder: PathBuf) {
         let chosen = crate::fs::places::folder_glyph(&folder);
@@ -46,7 +47,7 @@ impl SkiApp {
         let (mut confirmed, mut cancelled, mut reset) = (false, false, false);
 
         // Dims what is behind the card; a click on it closes the card
-        let scrim = egui::Area::new(egui::Id::from("glyph_picker_scrim"))
+        let scrim = egui::Area::new(egui::Id::new("glyph_picker_scrim"))
             .order(egui::Order::Tooltip)
             .fixed_pos(screen.min)
             .show(ctx, |ui| {
@@ -58,7 +59,7 @@ impl SkiApp {
 
         let width = (screen.width() - 32.0).clamp(240.0, CARD_WIDTH);
         let height = (screen.height() - 48.0).clamp(300.0, CARD_HEIGHT);
-        let card = egui::Area::new(egui::Id::from("glyph_picker_card"))
+        let card = egui::Area::new(egui::Id::new("glyph_picker_card"))
             .order(egui::Order::Tooltip)
             .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
             .show(ctx, |ui| {
