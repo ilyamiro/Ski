@@ -2183,6 +2183,7 @@ impl eframe::App for SkiApp {
         material::track_input_mode(&ctx, self.dialog.is_some() || self.menu.is_some() || self.jobs_popover);
         let escape_is_taken = self.dialog.is_some() || self.menu.is_some() || self.jobs_popover || self.picker.is_some() || self.glyph_picker.is_some()
             || self.show_settings || self.capturing_key || self.is_editing_path || !self.search_query.is_empty() || !self.selection.is_empty();
+        self.glyph_picker_escape(&ctx);
         self.handle_keyboard_inputs(&ctx);
         self.chooser_escape(&ctx, escape_is_taken);
         self.sync_selection(false);
@@ -2335,9 +2336,9 @@ impl eframe::App for SkiApp {
         self.render_menu(&ctx);
         self.render_dialog(&ctx);
         self.render_toast(&ctx);
+        self.render_glyph_picker(&ctx);
         self.theme = window_theme;
         self.render_picker(&ctx);
-        self.render_glyph_picker(&ctx);
         self.render_icon_gallery(&ctx);
         self.render_settings_window(&ctx);
         self.render_drop_overlay(&ctx);
