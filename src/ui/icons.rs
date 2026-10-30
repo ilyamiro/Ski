@@ -9,6 +9,9 @@ use eframe::egui::{FontFamily, FontId};
 
 pub const FAMILY: &str = "icons";
 
+/// The icon font file, embedded once for egui and for the places that rasterize glyphs themselves.
+pub static FONT_DATA: &[u8] = include_bytes!("../../assets/fonts/SymbolsNerdFontMono-Regular.ttf");
+
 pub fn font(size: f32) -> FontId {
     FontId::new(size, FontFamily::Name(FAMILY.into()))
 }

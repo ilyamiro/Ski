@@ -1258,6 +1258,7 @@ impl SkiApp {
     fn sync_settings(&mut self, ctx: &egui::Context) {
         crate::i18n::set_language(crate::i18n::resolve(&self.settings.language));
         material::set_animations(self.settings.animations);
+        crate::ui::icon_style::set(self.settings.icon_style);
         ctx.all_styles_mut(|s| s.animation_time = material::dur(material::ANIM));
 
         let now = ctx.input(|i| i.time);

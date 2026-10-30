@@ -28,7 +28,7 @@ pub fn install(ctx: &egui::Context, custom: Option<&Path>) {
     // fallback, so every icon comes from one font with identical metrics.
     fonts.font_data.insert(
         "nerd_symbols".to_owned(),
-        Arc::new(egui::FontData::from_static(include_bytes!("../../assets/fonts/SymbolsNerdFontMono-Regular.ttf"))),
+        Arc::new(egui::FontData::from_static(icons::FONT_DATA)),
     );
     fonts.families.insert(egui::FontFamily::Name(icons::FAMILY.into()), vec!["nerd_symbols".to_owned()]);
 

@@ -405,7 +405,7 @@ impl Canvas {
 /// pile, and a badge with the number of files when there is more than one.
 fn render_icon(size: usize, scale: f32, count: usize, style: &IconStyle) -> Vec<u8> {
     let mut canvas = Canvas { size, px: vec![[0.0; 4]; size * size] };
-    let symbols = ab_glyph::FontRef::try_from_slice(include_bytes!("../assets/fonts/SymbolsNerdFontMono-Regular.ttf")).ok();
+    let symbols = ab_glyph::FontRef::try_from_slice(crate::ui::icons::FONT_DATA).ok();
     let sans = ab_glyph::FontRef::try_from_slice(include_bytes!("../assets/fonts/AdwaitaSans-Regular.ttf")).ok();
     let full = size as f32;
     let card = CARD * scale;

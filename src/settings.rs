@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use crate::app::ViewMode;
 use crate::i18n::tr;
 use crate::fs::scanner::{SortBy, SortOrder};
+use crate::ui::icon_style::IconStyle;
 use crate::ui::material::Column;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -25,6 +26,8 @@ pub struct Settings {
     pub corner_scale: f32,
     /// How opaque the window is, 1 to 100 percent.
     pub opacity: u8,
+    /// How folders, file icons and glyphs are drawn.
+    pub icon_style: IconStyle,
 
     pub view_mode: ViewMode,
     pub sort_by: SortBy,
@@ -224,6 +227,7 @@ impl Default for Settings {
             scale: 1.0,
             corner_scale: 1.0,
             opacity: 100,
+            icon_style: IconStyle::default(),
             view_mode: ViewMode::List,
             sort_by: SortBy::Name,
             sort_order: SortOrder::Ascending,

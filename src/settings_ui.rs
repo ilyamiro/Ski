@@ -10,6 +10,7 @@ use crate::fs::scanner::{SortBy, SortOrder};
 use crate::keymap::{self, Action};
 use crate::settings::{Density, Settings, StartLocation};
 use crate::ui::fonts::SystemFont;
+use crate::ui::icon_style::{self, IconStyle};
 use crate::ui::icons;
 use crate::ui::material::{self, button, chip, choice_row, filled_icon_button, group_card, nav_item_roving, switch_row_with, ButtonKind, Column};
 use crate::ui::theme::{self, SerpantinumTheme, ACCENTS, MORE_PRESETS, PRESETS};
@@ -320,6 +321,22 @@ impl SkiApp {
         });
     }
 
+    fn icon_style_cards(&mut self, ui: &mut egui::Ui) {
+        let theme = self.theme;
+        let gap = 8.0;
+        let per_row = 4usize;
+        let card_w = ((ui.available_width() - gap * (per_row - 1) as f32) / per_row as f32).floor().clamp(80.0, 140.0);
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing = egui::vec2(gap, gap);
+            for style in IconStyle::ALL {
+                if icon_style_card(ui, ("icon_style_card", style as u8), card_w, style, &theme, self.settings.icon_style == style).clicked() {
+                    self.settings.icon_style = style;
+                    self.persist_settings();
+                }
+            }
+        });
+    }
+
     /// Every palette that is not on the Appearance page, dark and light apart, with a search.
     /// Returns true when Back was clicked.
     fn theme_browser_page(&mut self, ui: &mut egui::Ui, query: &mut String) -> bool {
@@ -391,6 +408,9 @@ impl SkiApp {
         if material::button(ui, "theme_browse", Some(icons::PALETTE), tr("Browse more themes"), &theme, material::ButtonKind::Tonal, true).clicked() {
             *theme_browser = Some(String::new());
         }
+
+        material::section_label(ui, tr("Icon style"), &theme);
+        self.icon_style_cards(ui);
 
         material::section_label(ui, tr("Accent color"), &theme);
         group_card(ui, &theme, |ui| {
@@ -1302,6 +1322,40 @@ fn theme_card(
     // Long names end in an ellipsis instead of running past the card
     let color = material::lerp_color(theme.subtext0, theme.text, sel.max(fx.hover));
     let galley = material::truncated(ui, label, material::FONT_CAPTION, color, rect.width() - 12.0);
+    let pos = egui::pos2(rect.center().x - galley.size().x / 2.0, rect.bottom() - 13.0 - galley.size().y / 2.0);
+    ui.painter().galley(pos, galley, color);
+    resp
+}
+
+/// A card showing a folder and a few file icons drawn in `style`, in the current palette.
+fn icon_style_card(
+    ui: &mut egui::Ui,
+    id_source: impl std::hash::Hash + std::fmt::Debug,
+    width: f32,
+    style: IconStyle,
+    theme: &SerpantinumTheme,
+    selected: bool,
+) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(width, 82.0), egui::Sense::click());
+    let id = ui.make_persistent_id(id_source);
+    let fx = material::fx(ui, id, &resp, true, &material::FxSpec::CLICK);
+    let sel = material::animate(ui.ctx(), id.with("sel"), selected);
+    let r = material::scaled(rect, fx.scale);
+
+    let idle = material::lerp_color(theme.surface1, theme.surface2, fx.hover.max(fx.press * 0.8));
+    let selected_fill = material::lerp_color(theme.surface1, theme.mauve, 0.26 + fx.hover * 0.05);
+    let back = material::lerp_color(idle, selected_fill, sel);
+    material::paint_fill(ui.painter(), r, CornerRadius::same(material::radius_lg()), back, &fx);
+    let stage = egui::Rect::from_min_size(r.min + egui::vec2(8.0, 8.0), egui::vec2(r.width() - 16.0, 46.0));
+    let painter = ui.painter().with_clip_rect(stage);
+    painter.rect_filled(stage, CornerRadius::same(material::radius_md()), theme.base);
+    let at = |x: f32| egui::pos2(stage.left() + stage.width() * x, stage.center().y);
+    icon_style::paint_folder(style, &painter, at(0.27), 30.0, theme.blue);
+    // A link too, since some styles draw links as something else entirely
+    icon_style::paint_file(style, &painter, at(0.6), icons::PDF, 20.0, theme.red);
+    icon_style::paint_file(style, &painter, at(0.84), icons::SYMLINK, 20.0, theme.subtext0);
+    let color = material::lerp_color(theme.subtext0, theme.text, sel.max(fx.hover));
+    let galley = material::truncated(ui, style.label(), material::FONT_CAPTION, color, rect.width() - 12.0);
     let pos = egui::pos2(rect.center().x - galley.size().x / 2.0, rect.bottom() - 13.0 - galley.size().y / 2.0);
     ui.painter().galley(pos, galley, color);
     resp

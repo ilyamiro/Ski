@@ -6,6 +6,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use eframe::egui::{
     self, text::LayoutJob, text::TextWrapping, Align2, Color32, CornerRadius, Pos2, Rect, Vec2,
 };
+use super::icon_style::{self, IconStyle};
 use super::theme::SerpantinumTheme;
 use crate::i18n::tr;
 use crate::fs::file_item::{office_kind, specific_icon, FileItem, FileType, Office, Tint};
@@ -493,16 +494,19 @@ pub fn paint_icon(painter: &egui::Painter, center: Pos2, icon: &str, size: f32, 
         painter.line_segment([center + Vec2::new(-d, d), center + Vec2::new(d, -d)], stroke);
         return;
     }
-    painter.text(center, Align2::CENTER_CENTER, icon, icons::font(size), color);
+    icon_style::paint_glyph(icon_style::current(), painter, center, icon, size, color);
 }
 
-/// The type icon of a file; office documents are a drawn page (`assets/icons`), everything else is a glyph.
+/// The type icon of a file in the chosen icon style. In the classic style office documents are a drawn
+/// page (`assets/icons`) and everything else is a glyph.
 pub fn paint_item_icon(painter: &egui::Painter, item: &FileItem, center: Pos2, size: f32, (glyph, color): (&str, Color32), fade: f32) {
     if item.is_dir {
         return paint_folder(painter, center, size, color.gamma_multiply(fade));
     }
-    let Some(tex) = office_kind(&item.name).filter(|_| !item.is_dir).and_then(|kind| office_texture(painter.ctx(), kind, size * 1.2)) else {
-        return paint_icon(painter, center, glyph, size, color.gamma_multiply(fade));
+    let style = icon_style::current();
+    let office = office_kind(&item.name).filter(|_| style == IconStyle::Classic);
+    let Some(tex) = office.and_then(|kind| office_texture(painter.ctx(), kind, size * 1.2)) else {
+        return icon_style::paint_file(style, painter, center, glyph, size, color.gamma_multiply(fade));
     };
     // The picture is rasterized once per resolution and only scaled here, so hovering moves nothing inside it
     let side = size * 1.2;
@@ -510,28 +514,9 @@ pub fn paint_item_icon(painter: &egui::Painter, item: &FileItem, center: Pos2, s
     painter.image(tex.id(), shown, Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), Color32::WHITE.gamma_multiply(fade));
 }
 
-/// A folder drawn in two flat layers: a slightly darker back panel that only shows as the tab (rounded on its
-/// outer corner, sloping down on the right), and the front panel over it.
+/// A folder in the chosen icon style.
 pub fn paint_folder(painter: &egui::Painter, center: Pos2, size: f32, color: Color32) {
-    let w = size * 1.05;
-    let h = w * 0.8;
-    let body = Rect::from_center_size(center, Vec2::new(w, h));
-    let r = w * 0.1;
-    let alpha = color.a() as f32 / 255.0;
-    let back = lerp_color(color, Color32::BLACK, 0.2).gamma_multiply(alpha);
-    let front_top = body.top() + r;
-    let tab_right = body.left() + w * 0.35;
-    let mut tab = vec![Pos2::new(body.left(), front_top + r)];
-    for i in 0..=8 {
-        let a = std::f32::consts::PI * (1.0 + 0.5 * i as f32 / 8.0);
-        tab.push(Pos2::new(body.left() + r + r * a.cos(), body.top() + r + r * a.sin()));
-    }
-    tab.push(Pos2::new(tab_right, body.top()));
-    tab.push(Pos2::new(tab_right + r, front_top));
-    tab.push(Pos2::new(tab_right + r, front_top + r));
-    painter.add(egui::Shape::convex_polygon(tab, back, egui::Stroke::NONE));
-    let front = Rect::from_min_max(Pos2::new(body.left(), front_top), body.max);
-    painter.rect_filled(front, CornerRadius::same(r.round() as u8), color);
+    icon_style::paint_folder(icon_style::current(), painter, center, size, color);
 }
 
 /// Sharpest resolution the icons are rasterized at is the first one that covers the drawn size.
