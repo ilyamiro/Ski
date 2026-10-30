@@ -5432,15 +5432,45 @@ impl SkiApp {
 
     /// Copy to / Move to / Extract to: a window of its own with the places on the left, a path
     /// bar on top and the subfolders of the current folder to browse.
+    ///
+    /// Declared each frame of the main window; its contents are drawn by its own redraws, so it
+    /// keeps up when the main window is out of sight.
     fn render_picker(&mut self, ctx: &egui::Context) {
-        let Some(mut picker) = self.picker.take() else { return };
+        let Some(picker) = self.picker.as_ref() else { return };
+        let title = match picker.op {
+            _ if picker.icon_for.is_some() => tr("Folder icon"),
+            TransferOp::Copy => tr("Copy to"),
+            TransferOp::Move => tr("Move to"),
+            TransferOp::Extract => tr("Extract to"),
+        };
+        let what = match &picker.icon_for {
+            Some(f) => format!("“{}”", f.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()),
+            None => Self::describe_count(&picker.items),
+        };
+        let builder = chrome::viewport(format!("{title} — {what}"))
+            .with_inner_size([880.0, 600.0])
+            .with_min_inner_size([560.0, 380.0]);
+        let app = settings_window::AppPtr::new(self);
+        ctx.show_viewport_deferred(egui::ViewportId::from_hash_of("ski_folder_picker"), builder, move |ui, _class| {
+            // SAFETY: see `AppPtr`; the app outlives every window
+            let app = unsafe { &mut *app.get() };
+            app.picker_ui(ui);
+        });
+    }
+
+    fn picker_ui(&mut self, ui: &mut egui::Ui) {
+        let ctx = ui.ctx().clone();
+        let Some(mut picker) = self.picker.take() else {
+            chrome::close_own_viewport(&ctx);
+            return;
+        };
         let theme = self.theme;
         let icon_for = picker.icon_for.clone();
-        let (title, verb) = match picker.op {
-            _ if icon_for.is_some() => (tr("Folder icon"), tr("Set icon")),
-            TransferOp::Copy => (tr("Copy to"), tr("Copy")),
-            TransferOp::Move => (tr("Move to"), tr("Move")),
-            TransferOp::Extract => (tr("Extract to"), tr("Extract")),
+        let verb = match picker.op {
+            _ if icon_for.is_some() => tr("Set icon"),
+            TransferOp::Copy => tr("Copy"),
+            TransferOp::Move => tr("Move"),
+            TransferOp::Extract => tr("Extract"),
         };
         let what = match &icon_for {
             Some(f) => format!("“{}”", f.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()),
@@ -5448,151 +5478,145 @@ impl SkiApp {
         };
         let has_icon = icon_for.as_ref().is_some_and(|f| self.folder_icons.contains_key(f));
         let mut reset = false;
-        let builder = chrome::viewport(format!("{title} — {what}"))
-            .with_inner_size([880.0, 600.0])
-            .with_min_inner_size([560.0, 380.0]);
 
         let mut confirmed = false;
         let mut cancelled = false;
         let mut goto: Option<PathBuf> = None;
         let places = &self.places;
         let pins = &self.pins;
-        ctx.show_viewport_immediate(egui::ViewportId::from_hash_of("ski_folder_picker"), builder, |ui, _class| {
-            let ctx = ui.ctx().clone();
-            if ctx.input(|i| i.viewport().close_requested() || i.key_pressed(egui::Key::Escape)) {
-                cancelled = true;
-            }
-            Self::window_resize_edges(&ctx);
+        if ctx.input(|i| i.viewport().close_requested() || i.key_pressed(egui::Key::Escape)) {
+            cancelled = true;
+        }
+        Self::window_resize_edges(&ctx);
 
-            chrome::sidebar(ui, "pk_places", chrome::SIDEBAR_WIDTH, &theme, |ui| {
+        chrome::sidebar(ui, "pk_places", chrome::SIDEBAR_WIDTH, &theme, |ui| {
+            ui.spacing_mut().item_spacing.y = 2.0;
+            egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                for (idx, place) in places.iter().enumerate() {
+                    if place.kind != PlaceKind::Folder || trash::contains(&place.path) {
+                        continue;
+                    }
+                    if nav_item(ui, ("pk_place", idx), place.icon, &tr_dyn(&place.name), &theme, picker.dir == place.path).clicked() {
+                        goto = Some(place.path.clone());
+                    }
+                }
+                if !pins.is_empty() {
+                    material::divider(ui, &theme);
+                }
+                for pin in pins {
+                    let name = pin.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| pin.display().to_string());
+                    if nav_item(ui, ("pk_pin", pin), icons::FOLDER, &name, &theme, picker.dir == *pin).clicked() {
+                        goto = Some(pin.clone());
+                    }
+                }
+            });
+        });
+
+        chrome::header(ui, "pk_path", &theme, |ui| {
+            // No title bar of its own: the empty parts of the header drag the window
+            chrome::drag_area(ui, ui.max_rect().expand2(egui::vec2(HEADER_MARGIN as f32, 4.0)), ui.scope_id().with("pk_drag"));
+            ui.allocate_ui_with_layout(
+                egui::vec2(ui.available_width(), CONTROL_HEIGHT),
+                egui::Layout::left_to_right(egui::Align::Center),
+                |ui| {
+                    ui.spacing_mut().item_spacing.x = TITLE_GAP;
+                    let can_up = picker.dir.parent().is_some();
+                    if icon_button(ui, "pk_up", icons::ARROW_UP, &theme, can_up, tr("Parent folder")).clicked()
+                        && let Some(parent) = picker.dir.parent() {
+                            goto = Some(parent.to_path_buf());
+                        }
+                    let (rect, _) = ui.allocate_exact_size(egui::vec2((ui.available_width() - CLOSE_GAP - 24.0).max(40.0), CONTROL_HEIGHT), egui::Sense::hover());
+                    // The main header's address pill while it is being edited
+                    ui.painter().rect_filled(rect, material::pill(rect), theme.surface0);
+                    let edit_rect = egui::Rect::from_min_max(egui::pos2(rect.left() + 16.0, rect.top()), egui::pos2(rect.right() - 12.0, rect.bottom()));
+                    let resp = material::put_over(
+                        ui,
+                        edit_rect,
+                        egui::TextEdit::singleline(&mut picker.path_input)
+                            .frame(egui::Frame::NONE)
+                            .align(egui::Align2::LEFT_CENTER)
+                            .font(egui::FontId::proportional(material::FONT_BODY))
+                            .hint_text(tr("Type a folder path and press Enter")),
+                    );
+                    if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                        let typed = PathBuf::from(picker.path_input.trim());
+                        if typed.is_dir() {
+                            goto = Some(typed.canonicalize().unwrap_or(typed));
+                        } else {
+                            picker.path_input = picker.dir.to_string_lossy().into_owned();
+                        }
+                    }
+                    ui.add_space(CLOSE_GAP - TITLE_GAP);
+                    if material::filled_icon_button(ui, "pk_close", icons::CLOSE, &theme, material::CLOSE_BUTTON, tr("Close"), None).clicked() {
+                        cancelled = true;
+                    }
+                },
+            );
+        });
+
+        chrome::footer(ui, "pk_footer", &theme, |ui| {
+            let dest = picker.chosen.as_ref().unwrap_or(&picker.dir);
+            let name = dest.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| dest.display().to_string());
+            // Choosing an icon needs an image; a destination can always be the open folder
+            let ready = icon_for.is_none() || picker.chosen.as_ref().is_some_and(|c| !c.is_dir());
+            ui.horizontal(|ui| {
+                if icon_for.is_some() {
+                    let text = if ready { trf("Icon for {}: “{}”", &[&what, &name]) } else { trf("Choose an image for {}", &[&what]) };
+                    ui.label(egui::RichText::new(text).size(material::FONT_BODY).color(theme.text));
+                } else {
+                    ui.label(egui::RichText::new(trf("{} {} to", &[&verb, &what])).size(material::FONT_CAPTION).color(theme.subtext1));
+                    ui.label(egui::RichText::new(format!("“{name}”")).size(material::FONT_BODY).color(theme.text));
+                }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    confirmed |= material::button(ui, "pk_go", Some(icons::CHECK), verb, &theme, ButtonKind::Filled, ready).clicked() && ready;
+                    cancelled |= material::button(ui, "pk_cancel", None, tr("Cancel"), &theme, ButtonKind::Text, true).clicked();
+                    if has_icon {
+                        reset |= material::button(ui, "pk_reset", None, tr("Reset"), &theme, ButtonKind::Text, true).clicked();
+                    }
+                });
+            });
+        });
+
+        chrome::content(ui, &theme, |ui| {
+            egui::ScrollArea::vertical().auto_shrink([false, false]).id_salt("pk_scroll").show(ui, |ui| {
                 ui.spacing_mut().item_spacing.y = 2.0;
-                egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-                    for (idx, place) in places.iter().enumerate() {
-                        if place.kind != PlaceKind::Folder || trash::contains(&place.path) {
+                let mut pick = None;
+                for folder in &picker.folders {
+                    let label = folder.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                    let resp = nav_item(ui, ("pk_folder", folder), icons::FOLDER, &label, &theme, picker.chosen.as_ref() == Some(folder));
+                    if resp.double_clicked() {
+                        goto = Some(folder.clone());
+                    } else if resp.clicked() {
+                        pick = Some(folder.clone());
+                    }
+                }
+                // A folder of thousands of pictures: rows out of view only take their place
+                let clip = ui.clip_rect();
+                let mut row_h: Option<f32> = None;
+                for image in &picker.images {
+                    if let Some(h) = row_h {
+                        let slot = egui::Rect::from_min_size(ui.cursor().min, egui::vec2(ui.available_width(), h));
+                        if !slot.intersects(clip) && picker.chosen.as_ref() != Some(image) {
+                            ui.allocate_space(slot.size());
                             continue;
                         }
-                        if nav_item(ui, ("pk_place", idx), place.icon, &tr_dyn(&place.name), &theme, picker.dir == place.path).clicked() {
-                            goto = Some(place.path.clone());
-                        }
                     }
-                    if !pins.is_empty() {
-                        material::divider(ui, &theme);
+                    let label = image.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                    let resp = nav_item(ui, ("pk_image", image), icons::IMAGE, &label, &theme, picker.chosen.as_ref() == Some(image));
+                    row_h = Some(resp.rect.height());
+                    if resp.double_clicked() {
+                        picker.chosen = Some(image.clone());
+                        confirmed = true;
+                    } else if resp.clicked() {
+                        pick = Some(image.clone());
                     }
-                    for pin in pins {
-                        let name = pin.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| pin.display().to_string());
-                        if nav_item(ui, ("pk_pin", pin), icons::FOLDER, &name, &theme, picker.dir == *pin).clicked() {
-                            goto = Some(pin.clone());
-                        }
-                    }
-                });
-            });
-
-            chrome::header(ui, "pk_path", &theme, |ui| {
-                // No title bar of its own: the empty parts of the header drag the window
-                chrome::drag_area(ui, ui.max_rect().expand2(egui::vec2(HEADER_MARGIN as f32, 4.0)), ui.scope_id().with("pk_drag"));
-                ui.allocate_ui_with_layout(
-                    egui::vec2(ui.available_width(), CONTROL_HEIGHT),
-                    egui::Layout::left_to_right(egui::Align::Center),
-                    |ui| {
-                        ui.spacing_mut().item_spacing.x = TITLE_GAP;
-                        let can_up = picker.dir.parent().is_some();
-                        if icon_button(ui, "pk_up", icons::ARROW_UP, &theme, can_up, tr("Parent folder")).clicked()
-                            && let Some(parent) = picker.dir.parent() {
-                                goto = Some(parent.to_path_buf());
-                            }
-                        let (rect, _) = ui.allocate_exact_size(egui::vec2((ui.available_width() - CLOSE_GAP - 24.0).max(40.0), CONTROL_HEIGHT), egui::Sense::hover());
-                        // The main header's address pill while it is being edited
-                        ui.painter().rect_filled(rect, material::pill(rect), theme.surface0);
-                        let edit_rect = egui::Rect::from_min_max(egui::pos2(rect.left() + 16.0, rect.top()), egui::pos2(rect.right() - 12.0, rect.bottom()));
-                        let resp = material::put_over(
-                            ui,
-                            edit_rect,
-                            egui::TextEdit::singleline(&mut picker.path_input)
-                                .frame(egui::Frame::NONE)
-                                .align(egui::Align2::LEFT_CENTER)
-                                .font(egui::FontId::proportional(material::FONT_BODY))
-                                .hint_text(tr("Type a folder path and press Enter")),
-                        );
-                        if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                            let typed = PathBuf::from(picker.path_input.trim());
-                            if typed.is_dir() {
-                                goto = Some(typed.canonicalize().unwrap_or(typed));
-                            } else {
-                                picker.path_input = picker.dir.to_string_lossy().into_owned();
-                            }
-                        }
-                        ui.add_space(CLOSE_GAP - TITLE_GAP);
-                        if material::filled_icon_button(ui, "pk_close", icons::CLOSE, &theme, material::CLOSE_BUTTON, tr("Close"), None).clicked() {
-                            cancelled = true;
-                        }
-                    },
-                );
-            });
-
-            chrome::footer(ui, "pk_footer", &theme, |ui| {
-                let dest = picker.chosen.as_ref().unwrap_or(&picker.dir);
-                let name = dest.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| dest.display().to_string());
-                // Choosing an icon needs an image; a destination can always be the open folder
-                let ready = icon_for.is_none() || picker.chosen.as_ref().is_some_and(|c| !c.is_dir());
-                ui.horizontal(|ui| {
-                    if icon_for.is_some() {
-                        let text = if ready { trf("Icon for {}: “{}”", &[&what, &name]) } else { trf("Choose an image for {}", &[&what]) };
-                        ui.label(egui::RichText::new(text).size(material::FONT_BODY).color(theme.text));
-                    } else {
-                        ui.label(egui::RichText::new(trf("{} {} to", &[&verb, &what])).size(material::FONT_CAPTION).color(theme.subtext1));
-                        ui.label(egui::RichText::new(format!("“{name}”")).size(material::FONT_BODY).color(theme.text));
-                    }
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        confirmed |= material::button(ui, "pk_go", Some(icons::CHECK), verb, &theme, ButtonKind::Filled, ready).clicked() && ready;
-                        cancelled |= material::button(ui, "pk_cancel", None, tr("Cancel"), &theme, ButtonKind::Text, true).clicked();
-                        if has_icon {
-                            reset |= material::button(ui, "pk_reset", None, tr("Reset"), &theme, ButtonKind::Text, true).clicked();
-                        }
-                    });
-                });
-            });
-
-            chrome::content(ui, &theme, |ui| {
-                egui::ScrollArea::vertical().auto_shrink([false, false]).id_salt("pk_scroll").show(ui, |ui| {
-                    ui.spacing_mut().item_spacing.y = 2.0;
-                    let mut pick = None;
-                    for folder in &picker.folders {
-                        let label = folder.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-                        let resp = nav_item(ui, ("pk_folder", folder), icons::FOLDER, &label, &theme, picker.chosen.as_ref() == Some(folder));
-                        if resp.double_clicked() {
-                            goto = Some(folder.clone());
-                        } else if resp.clicked() {
-                            pick = Some(folder.clone());
-                        }
-                    }
-                    // A folder of thousands of pictures: rows out of view only take their place
-                    let clip = ui.clip_rect();
-                    let mut row_h: Option<f32> = None;
-                    for image in &picker.images {
-                        if let Some(h) = row_h {
-                            let slot = egui::Rect::from_min_size(ui.cursor().min, egui::vec2(ui.available_width(), h));
-                            if !slot.intersects(clip) && picker.chosen.as_ref() != Some(image) {
-                                ui.allocate_space(slot.size());
-                                continue;
-                            }
-                        }
-                        let label = image.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-                        let resp = nav_item(ui, ("pk_image", image), icons::IMAGE, &label, &theme, picker.chosen.as_ref() == Some(image));
-                        row_h = Some(resp.rect.height());
-                        if resp.double_clicked() {
-                            picker.chosen = Some(image.clone());
-                            confirmed = true;
-                        } else if resp.clicked() {
-                            pick = Some(image.clone());
-                        }
-                    }
-                    if pick.is_some() {
-                        picker.chosen = pick;
-                    }
-                    if picker.folders.is_empty() && picker.images.is_empty() {
-                        material::empty_state(ui, &theme, icons::FOLDER, tr("No subfolders"), Some(tr("Choose this folder with the button below")));
-                    }
-                });
+                }
+                if pick.is_some() {
+                    picker.chosen = pick;
+                }
+                if picker.folders.is_empty() && picker.images.is_empty() {
+                    material::empty_state(ui, &theme, icons::FOLDER, tr("No subfolders"), Some(tr("Choose this folder with the button below")));
+                }
             });
         });
 
@@ -5612,6 +5636,11 @@ impl SkiApp {
             self.transfer(picker.op, picker.items, dest);
         } else if !cancelled {
             self.picker = Some(picker);
+        }
+        if self.picker.is_none() {
+            chrome::close_own_viewport(&ctx);
+            // What was done here is drawn by the main window, which gets its turn when it can
+            ctx.request_repaint_of(egui::ViewportId::ROOT);
         }
     }
 
