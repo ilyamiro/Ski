@@ -218,6 +218,8 @@ pub(crate) enum Dialog {
         conflict_warning: Option<(String, crate::keymap::Action, crate::keymap::Action, Option<usize>)>,
         /// The "Browse more themes" page of Appearance, open with its search text.
         theme_browser: Option<String>,
+        /// The page of Appearance showing every icon in one icon style.
+        icon_gallery: Option<crate::ui::icon_style::IconStyle>,
     },
     Shortcuts,
     /// A copy or move found its target name taken and waits for the answer.

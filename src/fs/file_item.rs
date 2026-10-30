@@ -146,6 +146,72 @@ pub fn specific_icon(name: &str) -> Option<(&'static str, Tint)> {
     })
 }
 
+/// A file of every kind that has an icon of its own, for the icon gallery in Settings: the plain icon
+/// of each type (named after the type), then each kind `specific_icon` gives a glyph of its own.
+pub const ICON_SAMPLES: &[(&str, FileType)] = &[
+    ("", FileType::Other),
+    ("", FileType::Document),
+    ("", FileType::Image),
+    ("", FileType::Audio),
+    ("", FileType::Video),
+    ("", FileType::Archive),
+    ("", FileType::Code),
+    ("", FileType::Executable),
+    ("", FileType::Symlink),
+    ("report.pdf", FileType::Document),
+    ("letter.docx", FileType::Document),
+    ("budget.xlsx", FileType::Document),
+    ("slides.pptx", FileType::Document),
+    ("data.csv", FileType::Document),
+    ("README.md", FileType::Document),
+    ("book.epub", FileType::Document),
+    ("app.log", FileType::Document),
+    ("index.html", FileType::Code),
+    ("style.css", FileType::Code),
+    ("app.js", FileType::Code),
+    ("app.ts", FileType::Code),
+    ("package.json", FileType::Code),
+    ("layout.xml", FileType::Code),
+    ("main.rs", FileType::Code),
+    ("script.py", FileType::Code),
+    ("main.c", FileType::Code),
+    ("main.cpp", FileType::Code),
+    ("Program.cs", FileType::Code),
+    ("main.go", FileType::Code),
+    ("Main.java", FileType::Code),
+    ("Main.kt", FileType::Code),
+    ("App.swift", FileType::Code),
+    ("init.lua", FileType::Code),
+    ("index.php", FileType::Code),
+    ("app.rb", FileType::Code),
+    ("run.sh", FileType::Code),
+    ("setup.ps1", FileType::Code),
+    ("shell.nix", FileType::Code),
+    ("Main.hs", FileType::Code),
+    ("plot.r", FileType::Code),
+    ("App.vue", FileType::Code),
+    ("App.svelte", FileType::Code),
+    ("main.dart", FileType::Code),
+    ("build.zig", FileType::Code),
+    ("app.ex", FileType::Code),
+    ("Main.scala", FileType::Code),
+    ("tool.pl", FileType::Code),
+    ("config.toml", FileType::Other),
+    ("store.db", FileType::Other),
+    ("Dockerfile", FileType::Other),
+    (".gitignore", FileType::Other),
+    ("logo.svg", FileType::Image),
+    ("Inter.ttf", FileType::Other),
+    ("id.pem", FileType::Other),
+    ("cert.crt", FileType::Other),
+    ("disk.iso", FileType::Other),
+    ("photos.zip", FileType::Archive),
+    ("app.deb", FileType::Archive),
+    ("Setup.exe", FileType::Executable),
+    ("linux.torrent", FileType::Other),
+    ("model.stl", FileType::Other),
+];
+
 impl FileType {
     pub fn icon(&self) -> &'static str {
         match self {
@@ -197,6 +263,25 @@ pub struct FileItem {
 }
 
 impl FileItem {
+    /// A made-up file of a name and type, to show its icon; nothing on disk backs it.
+    pub fn sample(name: &str, file_type: FileType) -> Self {
+        FileItem {
+            name: name.to_owned(),
+            path: PathBuf::from(name),
+            is_dir: file_type == FileType::Directory,
+            is_symlink: file_type == FileType::Symlink,
+            size: 0,
+            modified: None,
+            created: None,
+            accessed: None,
+            uid: 0,
+            mode: 0,
+            file_type,
+            is_hidden: false,
+            is_locked: false,
+        }
+    }
+
     pub fn from_path(path: &Path) -> Option<Self> {
         let name = path
             .file_name()
@@ -389,6 +474,15 @@ fn detect_file_type(filename: &str) -> FileType {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn icon_samples_each_show_a_different_icon() {
+        let mut seen = std::collections::HashSet::new();
+        for (name, kind) in ICON_SAMPLES {
+            let glyph = specific_icon(name).map_or(kind.icon(), |(g, _)| g);
+            assert!(seen.insert(glyph), "{name:?} ({kind:?}) repeats an icon");
+        }
+    }
 
     #[test]
     fn test_format_bytes_ext() {

@@ -465,10 +465,12 @@ fn tombstone(painter: &egui::Painter, center: Pos2, glyph: &str, size: f32, colo
     let seed = seed_of(glyph);
     let stone_c = darken(color, 0.6);
     let face_c = darken(color, 0.48);
-    let earth = darken(color, 0.8);
-    let grass = darken(color, 0.42);
+    let earth = darken(color, 0.72);
+    let grass = darken(color, 0.3);
     let mut stone = Rect::from_min_max(center + Vec2::new(-0.36, -0.4) * size, center + Vec2::new(0.36, 0.4) * size);
     let face_top;
+    // How far the carved face reaches either side of the middle at a height, to fit the lettering in
+    let face_half: Box<dyn Fn(f32) -> f32>;
     match seed % 3 {
         0 => {
             let top = radius(stone.width() / 2.0);
@@ -477,6 +479,8 @@ fn tombstone(painter: &egui::Painter, center: Pos2, glyph: &str, size: f32, colo
             let top = radius(face.width() / 2.0);
             painter.rect_filled(face, CornerRadius { nw: top, ne: top, sw: 1, se: 1 }, face_c);
             face_top = face.top() + size * 0.1;
+            let (r, arch_y) = (face.width() / 2.0, face.top() + face.width() / 2.0);
+            face_half = Box::new(move |y| (r * r - (arch_y - y).max(0.0).powi(2)).max(0.0).sqrt());
         }
         1 => {
             stone.min.y += size * 0.14;
@@ -487,6 +491,8 @@ fn tombstone(painter: &egui::Painter, center: Pos2, glyph: &str, size: f32, colo
             painter.rect_filled(stone, CornerRadius::same(radius(size * 0.06)), stone_c);
             painter.rect_filled(stone.shrink(size * 0.05), CornerRadius::same(radius(size * 0.03)), face_c);
             face_top = stone.top() + size * 0.05;
+            let half = stone.width() / 2.0 - size * 0.05;
+            face_half = Box::new(move |_| half);
         }
         _ => {
             let outline = vec![
@@ -497,9 +503,13 @@ fn tombstone(painter: &egui::Painter, center: Pos2, glyph: &str, size: f32, colo
                 stone.right_bottom(),
             ];
             let face = inset(&outline, 0.84);
+            // Under the roof the face widens from nothing at its peak to full width at its shoulders
+            let (peak, shoulder) = (face[2], face[3]);
+            face_half = Box::new(move |y| (shoulder.x - peak.x) * ((y - peak.y) / (shoulder.y - peak.y)).clamp(0.0, 1.0));
             poly(painter, outline, stone_c);
             poly(painter, face, face_c);
-            face_top = stone.top() + size * 0.12;
+            // The lettering sits down where the face has widened under the roof
+            face_top = stone.top() + size * 0.17;
         }
     }
     if size >= 36.0 {
@@ -511,7 +521,17 @@ fn tombstone(painter: &egui::Painter, center: Pos2, glyph: &str, size: f32, colo
     // Stones over 48 points read R.I.P. above the carved glyph
     let rip = size >= 48.0;
     if rip {
-        painter.text(Pos2::new(stone.center().x, face_top + size * 0.04), Align2::CENTER_CENTER, "R.I.P.", FontId::proportional(size * 0.11), color.gamma_multiply(0.85));
+        // Shrunk to fit wherever it is carved, whatever the interface font: inside the face where the
+        // top of the letters is, and clear of the crack
+        let at = Pos2::new(stone.center().x, face_top + size * 0.04);
+        let ink = color.gamma_multiply(0.85);
+        let font = size * 0.11;
+        let cap_top = at.y - font * 0.4;
+        let crack_half = stone.width() * 0.28 - size * 0.03;
+        let room = 2.0 * (face_half(cap_top) - size * 0.04).min(crack_half).max(0.0);
+        let width = painter.layout_no_wrap("R.I.P.".into(), FontId::proportional(font), ink).size().x;
+        let font = font * (room / width).min(1.0);
+        painter.text(at, Align2::CENTER_CENTER, "R.I.P.", FontId::proportional(font), ink);
     }
     let (glyph_size, glyph_at) = if rip {
         (size * 0.42, center + Vec2::new(0.0, size * 0.1))
@@ -520,15 +540,23 @@ fn tombstone(painter: &egui::Painter, center: Pos2, glyph: &str, size: f32, colo
     };
     plain(painter, glyph_at, glyph, glyph_size, color);
 
-    let ground = stone.bottom() + size * 0.02;
-    painter.add(Shape::ellipse_filled(Pos2::new(center.x, ground), Vec2::new(size * 0.5, size * 0.08), earth));
+    // The stone stands in a low grassy mound that covers its foot, with tufts growing on its slopes
+    let (base, reach, rise) = (stone.bottom() + size * 0.04, size * 0.44, size * 0.09);
+    let surface = |dx: f32| base - rise * (1.0 - (dx / reach).powi(2)).max(0.0).sqrt();
+    let mound: Vec<Pos2> = (0..=24).map(|i| {
+        let dx = reach * (i as f32 / 12.0 - 1.0);
+        Pos2::new(center.x + dx, surface(dx))
+    }).collect();
+    poly(painter, mound, earth);
     if size >= 24.0 {
-        for (i, x) in [-0.4f32, -0.3, 0.27, 0.4].into_iter().enumerate() {
-            let x = center.x + x * size;
+        for (i, dx) in [-0.32f32, -0.2, 0.22, 0.33].into_iter().enumerate() {
+            let x = center.x + dx * size;
+            let root = surface(dx * size) + size * 0.015;
             for blade in [-1.0, 0.0, 1.0] {
-                let lean = (blade * 0.03 + noise(seed, i as u32) * 0.02) * size;
-                let bx = x + blade * size * 0.02;
-                poly(painter, vec![Pos2::new(bx - size * 0.015, ground), Pos2::new(bx + lean, ground - size * 0.09), Pos2::new(bx + size * 0.015, ground)], grass);
+                let lean = (blade * 0.025 + noise(seed, i as u32) * 0.015) * size;
+                let bx = x + blade * size * 0.018;
+                let tall = size * (0.07 + 0.015 * (1.0 - blade * blade));
+                poly(painter, vec![Pos2::new(bx - size * 0.013, root), Pos2::new(bx + lean, root - tall), Pos2::new(bx + size * 0.013, root)], grass);
             }
         }
     }
