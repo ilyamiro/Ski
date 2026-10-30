@@ -4461,8 +4461,9 @@ impl SkiApp {
             let mut groups = vec![open_group(item, !item.is_dir, show_parent)];
             let mut mark = vec![bookmark_entry(&item.path)];
             if item.is_dir {
-                let customize: Vec<MenuEntry> = pin_entry(&item.path).into_iter().chain([icon_entry(&item.path)]).collect();
-                mark.extend(fold(icons::PIN, tr("Customize"), customize));
+                // A submenu cannot hold another, so these sit in the group itself
+                mark.extend(pin_entry(&item.path));
+                mark.push(icon_entry(&item.path));
             } else {
                 mark.extend(pin_entry(&item.path));
                 if crate::thumbs::is_image(&item.path) {
@@ -4538,9 +4539,9 @@ impl SkiApp {
                 },
                 {
                     let here = &self.current_path;
-                    let customize: Vec<MenuEntry> = pin_entry(here).into_iter().chain([icon_entry(here)]).collect();
                     let mut mark = vec![bookmark_entry(here)];
-                    mark.extend(fold(icons::PIN, tr("Customize"), customize));
+                    mark.extend(pin_entry(here));
+                    mark.push(icon_entry(here));
                     mark.push((icons::TERMINAL, tr("Open in terminal"), MenuAction::OpenTerminal(here.clone())));
                     mark.extend(admin_entry(here));
                     mark
