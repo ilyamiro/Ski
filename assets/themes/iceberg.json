@@ -1,0 +1,19 @@
+{
+  "name": "Iceberg",
+  "group": "more",
+  "light": false,
+  "base": "#0f1117",
+  "mantle": "#161821",
+  "crust": "#0c0d12",
+  "text": "#c6c8d1",
+  "subtext0": "#b0b2bd",
+  "subtext1": "#6b7089",
+  "surface0": "#1e2132",
+  "surface1": "#272c42",
+  "surface2": "#33374c",
+  "accent": "#84a0c6",
+  "peach": "#e2a478",
+  "green": "#b4be82",
+  "red": "#e27878",
+  "yellow": "#e2c792"
+}

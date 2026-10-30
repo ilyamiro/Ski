@@ -1,0 +1,19 @@
+{
+  "name": "Solarized Dark",
+  "group": "more",
+  "light": false,
+  "base": "#00212b",
+  "mantle": "#002b36",
+  "crust": "#001e26",
+  "text": "#e1e5df",
+  "subtext0": "#93a1a1",
+  "subtext1": "#7a8b8d",
+  "surface0": "#073642",
+  "surface1": "#0f4452",
+  "surface2": "#1a5361",
+  "accent": "#268bd2",
+  "peach": "#e0733c",
+  "green": "#a1b32a",
+  "red": "#f0524f",
+  "yellow": "#b58900"
+}

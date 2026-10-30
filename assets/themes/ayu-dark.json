@@ -1,0 +1,19 @@
+{
+  "name": "Ayu Dark",
+  "group": "more",
+  "light": false,
+  "base": "#0b0e14",
+  "mantle": "#0d1017",
+  "crust": "#090b10",
+  "text": "#bfbdb6",
+  "subtext0": "#a5a39c",
+  "subtext1": "#6c7380",
+  "surface0": "#141821",
+  "surface1": "#1c212b",
+  "surface2": "#262b36",
+  "accent": "#e6b450",
+  "peach": "#ff8f40",
+  "green": "#aad94c",
+  "red": "#f07178",
+  "yellow": "#ffb454"
+}

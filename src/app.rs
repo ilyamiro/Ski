@@ -12,6 +12,7 @@ mod drives_ui;
 mod file_actions;
 mod folder_sizes;
 mod icon_gallery;
+mod theme_editor;
 mod jobs_ui;
 mod network_ui;
 mod perms;
@@ -448,6 +449,8 @@ pub struct SkiApp {
     pub(crate) settings: Settings,
     pub(crate) saved_settings: Settings,
     pub(crate) system_theme: SerpantinumTheme,
+    /// Follows the files a theme comes from; `None` when none could be watched.
+    theme_watch: Option<crate::theme_watch::ThemeWatch>,
     from_theme: SerpantinumTheme,
     target_theme: SerpantinumTheme,
     from_popup_theme: SerpantinumTheme,
@@ -465,6 +468,11 @@ pub struct SkiApp {
     picker: Option<Picker>,
     /// The window showing every icon of an icon style, open on that style.
     pub(crate) icon_gallery: Option<crate::ui::icon_style::IconStyle>,
+    /// The theme editor is open over Settings, and which color's picker is open in it.
+    pub(crate) theme_editor: bool,
+    theme_picker: Option<&'static str>,
+    /// What the editor is working on; kept while it fades out.
+    theme_draft: Option<theme_editor::ThemeDraft>,
     /// The selection summary the pill still shows while it fades out.
     pill_text: String,
     sizes: folder_sizes::SizeScheduler,
@@ -605,6 +613,7 @@ impl SkiApp {
             saved_settings: settings.clone(),
             settings,
             system_theme: SerpantinumTheme::load(),
+            theme_watch: crate::theme_watch::ThemeWatch::new(ctx),
             from_theme: faded,
             target_theme: faded,
             from_popup_theme: theme,
@@ -620,6 +629,9 @@ impl SkiApp {
             dialog: None,
             picker: None,
             icon_gallery: None,
+            theme_editor: false,
+            theme_picker: None,
+            theme_draft: None,
             pill_text: String::new(),
             sizes: Default::default(),
             visible_rows: 0..0,
@@ -1328,6 +1340,13 @@ impl SkiApp {
         }
     }
 
+    /// A generator rewrote the Serpantinum colors or a theme file of the user's.
+    fn reload_external_theme(&mut self) {
+        self.system_theme = SerpantinumTheme::load();
+        crate::ui::theme::reload_user_themes();
+        self.rebuild_theme();
+    }
+
     pub(crate) fn rebuild_theme(&mut self) {
         let mut theme = SerpantinumTheme::from_settings(&self.settings);
         if self.settings.theme == "system" {
@@ -1337,6 +1356,10 @@ impl SkiApp {
                 theme.mauve = a;
                 theme.blue = a;
             }
+        }
+        // The theme being made in the editor shows live, saved or not
+        if self.theme_editor && let Some(draft) = &self.theme_draft {
+            theme = draft.colors.to_theme();
         }
         theme.border_radius = crate::ui::theme::BASE_RADIUS * self.settings.corner_scale;
         let solid = theme;
@@ -1610,6 +1633,13 @@ impl SkiApp {
             return;
         }
 
+        // Escape peels the layers off one at a time: a color picker, the theme editor, then Settings
+        if self.theme_editor && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+            if self.theme_picker.take().is_none() {
+                self.close_theme_editor();
+            }
+            return;
+        }
         if ctx.input(|i| i.key_pressed(egui::Key::Escape))
             && !matches!(self.dialog, Some(Dialog::Conflict { .. }))
             && (self.dialog.is_some() || self.menu.take().is_some()) {
@@ -2166,6 +2196,9 @@ impl eframe::App for SkiApp {
         self.poll_drives(&ctx);
         self.poll_network(&ctx);
         self.drop_zones.clear();
+        if self.theme_watch.as_mut().is_some_and(|w| w.changed(&ctx)) {
+            self.reload_external_theme();
+        }
         self.sync_settings(&ctx);
         let shown_px = match self.view_mode {
             ViewMode::Grid => self.settings.grid_size.picture_size(),
@@ -2303,6 +2336,7 @@ impl eframe::App for SkiApp {
         self.render_jobs_popover(&ctx);
         self.render_menu(&ctx);
         self.render_dialog(&ctx);
+        self.render_theme_editor(&ctx);
         self.render_toast(&ctx);
         self.theme = window_theme;
         self.render_picker(&ctx);
@@ -4998,6 +5032,7 @@ impl SkiApp {
         let dialog_rect = dialog_area.response.rect;
         let outside_click = is_open
             && !matches!(dialog, Dialog::Conflict { .. })
+            && !self.theme_editor
             && !click_consumed
             && ctx.input(|i| {
                 i.pointer.primary_clicked()

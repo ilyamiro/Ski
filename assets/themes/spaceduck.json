@@ -1,0 +1,19 @@
+{
+  "name": "Spaceduck",
+  "group": "more",
+  "light": false,
+  "base": "#0b0d16",
+  "mantle": "#0f111b",
+  "crust": "#080a12",
+  "text": "#ecf0c1",
+  "subtext0": "#c1c3cc",
+  "subtext1": "#818596",
+  "surface0": "#16172d",
+  "surface1": "#1b1c36",
+  "surface2": "#30365f",
+  "accent": "#7a5ccc",
+  "peach": "#e39400",
+  "green": "#5ccc96",
+  "red": "#e33400",
+  "yellow": "#f2ce00"
+}

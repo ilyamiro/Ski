@@ -1,0 +1,19 @@
+{
+  "name": "PaperColor",
+  "group": "more",
+  "light": true,
+  "base": "#f7f7f7",
+  "mantle": "#eeeeee",
+  "crust": "#e4e4e4",
+  "text": "#444444",
+  "subtext0": "#575757",
+  "subtext1": "#878787",
+  "surface0": "#fafafa",
+  "surface1": "#e0e0e0",
+  "surface2": "#d0d0d0",
+  "accent": "#005f87",
+  "peach": "#d75f00",
+  "green": "#718c00",
+  "red": "#d70000",
+  "yellow": "#af8700"
+}

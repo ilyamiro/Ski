@@ -1,0 +1,19 @@
+{
+  "name": "Midnight",
+  "group": "main",
+  "light": false,
+  "base": "#0b0e14",
+  "mantle": "#151a23",
+  "crust": "#10141b",
+  "text": "#dfe6f3",
+  "subtext0": "#b4bfd3",
+  "subtext1": "#7d889c",
+  "surface0": "#181e29",
+  "surface1": "#212938",
+  "surface2": "#2b3446",
+  "accent": "#8ab4f8",
+  "peach": "#f2b8a2",
+  "green": "#9bd3a8",
+  "red": "#f28b82",
+  "yellow": "#fdd663"
+}

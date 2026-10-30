@@ -1,0 +1,19 @@
+{
+  "name": "Tokyo Night",
+  "group": "main",
+  "light": false,
+  "base": "#16161e",
+  "mantle": "#1a1b26",
+  "crust": "#13131a",
+  "text": "#c0caf5",
+  "subtext0": "#a9b1d6",
+  "subtext1": "#7a82a8",
+  "surface0": "#24283b",
+  "surface1": "#2f334d",
+  "surface2": "#3b4261",
+  "accent": "#7aa2f7",
+  "peach": "#ff9e64",
+  "green": "#9ece6a",
+  "red": "#f7768e",
+  "yellow": "#e0af68"
+}

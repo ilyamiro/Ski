@@ -1,0 +1,19 @@
+{
+  "name": "GitHub Dark",
+  "group": "more",
+  "light": false,
+  "base": "#010409",
+  "mantle": "#0d1117",
+  "crust": "#010409",
+  "text": "#e6edf3",
+  "subtext0": "#c9d1d9",
+  "subtext1": "#8b949e",
+  "surface0": "#161b22",
+  "surface1": "#21262d",
+  "surface2": "#30363d",
+  "accent": "#58a6ff",
+  "peach": "#ffa657",
+  "green": "#3fb950",
+  "red": "#f85149",
+  "yellow": "#d29922"
+}

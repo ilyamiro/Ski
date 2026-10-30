@@ -1,0 +1,19 @@
+{
+  "name": "Monokai",
+  "group": "more",
+  "light": false,
+  "base": "#1e1f1c",
+  "mantle": "#272822",
+  "crust": "#191a17",
+  "text": "#f8f8f2",
+  "subtext0": "#cfcfc2",
+  "subtext1": "#90908a",
+  "surface0": "#34352f",
+  "surface1": "#3e3d32",
+  "surface2": "#49483e",
+  "accent": "#66d9ef",
+  "peach": "#fd971f",
+  "green": "#a6e22e",
+  "red": "#f92672",
+  "yellow": "#e6db74"
+}

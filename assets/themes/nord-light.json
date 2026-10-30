@@ -1,0 +1,19 @@
+{
+  "name": "Nord Light",
+  "group": "more",
+  "light": true,
+  "base": "#eceff4",
+  "mantle": "#e5e9f0",
+  "crust": "#d8dee9",
+  "text": "#2e3440",
+  "subtext0": "#3b4252",
+  "subtext1": "#4c566a",
+  "surface0": "#f2f4f8",
+  "surface1": "#d8dee9",
+  "surface2": "#cdd3de",
+  "accent": "#5e81ac",
+  "peach": "#d08770",
+  "green": "#a3be8c",
+  "red": "#bf616a",
+  "yellow": "#ebcb8b"
+}

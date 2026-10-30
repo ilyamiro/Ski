@@ -1,0 +1,19 @@
+{
+  "name": "Dayfox",
+  "group": "more",
+  "light": true,
+  "base": "#f6f2ee",
+  "mantle": "#ebe5df",
+  "crust": "#e4dcd4",
+  "text": "#3d2b5a",
+  "subtext0": "#643f61",
+  "subtext1": "#824d5b",
+  "surface0": "#faf7f4",
+  "surface1": "#dbd1dd",
+  "surface2": "#d3c7bb",
+  "accent": "#2848a9",
+  "peach": "#955f61",
+  "green": "#396847",
+  "red": "#a5222f",
+  "yellow": "#ac5402"
+}

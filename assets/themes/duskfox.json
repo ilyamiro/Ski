@@ -1,0 +1,19 @@
+{
+  "name": "Duskfox",
+  "group": "more",
+  "light": false,
+  "base": "#191726",
+  "mantle": "#232136",
+  "crust": "#14121f",
+  "text": "#e0def4",
+  "subtext0": "#cdcbe0",
+  "subtext1": "#6e6a86",
+  "surface0": "#2d2a45",
+  "surface1": "#373354",
+  "surface2": "#4b4673",
+  "accent": "#c4a7e7",
+  "peach": "#ea9a97",
+  "green": "#a3be8c",
+  "red": "#eb6f92",
+  "yellow": "#f6c177"
+}

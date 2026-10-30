@@ -1,0 +1,19 @@
+{
+  "name": "Kanagawa Dragon",
+  "group": "more",
+  "light": false,
+  "base": "#12120f",
+  "mantle": "#181616",
+  "crust": "#0d0c0c",
+  "text": "#c5c9c5",
+  "subtext0": "#a6a69c",
+  "subtext1": "#737c73",
+  "surface0": "#282727",
+  "surface1": "#393836",
+  "surface2": "#625e5a",
+  "accent": "#8ba4b0",
+  "peach": "#b6927b",
+  "green": "#87a987",
+  "red": "#c4746e",
+  "yellow": "#c4b28a"
+}

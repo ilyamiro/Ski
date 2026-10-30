@@ -1,0 +1,19 @@
+{
+  "name": "Kanagawa",
+  "group": "more",
+  "light": false,
+  "base": "#16161d",
+  "mantle": "#1f1f28",
+  "crust": "#121218",
+  "text": "#dcd7ba",
+  "subtext0": "#c8c093",
+  "subtext1": "#727169",
+  "surface0": "#2a2a37",
+  "surface1": "#363646",
+  "surface2": "#54546d",
+  "accent": "#7e9cd8",
+  "peach": "#ffa066",
+  "green": "#98bb6c",
+  "red": "#ff5d62",
+  "yellow": "#e6c384"
+}

@@ -1,0 +1,19 @@
+{
+  "name": "Everforest Light",
+  "group": "more",
+  "light": true,
+  "base": "#fdf6e3",
+  "mantle": "#f4f0d9",
+  "crust": "#efebd4",
+  "text": "#5c6a72",
+  "subtext0": "#708089",
+  "subtext1": "#829181",
+  "surface0": "#fffbef",
+  "surface1": "#e6e2cc",
+  "surface2": "#e0dcc7",
+  "accent": "#8da101",
+  "peach": "#f57d26",
+  "green": "#35a77c",
+  "red": "#f85552",
+  "yellow": "#dfa000"
+}

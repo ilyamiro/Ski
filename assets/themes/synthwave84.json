@@ -1,0 +1,19 @@
+{
+  "name": "Synthwave '84",
+  "group": "more",
+  "light": false,
+  "base": "#241b2f",
+  "mantle": "#262335",
+  "crust": "#1e1828",
+  "text": "#f0eff1",
+  "subtext0": "#d2cfe0",
+  "subtext1": "#848bbd",
+  "surface0": "#2a2139",
+  "surface1": "#34294f",
+  "surface2": "#463465",
+  "accent": "#ff7edb",
+  "peach": "#f97e72",
+  "green": "#72f1b8",
+  "red": "#fe4450",
+  "yellow": "#fede5d"
+}

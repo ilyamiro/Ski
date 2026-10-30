@@ -1,0 +1,19 @@
+{
+  "name": "Nightfly",
+  "group": "more",
+  "light": false,
+  "base": "#01111f",
+  "mantle": "#011627",
+  "crust": "#000d18",
+  "text": "#c3ccdc",
+  "subtext0": "#acb4c2",
+  "subtext1": "#7c8f8f",
+  "surface0": "#092236",
+  "surface1": "#0e293f",
+  "surface2": "#1d3b53",
+  "accent": "#82aaff",
+  "peach": "#f78c6c",
+  "green": "#a1cd5e",
+  "red": "#fc514e",
+  "yellow": "#e3d18a"
+}

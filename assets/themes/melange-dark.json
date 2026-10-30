@@ -1,0 +1,19 @@
+{
+  "name": "Melange",
+  "group": "more",
+  "light": false,
+  "base": "#221e1c",
+  "mantle": "#292522",
+  "crust": "#1c1917",
+  "text": "#ece1d7",
+  "subtext0": "#d0c0b0",
+  "subtext1": "#a08a74",
+  "surface0": "#34302c",
+  "surface1": "#403a36",
+  "surface2": "#4d4540",
+  "accent": "#e49b5d",
+  "peach": "#e8a87c",
+  "green": "#85b695",
+  "red": "#d47766",
+  "yellow": "#ebc06d"
+}

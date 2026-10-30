@@ -1,0 +1,19 @@
+{
+  "name": "GitHub Light",
+  "group": "more",
+  "light": true,
+  "base": "#ffffff",
+  "mantle": "#f6f8fa",
+  "crust": "#eaeef2",
+  "text": "#1f2328",
+  "subtext0": "#424a53",
+  "subtext1": "#656d76",
+  "surface0": "#ffffff",
+  "surface1": "#eaeef2",
+  "surface2": "#d0d7de",
+  "accent": "#0969da",
+  "peach": "#bc4c00",
+  "green": "#1a7f37",
+  "red": "#cf222e",
+  "yellow": "#9a6700"
+}

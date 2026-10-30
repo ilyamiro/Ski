@@ -1,0 +1,19 @@
+{
+  "name": "Material Ocean",
+  "group": "more",
+  "light": false,
+  "base": "#090b10",
+  "mantle": "#0f111a",
+  "crust": "#070910",
+  "text": "#babed8",
+  "subtext0": "#a6accd",
+  "subtext1": "#717cb4",
+  "surface0": "#1a1c25",
+  "surface1": "#232637",
+  "surface2": "#2f3344",
+  "accent": "#82aaff",
+  "peach": "#f78c6c",
+  "green": "#c3e88d",
+  "red": "#f07178",
+  "yellow": "#ffcb6b"
+}

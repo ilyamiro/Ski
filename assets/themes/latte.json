@@ -1,0 +1,19 @@
+{
+  "name": "Catppuccin Latte",
+  "group": "main",
+  "light": true,
+  "base": "#eff1f5",
+  "mantle": "#e6e9ef",
+  "crust": "#dce0e8",
+  "text": "#4c4f69",
+  "subtext0": "#5c5f77",
+  "subtext1": "#7c7f93",
+  "surface0": "#f2f4f8",
+  "surface1": "#d9dde6",
+  "surface2": "#ccd0da",
+  "accent": "#8839ef",
+  "peach": "#fe640b",
+  "green": "#40a02b",
+  "red": "#d20f39",
+  "yellow": "#df8e1d"
+}

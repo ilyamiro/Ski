@@ -13,7 +13,7 @@ use crate::ui::fonts::SystemFont;
 use crate::ui::icon_style::{self, IconStyle};
 use crate::ui::icons;
 use crate::ui::material::{self, button, chip, choice_row, filled_icon_button, group_card, nav_item_roving, switch_row_with, ButtonKind, Column};
-use crate::ui::theme::{self, SerpantinumTheme, ACCENTS, MORE_PRESETS, PRESETS};
+use crate::ui::theme::{self, SerpantinumTheme, ACCENTS};
 
 const CATEGORY_COUNT: i32 = 8;
 /// The category that lists the sidebar's places.
@@ -311,8 +311,9 @@ impl SkiApp {
         });
     }
 
-    /// Theme cards five to a row; clicking one switches to that palette.
-    fn theme_cards(&mut self, ui: &mut egui::Ui, choices: Vec<(&str, &str, SerpantinumTheme)>) {
+    /// Theme cards five to a row; clicking one switches to that palette. A theme of the user's has
+    /// an edit button beside its preview, and the "+" card opens the editor on a new one.
+    fn theme_cards(&mut self, ui: &mut egui::Ui, choices: Vec<(String, String, SerpantinumTheme)>) {
         let theme = self.theme;
         let gap = 8.0;
         let per_row = 5usize;
@@ -320,10 +321,25 @@ impl SkiApp {
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing = egui::vec2(gap, gap);
             for (id, label, preview) in choices {
-                if theme_card(ui, ("theme_card", id), card_w, label, &preview, &theme, self.settings.theme == id).clicked() {
-                    self.settings.theme = id.to_owned();
-                    self.rebuild_theme();
-                    self.persist_settings();
+                let kind = if id == NEW_THEME {
+                    CardKind::Create
+                } else if id.starts_with("custom:") {
+                    CardKind::Editable
+                } else {
+                    CardKind::Plain
+                };
+                let width = if kind == CardKind::Editable { card_w + EDIT_ROOM } else { card_w };
+                let (card, edit) = theme_card(ui, ("theme_card", &id), width, &label, &preview, &theme, self.settings.theme == id, kind);
+                if edit {
+                    self.open_theme_editor(id.strip_prefix("custom:"));
+                } else if card.clicked() {
+                    if kind == CardKind::Create {
+                        self.open_theme_editor(None);
+                    } else {
+                        self.settings.theme = id;
+                        self.rebuild_theme();
+                        self.persist_settings();
+                    }
                 }
             }
         });
@@ -370,11 +386,11 @@ impl SkiApp {
             });
         });
         let needle = query.trim().to_lowercase();
-        let matching = |light: bool| -> Vec<(&'static str, &'static str, SerpantinumTheme)> {
-            MORE_PRESETS
+        let matching = |light: bool| -> Vec<(String, String, SerpantinumTheme)> {
+            theme::presets()
                 .iter()
-                .filter(|(id, label, _, l)| *l == light && (needle.is_empty() || label.to_lowercase().contains(&needle) || id.contains(&needle)))
-                .map(|(id, label, ..)| (*id, *label, preset_preview(id)))
+                .filter(|p| p.more && p.colors.light == light && (needle.is_empty() || p.name.to_lowercase().contains(&needle) || p.id.contains(&needle)))
+                .map(|p| (p.id.to_owned(), p.name.to_owned(), preset_preview(p.id)))
                 .collect()
         };
         let (dark, light) = (matching(false), matching(true));
@@ -401,15 +417,21 @@ impl SkiApp {
         }
 
         material::section_label(ui, tr("Theme"), &theme);
-        // The desktop's palette and the two plain ones, then the curated palettes under a divider
-        let mut basics = vec![("system", tr("System"), self.system_theme)];
-        basics.extend(PRESETS[..2].iter().map(|(id, label, ..)| (*id, tr(label), preset_preview(id))));
+        // The desktop's palette, the two plain ones and a "+" for making one, then the user's own
+        // and the curated palettes under a divider
+        let presets = theme::presets();
+        let main: Vec<_> = presets.iter().filter(|p| !p.more).collect();
+        let mut basics = vec![("system".to_owned(), tr("System").to_owned(), self.system_theme)];
+        basics.extend(main.iter().take(2).map(|p| (p.id.to_owned(), tr(p.name).to_owned(), preset_preview(p.id))));
+        basics.push((NEW_THEME.to_owned(), tr("New theme").to_owned(), self.theme));
         self.theme_cards(ui, basics);
         material::divider(ui, &theme);
-        let mut others: Vec<(&str, &str, SerpantinumTheme)> = PRESETS[2..].iter().map(|(id, label, ..)| (*id, tr(label), preset_preview(id))).collect();
+        let mut others: Vec<(String, String, SerpantinumTheme)> =
+            theme::user_themes().iter().filter(|c| !c.id.is_empty()).map(|c| (format!("custom:{}", c.id), c.name.clone(), c.colors.to_theme())).collect();
+        others.extend(main.iter().skip(2).map(|p| (p.id.to_owned(), tr(p.name).to_owned(), preset_preview(p.id))));
         // A palette picked from the full list shows here too, so the choice stays visible
-        if let Some((id, label, ..)) = MORE_PRESETS.iter().find(|(id, ..)| *id == self.settings.theme) {
-            others.push((id, tr(label), preset_preview(id)));
+        if let Some(p) = presets.iter().find(|p| p.more && p.id == self.settings.theme) {
+            others.push((p.id.to_owned(), tr(p.name).to_owned(), preset_preview(p.id)));
         }
         self.theme_cards(ui, others);
         ui.add_space(2.0);
@@ -1344,6 +1366,21 @@ fn preset_preview(id: &str) -> SerpantinumTheme {
     SerpantinumTheme::from_settings(&Settings { theme: id.to_owned(), accent: None, ..Settings::default() })
 }
 
+/// What a theme of the user's is wider than the others by: the gap and the edit button beside its preview.
+const EDIT_ROOM: f32 = 50.0;
+/// The id of the "+" card, which makes a theme instead of picking one.
+const NEW_THEME: &str = "new-theme";
+
+#[derive(Clone, Copy, PartialEq)]
+enum CardKind {
+    Plain,
+    /// With an edit button beside the preview.
+    Editable,
+    /// A "+" in place of the preview.
+    Create,
+}
+
+#[allow(clippy::too_many_arguments)]
 fn theme_card(
     ui: &mut egui::Ui,
     id_source: impl std::hash::Hash + std::fmt::Debug,
@@ -1352,7 +1389,8 @@ fn theme_card(
     preview: &SerpantinumTheme,
     theme: &SerpantinumTheme,
     selected: bool,
-) -> egui::Response {
+    kind: CardKind,
+) -> (egui::Response, bool) {
     let (rect, resp) = ui.allocate_exact_size(egui::vec2(width, 82.0), egui::Sense::click());
     let id = ui.make_persistent_id(id_source);
     let fx = material::fx(ui, id, &resp, true, &material::FxSpec::CLICK);
@@ -1363,28 +1401,44 @@ fn theme_card(
     let selected_fill = material::lerp_color(theme.surface1, theme.mauve, 0.26 + fx.hover * 0.05);
     let back = material::lerp_color(idle, selected_fill, sel);
     material::paint_fill(ui.painter(), r, CornerRadius::same(material::radius_lg()), back, &fx);
-    let swatch_rect = egui::Rect::from_min_size(r.min + egui::vec2(8.0, 8.0), egui::vec2(r.width() - 16.0, 46.0));
+    // An editable card shows its preview with the edit button right beside it
+    let editable = kind == CardKind::Editable;
+    let swatch_rect = egui::Rect::from_min_size(r.min + egui::vec2(8.0, 8.0), egui::vec2(r.width() - 16.0 - if editable { EDIT_ROOM } else { 0.0 }, 46.0));
     let painter = ui.painter();
-    painter.rect_filled(swatch_rect, CornerRadius::same(material::radius_md()), preview.base);
-    let bar = egui::Rect::from_min_size(swatch_rect.min + egui::vec2(6.0, 6.0), egui::vec2(swatch_rect.width() * 0.5, 34.0));
-    painter.rect_filled(bar, CornerRadius::same(material::radius_sm()), preview.surface1);
-    painter.rect_filled(
-        egui::Rect::from_min_size(bar.min + egui::vec2(6.0, 6.0), egui::vec2(bar.width() - 12.0, 6.0)),
-        CornerRadius::same(3),
-        preview.text,
-    );
-    painter.rect_filled(
-        egui::Rect::from_min_size(bar.min + egui::vec2(6.0, 16.0), egui::vec2((bar.width() - 12.0) * 0.6, 6.0)),
-        CornerRadius::same(3),
-        preview.subtext1,
-    );
-    painter.circle_filled(egui::pos2(swatch_rect.right() - 16.0, swatch_rect.center().y), 9.0, preview.mauve);
+    if kind == CardKind::Create {
+        // A plus on a plain tile, in the colors in use
+        painter.rect_filled(swatch_rect, CornerRadius::same(material::radius_md()), preview.base);
+        let ink = material::lerp_color(preview.subtext1, preview.text, fx.hover);
+        material::paint_icon(painter, swatch_rect.center(), icons::ADD, 24.0, ink);
+    } else {
+        let bar = egui::Rect::from_min_size(swatch_rect.min + egui::vec2(6.0, 6.0), egui::vec2(swatch_rect.width() * 0.5, 34.0));
+        painter.rect_filled(bar, CornerRadius::same(material::radius_sm()), preview.surface1);
+        painter.rect_filled(
+            egui::Rect::from_min_size(bar.min + egui::vec2(6.0, 6.0), egui::vec2(bar.width() - 12.0, 6.0)),
+            CornerRadius::same(3),
+            preview.text,
+        );
+        painter.rect_filled(
+            egui::Rect::from_min_size(bar.min + egui::vec2(6.0, 16.0), egui::vec2((bar.width() - 12.0) * 0.6, 6.0)),
+            CornerRadius::same(3),
+            preview.subtext1,
+        );
+        painter.circle_filled(egui::pos2(swatch_rect.right() - 16.0, swatch_rect.center().y), 9.0, preview.mauve);
+    }
     // Long names end in an ellipsis instead of running past the card
+    let mut edit = false;
+    if editable {
+        let size = 36.0;
+        let at = egui::Rect::from_center_size(egui::pos2(swatch_rect.right() + 8.0 + size / 2.0, swatch_rect.center().y), egui::vec2(size, size));
+        // A child of its own: a scope would also take its place in the row and push the next card away
+        let mut button = ui.new_child(egui::UiBuilder::new().max_rect(at));
+        edit = material::filled_icon_button(&mut button, id.with("edit"), icons::RENAME, theme, size, tr("Edit custom theme"), None).clicked();
+    }
     let color = material::lerp_color(theme.subtext0, theme.text, sel.max(fx.hover));
     let galley = material::truncated(ui, label, material::FONT_CAPTION, color, rect.width() - 12.0);
     let pos = egui::pos2(rect.center().x - galley.size().x / 2.0, rect.bottom() - 13.0 - galley.size().y / 2.0);
     ui.painter().galley(pos, galley, color);
-    resp
+    (resp, edit)
 }
 
 /// A card showing a folder and a few file icons drawn in `style`, in the current palette.

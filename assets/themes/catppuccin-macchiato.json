@@ -1,0 +1,19 @@
+{
+  "name": "Catppuccin Macchiato",
+  "group": "more",
+  "light": false,
+  "base": "#1e2030",
+  "mantle": "#24273a",
+  "crust": "#181926",
+  "text": "#cad3f5",
+  "subtext0": "#b8c0e0",
+  "subtext1": "#8087a2",
+  "surface0": "#363a4f",
+  "surface1": "#494d64",
+  "surface2": "#5b6078",
+  "accent": "#c6a0f6",
+  "peach": "#f5a97f",
+  "green": "#a6da95",
+  "red": "#ed8796",
+  "yellow": "#eed49f"
+}

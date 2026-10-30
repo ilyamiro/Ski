@@ -1,0 +1,19 @@
+{
+  "name": "Night Owl",
+  "group": "more",
+  "light": false,
+  "base": "#010e17",
+  "mantle": "#011627",
+  "crust": "#01111d",
+  "text": "#d6deeb",
+  "subtext0": "#a7b4c4",
+  "subtext1": "#637777",
+  "surface0": "#0b2942",
+  "surface1": "#1d3b53",
+  "surface2": "#234d70",
+  "accent": "#82aaff",
+  "peach": "#f78c6c",
+  "green": "#addb67",
+  "red": "#ef5350",
+  "yellow": "#ffeb95"
+}

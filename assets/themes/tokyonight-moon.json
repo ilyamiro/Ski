@@ -1,0 +1,19 @@
+{
+  "name": "Tokyo Night Moon",
+  "group": "more",
+  "light": false,
+  "base": "#1e2030",
+  "mantle": "#222436",
+  "crust": "#191b29",
+  "text": "#c8d3f5",
+  "subtext0": "#b4c2f0",
+  "subtext1": "#7a88cf",
+  "surface0": "#2f334d",
+  "surface1": "#3b4064",
+  "surface2": "#444a73",
+  "accent": "#82aaff",
+  "peach": "#ff966c",
+  "green": "#c3e88d",
+  "red": "#ff757f",
+  "yellow": "#ffc777"
+}

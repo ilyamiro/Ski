@@ -1,0 +1,19 @@
+{
+  "name": "Ros\u00e9 Pine",
+  "group": "main",
+  "light": false,
+  "base": "#191724",
+  "mantle": "#1f1d2e",
+  "crust": "#16141f",
+  "text": "#e0def4",
+  "subtext0": "#c4c1dc",
+  "subtext1": "#908caa",
+  "surface0": "#26233a",
+  "surface1": "#403d52",
+  "surface2": "#524f67",
+  "accent": "#c4a7e7",
+  "peach": "#f6c177",
+  "green": "#9ccfd8",
+  "red": "#eb6f92",
+  "yellow": "#f6c177"
+}

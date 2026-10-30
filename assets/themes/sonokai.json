@@ -1,0 +1,19 @@
+{
+  "name": "Sonokai",
+  "group": "more",
+  "light": false,
+  "base": "#222327",
+  "mantle": "#2c2e34",
+  "crust": "#181819",
+  "text": "#e2e2e3",
+  "subtext0": "#b9babc",
+  "subtext1": "#7f8490",
+  "surface0": "#33353f",
+  "surface1": "#363944",
+  "surface2": "#414550",
+  "accent": "#76cce0",
+  "peach": "#f39660",
+  "green": "#9ed072",
+  "red": "#fc5d7c",
+  "yellow": "#e7c664"
+}

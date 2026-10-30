@@ -1,0 +1,19 @@
+{
+  "name": "Ros\u00e9 Pine Moon",
+  "group": "more",
+  "light": false,
+  "base": "#232136",
+  "mantle": "#2a273f",
+  "crust": "#1d1b2e",
+  "text": "#e0def4",
+  "subtext0": "#c4c1dc",
+  "subtext1": "#908caa",
+  "surface0": "#393552",
+  "surface1": "#44415a",
+  "surface2": "#56526e",
+  "accent": "#c4a7e7",
+  "peach": "#ea9a97",
+  "green": "#9ccfd8",
+  "red": "#eb6f92",
+  "yellow": "#f6c177"
+}

@@ -1,0 +1,19 @@
+{
+  "name": "Ayu Light",
+  "group": "more",
+  "light": true,
+  "base": "#fcfcfc",
+  "mantle": "#f3f4f5",
+  "crust": "#e8eaec",
+  "text": "#5c6166",
+  "subtext0": "#6c7175",
+  "subtext1": "#8a9199",
+  "surface0": "#f8f9fa",
+  "surface1": "#e7eaed",
+  "surface2": "#dadde1",
+  "accent": "#399ee6",
+  "peach": "#fa8d3e",
+  "green": "#86b300",
+  "red": "#f07171",
+  "yellow": "#f2ae49"
+}

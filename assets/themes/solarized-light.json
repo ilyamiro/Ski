@@ -1,0 +1,19 @@
+{
+  "name": "Solarized Light",
+  "group": "more",
+  "light": true,
+  "base": "#fdf6e3",
+  "mantle": "#eee8d5",
+  "crust": "#e6dfca",
+  "text": "#3b4a50",
+  "subtext0": "#586e75",
+  "subtext1": "#6f8184",
+  "surface0": "#f7f0dc",
+  "surface1": "#e3dcc6",
+  "surface2": "#d6cfb8",
+  "accent": "#268bd2",
+  "peach": "#cb4b16",
+  "green": "#859900",
+  "red": "#dc322f",
+  "yellow": "#857000"
+}

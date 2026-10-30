@@ -1,0 +1,19 @@
+{
+  "name": "One Light",
+  "group": "more",
+  "light": true,
+  "base": "#fafafa",
+  "mantle": "#f0f0f1",
+  "crust": "#e5e5e6",
+  "text": "#383a42",
+  "subtext0": "#50525c",
+  "subtext1": "#696c77",
+  "surface0": "#fbfbfb",
+  "surface1": "#e5e5e6",
+  "surface2": "#dbdbdc",
+  "accent": "#4078f2",
+  "peach": "#986801",
+  "green": "#50a14f",
+  "red": "#e45649",
+  "yellow": "#c18401"
+}

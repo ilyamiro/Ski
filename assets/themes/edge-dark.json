@@ -1,0 +1,19 @@
+{
+  "name": "Edge Dark",
+  "group": "more",
+  "light": false,
+  "base": "#202023",
+  "mantle": "#2c2e34",
+  "crust": "#1b1b1e",
+  "text": "#c5cdd9",
+  "subtext0": "#b0b8c4",
+  "subtext1": "#758094",
+  "surface0": "#33353f",
+  "surface1": "#363a4e",
+  "surface2": "#414550",
+  "accent": "#6cb6eb",
+  "peach": "#d99a6c",
+  "green": "#a0c980",
+  "red": "#ec7279",
+  "yellow": "#deb974"
+}

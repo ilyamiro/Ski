@@ -1,0 +1,19 @@
+{
+  "name": "Material Lighter",
+  "group": "more",
+  "light": true,
+  "base": "#fafafa",
+  "mantle": "#f0f0f0",
+  "crust": "#e6e6e6",
+  "text": "#37474f",
+  "subtext0": "#546e7a",
+  "subtext1": "#7e939e",
+  "surface0": "#ffffff",
+  "surface1": "#e7e7e8",
+  "surface2": "#d8d8da",
+  "accent": "#39adb5",
+  "peach": "#f76d47",
+  "green": "#91b859",
+  "red": "#e53935",
+  "yellow": "#ffb62c"
+}

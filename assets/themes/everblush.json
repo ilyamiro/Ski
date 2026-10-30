@@ -1,0 +1,19 @@
+{
+  "name": "Everblush",
+  "group": "more",
+  "light": false,
+  "base": "#10171a",
+  "mantle": "#141b1e",
+  "crust": "#0d1315",
+  "text": "#dadada",
+  "subtext0": "#b3b9b8",
+  "subtext1": "#8a9294",
+  "surface0": "#1e2528",
+  "surface1": "#232a2d",
+  "surface2": "#2d3437",
+  "accent": "#67b0e8",
+  "peach": "#e9967e",
+  "green": "#8ccf7e",
+  "red": "#e57474",
+  "yellow": "#e5c76b"
+}

@@ -1,0 +1,19 @@
+{
+  "name": "Material Darker",
+  "group": "more",
+  "light": false,
+  "base": "#1a1a1a",
+  "mantle": "#212121",
+  "crust": "#151515",
+  "text": "#eeffff",
+  "subtext0": "#b0bec5",
+  "subtext1": "#8a8a8a",
+  "surface0": "#2a2a2a",
+  "surface1": "#323232",
+  "surface2": "#3d3d3d",
+  "accent": "#80cbc4",
+  "peach": "#f78c6c",
+  "green": "#c3e88d",
+  "red": "#f07178",
+  "yellow": "#ffcb6b"
+}

@@ -1,0 +1,19 @@
+{
+  "name": "Tokyo Night Day",
+  "group": "more",
+  "light": true,
+  "base": "#e1e2e7",
+  "mantle": "#d0d5e3",
+  "crust": "#c4c8da",
+  "text": "#3760bf",
+  "subtext0": "#6172b0",
+  "subtext1": "#848cb5",
+  "surface0": "#e9e9ed",
+  "surface1": "#c4c8da",
+  "surface2": "#b6bfe2",
+  "accent": "#2e7de9",
+  "peach": "#b15c00",
+  "green": "#587539",
+  "red": "#f52a65",
+  "yellow": "#8c6c3e"
+}

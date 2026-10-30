@@ -1,0 +1,19 @@
+{
+  "name": "Terafox",
+  "group": "more",
+  "light": false,
+  "base": "#0f1c1e",
+  "mantle": "#152528",
+  "crust": "#0b1517",
+  "text": "#e6eaea",
+  "subtext0": "#cbd9d8",
+  "subtext1": "#587b7b",
+  "surface0": "#1d3337",
+  "surface1": "#254147",
+  "surface2": "#2d4f56",
+  "accent": "#a1cdd8",
+  "peach": "#ff8349",
+  "green": "#7aa4a1",
+  "red": "#e85c51",
+  "yellow": "#f0c674"
+}

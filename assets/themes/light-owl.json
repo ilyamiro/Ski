@@ -1,0 +1,19 @@
+{
+  "name": "Light Owl",
+  "group": "more",
+  "light": true,
+  "base": "#fbfbfb",
+  "mantle": "#f0f0f0",
+  "crust": "#e4e4e4",
+  "text": "#403f53",
+  "subtext0": "#5e5d72",
+  "subtext1": "#7a8181",
+  "surface0": "#ffffff",
+  "surface1": "#e4e7ea",
+  "surface2": "#d3d8dc",
+  "accent": "#4876d6",
+  "peach": "#c96765",
+  "green": "#08916a",
+  "red": "#de3d3b",
+  "yellow": "#daaa01"
+}

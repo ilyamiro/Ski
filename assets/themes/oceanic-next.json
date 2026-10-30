@@ -1,0 +1,19 @@
+{
+  "name": "Oceanic Next",
+  "group": "more",
+  "light": false,
+  "base": "#16232a",
+  "mantle": "#1b2b34",
+  "crust": "#121d23",
+  "text": "#d8dee9",
+  "subtext0": "#c0c5ce",
+  "subtext1": "#a7adba",
+  "surface0": "#243540",
+  "surface1": "#343d46",
+  "surface2": "#4f5b66",
+  "accent": "#6699cc",
+  "peach": "#f99157",
+  "green": "#99c794",
+  "red": "#ec5f67",
+  "yellow": "#fac863"
+}

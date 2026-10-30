@@ -1,0 +1,19 @@
+{
+  "name": "Palenight",
+  "group": "more",
+  "light": false,
+  "base": "#232534",
+  "mantle": "#292d3e",
+  "crust": "#1b1e2b",
+  "text": "#d6daf2",
+  "subtext0": "#a6accd",
+  "subtext1": "#676e95",
+  "surface0": "#32374d",
+  "surface1": "#3a3f58",
+  "surface2": "#444a64",
+  "accent": "#c792ea",
+  "peach": "#f78c6c",
+  "green": "#c3e88d",
+  "red": "#ff5370",
+  "yellow": "#ffcb6b"
+}

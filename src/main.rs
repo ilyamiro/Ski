@@ -9,6 +9,7 @@ mod plugins;
 mod portal;
 mod settings;
 mod settings_ui;
+mod theme_watch;
 mod thumbs;
 mod ui;
 mod wayland_dnd;
@@ -53,6 +54,7 @@ fn open_window(mut request: instance::Request) -> eframe::Result {
 
     let settings = settings::Settings::load();
     i18n::set_language(i18n::resolve(&settings.language));
+    ui::theme::reload_user_themes();
     let theme = SerpantinumTheme::from_settings(&settings);
 
     // A file given instead of a folder (a browser's "Show in folder") opens its folder with the file selected

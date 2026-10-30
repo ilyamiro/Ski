@@ -1,0 +1,19 @@
+{
+  "name": "Melange Light",
+  "group": "more",
+  "light": true,
+  "base": "#f4f0ed",
+  "mantle": "#e9e1db",
+  "crust": "#ddd5cf",
+  "text": "#54433a",
+  "subtext0": "#6b574c",
+  "subtext1": "#7d6658",
+  "surface0": "#faf6f3",
+  "surface1": "#ddd3cc",
+  "surface2": "#d0c6bf",
+  "accent": "#7892bd",
+  "peach": "#bc5c00",
+  "green": "#3a684a",
+  "red": "#bf0021",
+  "yellow": "#a06d00"
+}

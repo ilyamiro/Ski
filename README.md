@@ -218,6 +218,23 @@ The default theme follows your [Serpantinum](https://github.com/ilyamiro) colors
 
 ![Themes](docs/screenshots/themes.png)
 
+### Custom themes
+
+The **+** card in Settings → Appearance opens the theme editor: give the theme a name, set every color with a picker or a hex code (or start from any built-in palette), and press Save. Your themes are listed under the divider, each with an edit button beside it, and each is one JSON file in `~/.local/state/ski/themes/`, named after the theme (`mine.json` is selected by `"theme": "custom:mine"` in the settings). A color generator (matugen, wallust, pywal, …) can write such a file from a template; Ski follows the folder while it runs:
+
+```json
+{
+  "name": "Mine", "light": false,
+  "base": "#0f0d13", "mantle": "#1c1b20", "crust": "#141318",
+  "text": "#e6e1e9", "subtext0": "#cac4cf", "subtext1": "#938f99",
+  "surface0": "#201f24", "surface1": "#2b292f", "surface2": "#36343a",
+  "accent": "#ccbeff", "peach": "#eeb8cb", "green": "#cac3dc", "red": "#ffb4ab", "yellow": "#f5d76e"
+}
+```
+
+A color that is missing or not `#rrggbb` keeps the Dark palette's. The built-in palettes are plain JSON files of the same shape in `assets/themes/`.
+
+
 Settings are stored in `~/.config/ski/settings.json`, and the trash in `~/.local/share/Trash`.
 
 ## Plugins

@@ -1,0 +1,19 @@
+{
+  "name": "Light",
+  "group": "main",
+  "light": true,
+  "base": "#fef7ff",
+  "mantle": "#f3edf7",
+  "crust": "#ece6f0",
+  "text": "#1d1b20",
+  "subtext0": "#49454f",
+  "subtext1": "#79747e",
+  "surface0": "#f7f2fa",
+  "surface1": "#e7e0ec",
+  "surface2": "#ddd6e2",
+  "accent": "#6750a4",
+  "peach": "#7d5260",
+  "green": "#625b71",
+  "red": "#b3261e",
+  "yellow": "#7d5800"
+}

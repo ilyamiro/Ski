@@ -1,0 +1,19 @@
+{
+  "name": "Monokai Pro",
+  "group": "more",
+  "light": false,
+  "base": "#221f22",
+  "mantle": "#2d2a2e",
+  "crust": "#19181a",
+  "text": "#fcfcfa",
+  "subtext0": "#c1c0c0",
+  "subtext1": "#939293",
+  "surface0": "#363337",
+  "surface1": "#403e41",
+  "surface2": "#5b595c",
+  "accent": "#ab9df2",
+  "peach": "#fc9867",
+  "green": "#a9dc76",
+  "red": "#ff6188",
+  "yellow": "#ffd866"
+}

@@ -1,0 +1,19 @@
+{
+  "name": "Poimandres",
+  "group": "more",
+  "light": false,
+  "base": "#171922",
+  "mantle": "#1b1e28",
+  "crust": "#13151c",
+  "text": "#e4f0fb",
+  "subtext0": "#a6accd",
+  "subtext1": "#767c9d",
+  "surface0": "#252b37",
+  "surface1": "#303340",
+  "surface2": "#3c4152",
+  "accent": "#5de4c7",
+  "peach": "#f087bd",
+  "green": "#5fb3a1",
+  "red": "#d0679d",
+  "yellow": "#fffac2"
+}

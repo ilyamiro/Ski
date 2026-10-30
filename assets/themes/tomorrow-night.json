@@ -1,0 +1,19 @@
+{
+  "name": "Tomorrow Night",
+  "group": "more",
+  "light": false,
+  "base": "#181a1b",
+  "mantle": "#1d1f21",
+  "crust": "#151617",
+  "text": "#d6d8d6",
+  "subtext0": "#c5c8c6",
+  "subtext1": "#969896",
+  "surface0": "#282a2e",
+  "surface1": "#373b41",
+  "surface2": "#41454c",
+  "accent": "#81a2be",
+  "peach": "#de935f",
+  "green": "#b5bd68",
+  "red": "#cc6666",
+  "yellow": "#f0c674"
+}

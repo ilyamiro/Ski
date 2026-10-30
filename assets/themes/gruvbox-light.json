@@ -1,0 +1,19 @@
+{
+  "name": "Gruvbox Light",
+  "group": "more",
+  "light": true,
+  "base": "#fbf1c7",
+  "mantle": "#f2e5bc",
+  "crust": "#ebdbb2",
+  "text": "#3c3836",
+  "subtext0": "#504945",
+  "subtext1": "#7c6f64",
+  "surface0": "#f9f5d7",
+  "surface1": "#ebdbb2",
+  "surface2": "#d5c4a1",
+  "accent": "#076678",
+  "peach": "#af3a03",
+  "green": "#79740e",
+  "red": "#9d0006",
+  "yellow": "#b57614"
+}

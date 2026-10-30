@@ -1,0 +1,19 @@
+{
+  "name": "Flexoki Light",
+  "group": "more",
+  "light": true,
+  "base": "#fffcf0",
+  "mantle": "#f2f0e5",
+  "crust": "#e6e4d9",
+  "text": "#100f0f",
+  "subtext0": "#403e3c",
+  "subtext1": "#6f6e69",
+  "surface0": "#fdfbf3",
+  "surface1": "#e6e4d9",
+  "surface2": "#dad8ce",
+  "accent": "#205ea6",
+  "peach": "#bc5215",
+  "green": "#66800b",
+  "red": "#af3029",
+  "yellow": "#ad8301"
+}

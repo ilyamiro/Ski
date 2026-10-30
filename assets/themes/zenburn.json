@@ -1,0 +1,19 @@
+{
+  "name": "Zenburn",
+  "group": "more",
+  "light": false,
+  "base": "#2b2b2b",
+  "mantle": "#3f3f3f",
+  "crust": "#262626",
+  "text": "#dcdccc",
+  "subtext0": "#c0c0b0",
+  "subtext1": "#9f9f8f",
+  "surface0": "#474747",
+  "surface1": "#4f4f4f",
+  "surface2": "#5f5f5f",
+  "accent": "#8cd0d3",
+  "peach": "#dfaf8f",
+  "green": "#7f9f7f",
+  "red": "#cc9393",
+  "yellow": "#f0dfaf"
+}

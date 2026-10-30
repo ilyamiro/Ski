@@ -1,0 +1,19 @@
+{
+  "name": "Nord",
+  "group": "main",
+  "light": false,
+  "base": "#242933",
+  "mantle": "#2e3440",
+  "crust": "#20242d",
+  "text": "#eceff4",
+  "subtext0": "#d8dee9",
+  "subtext1": "#8c95a6",
+  "surface0": "#343b49",
+  "surface1": "#3b4252",
+  "surface2": "#434c5e",
+  "accent": "#88c0d0",
+  "peach": "#d08770",
+  "green": "#a3be8c",
+  "red": "#bf616a",
+  "yellow": "#ebcb8b"
+}

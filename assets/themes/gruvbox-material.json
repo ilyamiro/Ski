@@ -1,0 +1,19 @@
+{
+  "name": "Gruvbox Material",
+  "group": "more",
+  "light": false,
+  "base": "#1d2021",
+  "mantle": "#282828",
+  "crust": "#1b1b1b",
+  "text": "#d4be98",
+  "subtext0": "#ddc7a1",
+  "subtext1": "#928374",
+  "surface0": "#32302f",
+  "surface1": "#3c3836",
+  "surface2": "#45403d",
+  "accent": "#7daea3",
+  "peach": "#e78a4e",
+  "green": "#a9b665",
+  "red": "#ea6962",
+  "yellow": "#d8a657"
+}

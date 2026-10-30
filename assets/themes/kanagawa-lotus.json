@@ -1,0 +1,19 @@
+{
+  "name": "Kanagawa Lotus",
+  "group": "more",
+  "light": true,
+  "base": "#f2ecbc",
+  "mantle": "#e5ddb0",
+  "crust": "#dcd5ac",
+  "text": "#545464",
+  "subtext0": "#43436c",
+  "subtext1": "#8a8980",
+  "surface0": "#f6f1cc",
+  "surface1": "#e7dba0",
+  "surface2": "#d5cea3",
+  "accent": "#4d699b",
+  "peach": "#cc6d00",
+  "green": "#6f894e",
+  "red": "#c84053",
+  "yellow": "#77713f"
+}

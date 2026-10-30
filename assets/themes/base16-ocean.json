@@ -1,0 +1,19 @@
+{
+  "name": "Ocean",
+  "group": "more",
+  "light": false,
+  "base": "#252a34",
+  "mantle": "#2b303b",
+  "crust": "#20242d",
+  "text": "#dfe1e8",
+  "subtext0": "#c0c5ce",
+  "subtext1": "#a7adba",
+  "surface0": "#343d46",
+  "surface1": "#3e4752",
+  "surface2": "#4f5b66",
+  "accent": "#b48ead",
+  "peach": "#d08770",
+  "green": "#a3be8c",
+  "red": "#bf616a",
+  "yellow": "#ebcb8b"
+}

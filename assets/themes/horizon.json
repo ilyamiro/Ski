@@ -1,0 +1,19 @@
+{
+  "name": "Horizon",
+  "group": "more",
+  "light": false,
+  "base": "#1a1c23",
+  "mantle": "#1c1e26",
+  "crust": "#16161c",
+  "text": "#d5d8da",
+  "subtext0": "#bbbbbb",
+  "subtext1": "#6c6f93",
+  "surface0": "#232530",
+  "surface1": "#2e303e",
+  "surface2": "#3d4050",
+  "accent": "#e95678",
+  "peach": "#f09383",
+  "green": "#29d398",
+  "red": "#f43e5c",
+  "yellow": "#fab795"
+}

@@ -1,0 +1,19 @@
+{
+  "name": "Cyberdream",
+  "group": "more",
+  "light": false,
+  "base": "#111214",
+  "mantle": "#16181a",
+  "crust": "#0d0e10",
+  "text": "#ffffff",
+  "subtext0": "#d0d4dc",
+  "subtext1": "#7b8496",
+  "surface0": "#1e2124",
+  "surface1": "#292c31",
+  "surface2": "#3c4048",
+  "accent": "#5ea1ff",
+  "peach": "#ffbd5e",
+  "green": "#5eff6c",
+  "red": "#ff6e5e",
+  "yellow": "#f1ff5e"
+}

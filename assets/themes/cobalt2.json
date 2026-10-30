@@ -1,0 +1,19 @@
+{
+  "name": "Cobalt2",
+  "group": "more",
+  "light": false,
+  "base": "#15232d",
+  "mantle": "#193549",
+  "crust": "#122738",
+  "text": "#ffffff",
+  "subtext0": "#e1efff",
+  "subtext1": "#9aa9b8",
+  "surface0": "#1e3f57",
+  "surface1": "#234a66",
+  "surface2": "#2b5876",
+  "accent": "#ffc600",
+  "peach": "#ff9d00",
+  "green": "#3ad900",
+  "red": "#ff628c",
+  "yellow": "#fad000"
+}

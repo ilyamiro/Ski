@@ -133,6 +133,8 @@ pub const INDIRECT: &[&str] = &[
     "Home", "Recent", "Trash", "Desktop", "Documents", "Downloads", "Pictures", "Music", "Videos", "Computer",
     "Images", "Video", "Text", "Archives", "System", "Light",
     "Original name", "Modified date", "Parent folder", "Extension",
+    "Background", "Panels", "Deepest background", "Cards", "Raised cards", "Hover fill", "Secondary text", "Faint text",
+    "Accent", "Warm accent", "Green", "Red", "Yellow",
     "Keep", "lowercase", "UPPERCASE", "Title Case", "Sentence case", "Remove", "As listed", "By name", "By date",
 ];
 

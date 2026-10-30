@@ -1,0 +1,19 @@
+{
+  "name": "Vesper",
+  "group": "more",
+  "light": false,
+  "base": "#0a0a0a",
+  "mantle": "#101010",
+  "crust": "#070707",
+  "text": "#ffffff",
+  "subtext0": "#c8c8c8",
+  "subtext1": "#8b8b8b",
+  "surface0": "#1c1c1c",
+  "surface1": "#232323",
+  "surface2": "#343434",
+  "accent": "#ffc799",
+  "peach": "#ffb07a",
+  "green": "#99ffe4",
+  "red": "#ff8080",
+  "yellow": "#ffd28f"
+}

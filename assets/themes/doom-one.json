@@ -1,0 +1,19 @@
+{
+  "name": "Doom One",
+  "group": "more",
+  "light": false,
+  "base": "#21242b",
+  "mantle": "#282c34",
+  "crust": "#1c1f24",
+  "text": "#bbc2cf",
+  "subtext0": "#a7aebb",
+  "subtext1": "#848a96",
+  "surface0": "#2e323a",
+  "surface1": "#383d46",
+  "surface2": "#464b55",
+  "accent": "#51afef",
+  "peach": "#da8548",
+  "green": "#98be65",
+  "red": "#ff6c6b",
+  "yellow": "#ecbe7b"
+}

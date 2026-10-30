@@ -1,0 +1,19 @@
+{
+  "name": "Nightfox",
+  "group": "more",
+  "light": false,
+  "base": "#131a24",
+  "mantle": "#192330",
+  "crust": "#0e141c",
+  "text": "#cdcecf",
+  "subtext0": "#aeafb0",
+  "subtext1": "#71839b",
+  "surface0": "#212e3f",
+  "surface1": "#29394f",
+  "surface2": "#39506d",
+  "accent": "#719cd6",
+  "peach": "#f4a261",
+  "green": "#81b29a",
+  "red": "#c94f6d",
+  "yellow": "#dbc074"
+}

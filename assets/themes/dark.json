@@ -1,0 +1,19 @@
+{
+  "name": "Dark",
+  "group": "main",
+  "light": false,
+  "base": "#0f0d13",
+  "mantle": "#1c1b20",
+  "crust": "#141318",
+  "text": "#e6e1e9",
+  "subtext0": "#cac4cf",
+  "subtext1": "#938f99",
+  "surface0": "#201f24",
+  "surface1": "#2b292f",
+  "surface2": "#36343a",
+  "accent": "#ccbeff",
+  "peach": "#eeb8cb",
+  "green": "#cac3dc",
+  "red": "#ffb4ab",
+  "yellow": "#f5d76e"
+}

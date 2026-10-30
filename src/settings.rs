@@ -13,7 +13,8 @@ use crate::ui::material::Column;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
-    /// Palette name: `system` follows the Serpantinum colors, otherwise a preset from `theme::PRESETS`.
+    /// Palette name: `system` follows the Serpantinum colors, `custom:<id>` is the user's theme in
+    /// `~/.local/state/ski/themes/<id>.json`, otherwise the id of a file in `assets/themes`.
     pub theme: String,
     /// `system` follows the desktop language, otherwise a code from `i18n::Language`.
     pub language: String,

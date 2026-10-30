@@ -1,0 +1,19 @@
+{
+  "name": "Tomorrow",
+  "group": "more",
+  "light": true,
+  "base": "#ffffff",
+  "mantle": "#f4f4f4",
+  "crust": "#e8e8e8",
+  "text": "#4d4d4c",
+  "subtext0": "#626261",
+  "subtext1": "#8e908c",
+  "surface0": "#fafafa",
+  "surface1": "#e6e6e6",
+  "surface2": "#d6d6d6",
+  "accent": "#4271ae",
+  "peach": "#f5871f",
+  "green": "#718c00",
+  "red": "#c82829",
+  "yellow": "#eab700"
+}

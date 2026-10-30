@@ -1,0 +1,19 @@
+{
+  "name": "Ayu Mirage",
+  "group": "more",
+  "light": false,
+  "base": "#1a1f29",
+  "mantle": "#1f2430",
+  "crust": "#171b24",
+  "text": "#cccac2",
+  "subtext0": "#b8b4a8",
+  "subtext1": "#707a8c",
+  "surface0": "#242936",
+  "surface1": "#2d3343",
+  "surface2": "#383e4f",
+  "accent": "#73d0ff",
+  "peach": "#ffa659",
+  "green": "#d5ff80",
+  "red": "#f28779",
+  "yellow": "#ffd173"
+}

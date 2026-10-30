@@ -1,0 +1,19 @@
+{
+  "name": "Carbonfox",
+  "group": "more",
+  "light": false,
+  "base": "#0c0c0c",
+  "mantle": "#161616",
+  "crust": "#080808",
+  "text": "#f2f4f8",
+  "subtext0": "#b6b8bb",
+  "subtext1": "#7b7c7e",
+  "surface0": "#252525",
+  "surface1": "#2a2a2a",
+  "surface2": "#404040",
+  "accent": "#78a9ff",
+  "peach": "#ffab91",
+  "green": "#25be6a",
+  "red": "#ee5396",
+  "yellow": "#f1c21b"
+}

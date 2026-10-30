@@ -1,0 +1,19 @@
+{
+  "name": "Nordfox",
+  "group": "more",
+  "light": false,
+  "base": "#232831",
+  "mantle": "#2e3440",
+  "crust": "#1e222a",
+  "text": "#cdcecf",
+  "subtext0": "#abb1bb",
+  "subtext1": "#7e8188",
+  "surface0": "#39404f",
+  "surface1": "#444c5e",
+  "surface2": "#5a657d",
+  "accent": "#81a1c1",
+  "peach": "#c9826b",
+  "green": "#a3be8c",
+  "red": "#bf616a",
+  "yellow": "#ebcb8b"
+}

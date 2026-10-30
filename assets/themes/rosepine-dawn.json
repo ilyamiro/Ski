@@ -1,0 +1,19 @@
+{
+  "name": "Ros\u00e9 Pine Dawn",
+  "group": "more",
+  "light": true,
+  "base": "#faf4ed",
+  "mantle": "#f4ede8",
+  "crust": "#ebe4df",
+  "text": "#575279",
+  "subtext0": "#6e6a8e",
+  "subtext1": "#797593",
+  "surface0": "#fffaf3",
+  "surface1": "#f2e9e1",
+  "surface2": "#dfdad9",
+  "accent": "#907aa9",
+  "peach": "#d7827e",
+  "green": "#56949f",
+  "red": "#b4637a",
+  "yellow": "#ea9d34"
+}

@@ -1,0 +1,19 @@
+{
+  "name": "GitHub Dimmed",
+  "group": "more",
+  "light": false,
+  "base": "#1c2128",
+  "mantle": "#22272e",
+  "crust": "#1c2128",
+  "text": "#adbac7",
+  "subtext0": "#909dab",
+  "subtext1": "#768390",
+  "surface0": "#2d333b",
+  "surface1": "#373e47",
+  "surface2": "#444c56",
+  "accent": "#539bf5",
+  "peach": "#f69d50",
+  "green": "#57ab5a",
+  "red": "#e5534b",
+  "yellow": "#c69026"
+}

@@ -1,0 +1,19 @@
+{
+  "name": "Moonfly",
+  "group": "more",
+  "light": false,
+  "base": "#080808",
+  "mantle": "#121212",
+  "crust": "#050505",
+  "text": "#c6c6c6",
+  "subtext0": "#b2b2b2",
+  "subtext1": "#808080",
+  "surface0": "#1c1c1c",
+  "surface1": "#262626",
+  "surface2": "#323437",
+  "accent": "#80a0ff",
+  "peach": "#de935f",
+  "green": "#8cc85f",
+  "red": "#ff5454",
+  "yellow": "#e3c78a"
+}

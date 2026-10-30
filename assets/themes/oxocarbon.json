@@ -1,0 +1,19 @@
+{
+  "name": "Oxocarbon",
+  "group": "more",
+  "light": false,
+  "base": "#111111",
+  "mantle": "#161616",
+  "crust": "#0b0b0b",
+  "text": "#f2f4f8",
+  "subtext0": "#dde1e6",
+  "subtext1": "#8d8d8d",
+  "surface0": "#212121",
+  "surface1": "#262626",
+  "surface2": "#393939",
+  "accent": "#be95ff",
+  "peach": "#ff7eb6",
+  "green": "#42be65",
+  "red": "#ee5396",
+  "yellow": "#ffe97b"
+}

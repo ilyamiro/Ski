@@ -1,0 +1,19 @@
+{
+  "name": "One Dark",
+  "group": "main",
+  "light": false,
+  "base": "#1e2227",
+  "mantle": "#282c34",
+  "crust": "#1b1f23",
+  "text": "#abb2bf",
+  "subtext0": "#9aa1ad",
+  "subtext1": "#7f8794",
+  "surface0": "#2f343e",
+  "surface1": "#3a404c",
+  "surface2": "#454c5a",
+  "accent": "#61afef",
+  "peach": "#d19a66",
+  "green": "#98c379",
+  "red": "#e06c75",
+  "yellow": "#e5c07b"
+}
