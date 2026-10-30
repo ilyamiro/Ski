@@ -176,9 +176,8 @@ fn open_window(mut request: instance::Request) -> eframe::Result {
             if app.chooser.is_some() {
                 app.reload_items();
             }
-            if app.chooser.is_none() {
-                app.wl_dnd = wayland_dnd::WaylandDnd::new(cc, &cc.egui_ctx);
-            }
+            // The file dialog takes no drags, but its text clipboard goes through this too
+            app.wl_dnd = wayland_dnd::WaylandDnd::new(cc, &cc.egui_ctx);
             request.shown();
             Ok(Box::new(app))
         }),

@@ -86,6 +86,23 @@ pub fn get_files() -> Option<(Vec<PathBuf>, bool)> {
     if on_wayland() { get_wayland() } else { get_x11() }
 }
 
+/// Puts plain text on the system clipboard, for windows that have no data device of their own
+/// (X11, or a Wayland compositor without one for this window).
+pub fn set_text(text: String) -> bool {
+    if on_wayland() {
+        use wl_clipboard_rs::copy::{MimeType, Options, Source};
+        return Options::new().copy(Source::Bytes(text.into_bytes().into_boxed_slice()), MimeType::Text).is_ok();
+    }
+    use std::sync::Mutex;
+    // The selection is served by this owner, so it has to outlive the call
+    static OWNER: Mutex<Option<arboard::Clipboard>> = Mutex::new(None);
+    let Ok(mut owner) = OWNER.lock() else { return false };
+    if owner.is_none() {
+        *owner = arboard::Clipboard::new().ok();
+    }
+    owner.as_mut().is_some_and(|c| c.set_text(text).is_ok())
+}
+
 /// Plain text on the system clipboard, if any.
 pub fn get_text() -> Option<String> {
     if on_wayland() {

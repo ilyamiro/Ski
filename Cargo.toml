@@ -8,7 +8,11 @@ repository = "https://github.com/ilyamiro/Ski"
 
 [dependencies]
 dirs = "7.0.0"
-eframe = { version = "0.37.0", features = ["glow"] }
+# The defaults without "clipboard": egui's clipboard makes a Wayland data device of its own, and
+# Hyprland sends drags only to a program's first one; wayland_dnd.rs carries the clipboard instead
+eframe = { version = "0.37.0", default-features = false, features = ["glow", "accesskit", "default_fonts", "links", "system_fonts", "wayland", "web_screen_reader", "wgpu", "x11"] }
+# eframe's default "winit/default", which a feature list cannot name: loads the Wayland libraries at run time
+winit = "0.30"
 base64 = "0.22"
 flate2 = "1.1.10"
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp", "ico", "tiff", "tga", "pnm", "qoi", "hdr", "dds"] }

@@ -2,7 +2,9 @@
 //! to the compositor itself, on its own event queue of the window's display: it starts a drag
 //! (`wl_data_device.start_drag`) when files are carried out of the window, and takes part as a
 //! target for drags from any window, Ski's own or another program's. Files travel as
-//! `text/uri-list`, like in Nautilus. The queue is dispatched from the frame loop (`poll`), which
+//! `text/uri-list`, like in Nautilus. The same data device carries the text clipboard: some
+//! compositors (Hyprland) talk to only the first data device a client makes, so egui's own
+//! clipboard, which would make another one, is left out of the build. The queue is dispatched from the frame loop (`poll`), which
 //! never touches the socket; a small thread reads it and wakes the loop when an event is for this queue.
 
 use std::collections::HashMap;
@@ -19,6 +21,7 @@ use wayland_client::protocol::wl_data_device::{self, WlDataDevice};
 use wayland_client::protocol::wl_data_device_manager::{DndAction, WlDataDeviceManager};
 use wayland_client::protocol::wl_data_offer::{self, WlDataOffer};
 use wayland_client::protocol::wl_data_source::{self, WlDataSource};
+use wayland_client::protocol::wl_keyboard::{self, WlKeyboard};
 use wayland_client::protocol::wl_pointer::{self, ButtonState, WlPointer};
 use wayland_client::protocol::wl_registry::WlRegistry;
 use wayland_client::protocol::wl_seat::{self, WlSeat};
@@ -31,6 +34,10 @@ const URI_LIST: &str = "text/uri-list";
 const PLAIN_TEXT: &str = "text/plain;charset=utf-8";
 /// Offered only by Ski, so a drag that comes back to it is known without reading the files.
 const OWN_MIME: &str = "application/x-ski-drag";
+/// Marks text Ski put on the clipboard, which is then read without a round trip through the compositor.
+const OWN_TEXT_MIME: &str = "application/x-ski-text";
+/// Text types other programs offer, the most precise first.
+const TEXT_MIMES: [&str; 5] = [PLAIN_TEXT, "UTF8_STRING", "text/plain", "STRING", "TEXT"];
 const ICON_SIZE: i32 = 64;
 
 /// A drag that is over the window.
@@ -39,13 +46,17 @@ pub struct Hover {
     pub pos: (f64, f64),
     /// The dragged files; empty until they have been read.
     pub paths: Vec<PathBuf>,
+    /// The drag was started by this window.
+    pub own: bool,
 }
 
 /// Files let go over the window.
 pub struct Dropped {
     pub pos: (f64, f64),
     pub paths: Vec<PathBuf>,
+    /// The compositor chose to copy (some let the user pick with Ctrl).
     pub copy: bool,
+    pub own: bool,
 }
 
 #[derive(Default)]
@@ -102,6 +113,8 @@ struct Incoming {
 
 struct OfferInfo {
     mimes: Vec<String>,
+    /// Hyprland tells the action before the offer enters the window, and not again after.
+    action: DndAction,
 }
 
 struct Outgoing {
@@ -112,12 +125,22 @@ struct Outgoing {
     icon: Option<(WlSurface, WlBuffer, WlShmPool)>,
 }
 
+/// Text this window put on the clipboard, served until another program takes the clipboard.
+struct Clip {
+    source: WlDataSource,
+    text: String,
+}
+
 #[derive(Default)]
 struct State {
     surface: Option<ObjectId>,
     /// Only while the seat has a pointer; its button presses give the serial a drag starts with.
     pointer: Option<WlPointer>,
     press_serial: Option<u32>,
+    keyboard: Option<WlKeyboard>,
+    /// The latest key or button press, which setting the clipboard has to name.
+    input_serial: Option<u32>,
+    clip: Option<Clip>,
     offers: HashMap<ObjectId, OfferInfo>,
     selection: Option<WlDataOffer>,
     hover: Option<Incoming>,
@@ -221,19 +244,21 @@ impl WaylandDnd {
         if let Some(h) = &mut self.state.hover {
             h.reader.pump();
             poll.busy |= !h.reader.done();
-            poll.hover = Some(Hover { pos: h.pos, paths: Self::paths_of(h, &self.state.out) });
+            poll.hover = Some(Hover { pos: h.pos, paths: Self::paths_of(h, &self.state.out), own: h.own });
         }
         if let Some(d) = &mut self.state.dropping {
             d.reader.pump();
             if d.reader.done() || d.own {
                 let d = self.state.dropping.take().unwrap();
                 let paths = Self::paths_of(&d, &self.state.out);
-                let copy = d.action == DndAction::Copy;
-                if d.action == DndAction::Copy || d.action == DndAction::Move {
+                // Before version 3 there are no actions: a drop is a move
+                let action = if d.offer.version() >= 3 { d.action } else { DndAction::Move };
+                let copy = action == DndAction::Copy;
+                if action == DndAction::Copy || action == DndAction::Move {
                     if d.offer.version() >= 3 {
                         d.offer.finish();
                     }
-                    poll.dropped = Some(Dropped { pos: d.pos, paths, copy });
+                    poll.dropped = Some(Dropped { pos: d.pos, paths, copy, own: d.own });
                 }
                 self.state.offers.remove(&d.offer.id());
                 d.offer.destroy();
@@ -268,13 +293,15 @@ impl WaylandDnd {
         let _ = self.connection.flush();
     }
 
-    /// Starts a drag of `paths` out of the window; `false` when it cannot be started (no button
-    /// press to hang it on, or a drag is going on already).
+    /// Starts a drag of `paths`, which the compositor then carries over any window; `false` when
+    /// it cannot be started (no button press to hang it on).
     pub fn start_drag(&mut self, paths: &[PathBuf], style: IconStyle) -> bool {
         let Some(serial) = self.state.press_serial else { return false };
-        if self.state.out.is_some() || paths.is_empty() {
+        if paths.is_empty() {
             return false;
         }
+        // A new press means any earlier drag is over, even if the compositor never said so
+        self.state.end_drag();
         let qh = self.queue.handle();
         let source = self.manager.create_data_source(&qh, ());
         for mime in [OWN_MIME, URI_LIST, PLAIN_TEXT] {
@@ -298,6 +325,61 @@ impl WaylandDnd {
         self.state.press_serial = None;
         let _ = self.connection.flush();
         true
+    }
+
+    /// Puts `text` on the clipboard; `false` when there was no key or button press to hang it on.
+    pub fn set_text(&mut self, text: String) -> bool {
+        let Some(serial) = self.state.input_serial else { return false };
+        let qh = self.queue.handle();
+        let source = self.manager.create_data_source(&qh, ());
+        for mime in std::iter::once(OWN_TEXT_MIME).chain(TEXT_MIMES) {
+            source.offer(mime.to_owned());
+        }
+        self.device.set_selection(Some(&source), serial);
+        if let Some(old) = self.state.clip.replace(Clip { source, text }) {
+            old.source.destroy();
+        }
+        let _ = self.connection.flush();
+        true
+    }
+
+    /// The text on the clipboard, if any. Waits a little for the program that holds it to send it.
+    pub fn text(&mut self) -> Option<String> {
+        let mut cx = std::task::Context::from_waker(&self.waker);
+        let _ = self.queue.poll_dispatch_pending(&mut cx, &mut self.state);
+        let offer = self.state.selection.as_ref()?;
+        let mimes = &self.state.offers.get(&offer.id())?.mimes;
+        if mimes.iter().any(|m| m == OWN_TEXT_MIME) && let Some(clip) = &self.state.clip {
+            return Some(clip.text.clone());
+        }
+        let mime = TEXT_MIMES.iter().find(|t| mimes.iter().any(|m| m == *t))?;
+        let mut fds = [0 as RawFd; 2];
+        // SAFETY: pipe2 fills two descriptors we then own
+        if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) } != 0 {
+            return None;
+        }
+        let (read, write) = unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) };
+        offer.receive((*mime).to_owned(), write.as_fd());
+        let _ = self.connection.flush();
+        drop(write);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(500);
+        let mut data = Vec::new();
+        let mut buf = [0u8; 8192];
+        loop {
+            let left = deadline.saturating_duration_since(std::time::Instant::now()).as_millis() as i32;
+            let mut pfd = libc::pollfd { fd: read.as_raw_fd(), events: libc::POLLIN, revents: 0 };
+            // SAFETY: one valid pollfd
+            if left == 0 || unsafe { libc::poll(&mut pfd, 1, left) } <= 0 {
+                break;
+            }
+            // SAFETY: reads into a buffer of the given length from a descriptor we own
+            let n = unsafe { libc::read(read.as_raw_fd(), buf.as_mut_ptr().cast(), buf.len()) };
+            if n <= 0 || data.len() > 16 << 20 {
+                break;
+            }
+            data.extend_from_slice(&buf[..n as usize]);
+        }
+        Some(String::from_utf8_lossy(&data).into_owned())
     }
 
     /// The drag image, drawn into a shared-memory buffer.
@@ -482,6 +564,16 @@ macro_rules! ignore_events {
 }
 ignore_events!(WlDataDeviceManager, WlCompositor, WlShm, WlShmPool, WlBuffer, WlSurface);
 
+impl Dispatch<WlKeyboard, ()> for State {
+    fn event(state: &mut Self, _: &WlKeyboard, event: wl_keyboard::Event, _: &(), _: &Connection, _: &QueueHandle<Self>) {
+        // The keymap's descriptor is closed as the event is dropped
+        match event {
+            wl_keyboard::Event::Enter { serial, .. } | wl_keyboard::Event::Key { serial, .. } => state.input_serial = Some(serial),
+            _ => {}
+        }
+    }
+}
+
 impl Dispatch<WlSeat, ()> for State {
     fn event(state: &mut Self, seat: &WlSeat, event: wl_seat::Event, _: &(), _: &Connection, qh: &QueueHandle<Self>) {
         // Asking a seat without a pointer for one is a protocol error, which would end the window's connection too
@@ -494,6 +586,14 @@ impl Dispatch<WlSeat, ()> for State {
                     pointer.release();
                 }
             }
+            let has = caps.contains(wl_seat::Capability::Keyboard);
+            if has && state.keyboard.is_none() {
+                state.keyboard = Some(seat.get_keyboard(qh, ()));
+            } else if !has && let Some(keyboard) = state.keyboard.take() {
+                if keyboard.version() >= 3 {
+                    keyboard.release();
+                }
+            }
         }
     }
 }
@@ -502,6 +602,7 @@ impl Dispatch<WlPointer, ()> for State {
     fn event(state: &mut Self, _: &WlPointer, event: wl_pointer::Event, _: &(), _: &Connection, _: &QueueHandle<Self>) {
         if let wl_pointer::Event::Button { serial, state: WEnum::Value(ButtonState::Pressed), .. } = event {
             state.press_serial = Some(serial);
+            state.input_serial = Some(serial);
         }
     }
 }
@@ -510,7 +611,7 @@ impl Dispatch<WlDataDevice, ()> for State {
     fn event(state: &mut Self, _: &WlDataDevice, event: wl_data_device::Event, _: &(), _: &Connection, _: &QueueHandle<Self>) {
         match event {
             wl_data_device::Event::DataOffer { id } => {
-                state.offers.insert(id.id(), OfferInfo { mimes: Vec::new() });
+                state.offers.insert(id.id(), OfferInfo { mimes: Vec::new(), action: DndAction::empty() });
             }
             wl_data_device::Event::Enter { serial, surface, x, y, id } => {
                 if let Some(old) = state.hover.take() {
@@ -536,7 +637,8 @@ impl Dispatch<WlDataDevice, ()> for State {
                 if Some(surface.id()) != state.surface || !has_files {
                     offer.accept(serial, None);
                 }
-                state.hover = Some(Incoming { offer, serial, pos: (x, y), own, has_files, accepting: false, action: DndAction::empty(), reader });
+                let action = info.action;
+                state.hover = Some(Incoming { offer, serial, pos: (x, y), own, has_files, accepting: false, action, reader });
             }
             wl_data_device::Event::Motion { x, y, .. } => {
                 if let Some(h) = &mut state.hover {
@@ -577,6 +679,9 @@ impl Dispatch<WlDataOffer, ()> for State {
             }
             wl_data_offer::Event::Action { dnd_action: action } => {
                 let action = dnd_action(action);
+                if let Some(info) = state.offers.get_mut(&offer.id()) {
+                    info.action = action;
+                }
                 for incoming in state.hover.iter_mut().chain(state.dropping.iter_mut()) {
                     if incoming.offer.id() == offer.id() {
                         incoming.action = action;
@@ -589,7 +694,19 @@ impl Dispatch<WlDataOffer, ()> for State {
 }
 
 impl Dispatch<WlDataSource, ()> for State {
-    fn event(state: &mut Self, _: &WlDataSource, event: wl_data_source::Event, _: &(), _: &Connection, _: &QueueHandle<Self>) {
+    fn event(state: &mut Self, source: &WlDataSource, event: wl_data_source::Event, _: &(), _: &Connection, _: &QueueHandle<Self>) {
+        if let Some(clip) = state.clip.as_ref().filter(|c| c.source == *source) {
+            match event {
+                wl_data_source::Event::Send { fd, .. } => write_async(fd, clip.text.clone()),
+                // Another program took the clipboard
+                wl_data_source::Event::Cancelled => {
+                    source.destroy();
+                    state.clip = None;
+                }
+                _ => {}
+            }
+            return;
+        }
         match event {
             wl_data_source::Event::Send { mime_type, fd } => {
                 if let Some(out) = &state.out {

@@ -380,8 +380,10 @@ pub struct SkiApp {
     dnd: Option<dnd::Dnd>,
     /// Files dropped into the folder on show, selected as they turn up in the listing.
     arrivals: Option<dnd::Arrivals>,
-    /// Drags to and from other windows, where the platform allows (see wayland_dnd.rs).
+    /// Drags to and from other windows, and the text clipboard, where the platform allows (see wayland_dnd.rs).
     pub(crate) wl_dnd: Option<crate::wayland_dnd::WaylandDnd>,
+    /// The compositor took over a drag, so the button press that began it will never be released here.
+    release_pointer: bool,
     drop_zones: Vec<dnd::DropZone>,
     /// The part of the window the listing fills (drops on items must land inside it).
     dnd_view: egui::Rect,
@@ -560,6 +562,7 @@ impl SkiApp {
             drop_zones: Vec::new(),
             dnd_view: egui::Rect::NOTHING,
             wl_dnd: None,
+            release_pointer: false,
             error_message: None,
             theme: faded,
             back_history: Vec::new(),
@@ -2098,6 +2101,22 @@ impl eframe::App for SkiApp {
         [0.0; 4]
     }
 
+    fn raw_input_hook(&mut self, _ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        // egui's stand-in clipboard always holds `CLIP_STAND_IN`, so every paste shortcut arrives here
+        for event in &mut raw_input.events {
+            if let egui::Event::Paste(text) = event {
+                *text = self.system_text().unwrap_or_default().replace("\r\n", "\n");
+            }
+        }
+        if std::mem::take(&mut self.release_pointer) {
+            // Far off, so the release cannot count as a click
+            let pos = egui::pos2(-10_000.0, -10_000.0);
+            raw_input.events.push(egui::Event::PointerMoved(pos));
+            raw_input.events.push(egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE });
+            raw_input.events.push(egui::Event::PointerGone);
+        }
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         self.resume_search(&ctx);
@@ -2271,6 +2290,43 @@ impl eframe::App for SkiApp {
         self.update_system_dnd(&ctx);
         self.update_item_drag(&ctx);
         Self::window_resize_edges(&ctx);
+        self.copy_text_out(&ctx);
+    }
+}
+
+/// What egui's own clipboard holds instead of copied text, which goes to the system's (see
+/// wayland_dnd.rs for why egui's clipboard is left out): with something in it, egui-winit turns
+/// every paste shortcut into a paste event, whose text `raw_input_hook` then fills in.
+const CLIP_STAND_IN: &str = "\u{E000}";
+
+impl SkiApp {
+    /// Sends the text copied this frame to the system clipboard.
+    fn copy_text_out(&mut self, ctx: &egui::Context) {
+        let first = ctx.cumulative_pass_nr() == 0;
+        let copied: Vec<String> = ctx.output_mut(|o| {
+            let mut copied = Vec::new();
+            for command in &mut o.commands {
+                if let egui::OutputCommand::CopyText(text) = command {
+                    copied.push(std::mem::replace(text, CLIP_STAND_IN.to_owned()));
+                }
+            }
+            if first {
+                o.commands.push(egui::OutputCommand::CopyText(CLIP_STAND_IN.to_owned()));
+            }
+            copied
+        });
+        if let Some(text) = copied.into_iter().last() {
+            if !self.wl_dnd.as_mut().is_some_and(|wl| wl.set_text(text.clone())) {
+                crate::clipboard::set_text(text);
+            }
+        }
+    }
+
+    fn system_text(&mut self) -> Option<String> {
+        match &mut self.wl_dnd {
+            Some(wl) => wl.text(),
+            None => crate::clipboard::get_text(),
+        }
     }
 }
 

@@ -1,6 +1,8 @@
 //! Dragging files inside the window: pick up the selection by an item's icon or name, drop it on a
-//! folder, a sidebar place, a breadcrumb or a tab. Moves by default, copies with Ctrl. Files
-//! dropped into the folder on show are selected where the sort puts them, and scrolled to.
+//! folder, a sidebar place, a breadcrumb or a tab. As in Nautilus, files move within a drive and
+//! are copied onto another one; Ctrl copies and Shift moves. Where the compositor can carry the
+//! drag (Wayland), it does from the start, so it goes over any window. Files dropped into the
+//! folder on show are selected where the sort puts them, and scrolled to.
 use super::*;
 use std::time::{Duration, Instant};
 
@@ -11,6 +13,8 @@ const ARRIVAL_WAIT: Duration = Duration::from_secs(60);
 /// Side of a file's card in the picture that follows the pointer, and the shift of each behind it.
 const CARD: f32 = 32.0;
 const CARD_STEP: f32 = 4.0;
+/// Size of the compositor's drag image, in its logical pixels (see wayland_dnd.rs).
+const SYSTEM_ICON: f32 = 64.0;
 
 pub(super) struct Dnd {
     items: Vec<PathBuf>,
@@ -92,12 +96,23 @@ impl SkiApp {
         !items.iter().all(|i| i.parent() == Some(dest)) && !items.iter().any(|i| dest.starts_with(i))
     }
 
+    /// Whether a drop copies, as in Nautilus: Ctrl copies and Shift moves; otherwise files move
+    /// within a drive and are copied onto another one (a USB stick, a server).
+    fn copies(items: &[PathBuf], dest: &Path, modifiers: egui::Modifiers) -> bool {
+        use std::os::unix::fs::MetadataExt;
+        if modifiers.command || modifiers.shift {
+            return modifiers.command;
+        }
+        let (Some(first), Ok(dest)) = (items.first(), std::fs::metadata(dest)) else { return false };
+        std::fs::symlink_metadata(first).is_ok_and(|m| m.dev() != dest.dev())
+    }
+
     /// Follow the pointer, draw the chip and the highlighted target, and carry out the drop.
     pub(super) fn update_item_drag(&mut self, ctx: &egui::Context) {
         let Some(dnd) = &mut self.dnd else { return };
-        let (pos, down, released, copy, escape) = ctx.input(|i| {
+        let (pos, down, released, modifiers, escape) = ctx.input(|i| {
             let button = egui::PointerButton::Primary;
-            (i.pointer.latest_pos(), i.pointer.button_down(button), i.pointer.button_released(button), i.modifiers.command, i.key_pressed(egui::Key::Escape))
+            (i.pointer.latest_pos(), i.pointer.button_down(button), i.pointer.button_released(button), i.modifiers, i.key_pressed(egui::Key::Escape))
         });
         let Some(pos) = pos.filter(|_| (down || released) && !escape) else {
             self.dnd = None;
@@ -111,8 +126,10 @@ impl SkiApp {
         }
         let items = dnd.items.clone();
         let looks = dnd.looks.clone();
-        // Past the window's edge the drag goes on as a real one, which other windows can take
-        if !ctx.content_rect().shrink(1.0).contains(pos) {
+        // As in Nautilus the compositor carries the drag, so it goes over any window and its
+        // picture is never cut off at the window's edge; drops back on this window come in as
+        // any other window's do (`update_system_dnd`)
+        if self.wl_dnd.is_some() {
             let argb = |c: egui::Color32| 0xFF << 24 | (c.r() as u32) << 16 | (c.g() as u32) << 8 | c.b() as u32;
             let style = crate::wayland_dnd::IconStyle {
                 card: argb(self.theme.surface2),
@@ -123,10 +140,12 @@ impl SkiApp {
             };
             if let Some(wl) = &mut self.wl_dnd && wl.start_drag(&items, style) {
                 self.dnd = None;
+                self.release_pointer = true;
                 return;
             }
         }
         let target = self.drop_target(pos, &items);
+        let copy = target.as_ref().is_some_and(|(dest, _)| Self::copies(&items, dest, modifiers));
         let theme = self.theme;
         ctx.set_cursor_icon(egui::CursorIcon::Grabbing);
         ctx.request_repaint();
@@ -137,24 +156,8 @@ impl SkiApp {
             painter.rect_filled(*rect, egui::CornerRadius::same(material::radius_md()), theme.tint(34));
         }
 
-        let what = Self::describe_count(&items);
-        let line = match &target {
-            Some((dest, _)) if trash::is_trash_folder(dest) => trf("Move {} to the trash", &[&what]),
-            Some((dest, _)) => {
-                let name = dest.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| tr("Computer").to_owned());
-                if copy { trf("Copy {} to “{}”", &[&what, &name]) } else { trf("Move {} to “{}”", &[&what, &name]) }
-            }
-            None => what,
-        };
         let stack = self.paint_drag_stack(&painter, pos + egui::vec2(12.0, 12.0), &looks, items.len());
-        let galley = painter.layout_no_wrap(line, egui::FontId::proportional(material::FONT_BODY), theme.text);
-        let chip_size = galley.size() + egui::vec2(36.0, 16.0);
-        let chip = egui::Rect::from_min_size(egui::pos2(stack.right() + 6.0, stack.center().y - chip_size.y / 2.0), chip_size);
-        painter.rect_filled(chip.translate(egui::vec2(0.0, 2.0)), material::pill(chip), egui::Color32::from_black_alpha(60));
-        painter.rect_filled(chip, material::pill(chip), theme.surface2);
-        let icon = if target.as_ref().is_some_and(|(d, _)| trash::is_trash_folder(d)) { icons::TRASH } else if copy { icons::COPY } else { icons::FOLDER_MOVE };
-        material::paint_icon(&painter, egui::pos2(chip.left() + 16.0, chip.center().y), icon, material::ICON_SM, theme.mauve);
-        painter.galley(egui::pos2(chip.left() + 30.0, chip.center().y - galley.size().y / 2.0), galley, theme.text);
+        self.paint_drop_hint(&painter, egui::pos2(stack.right() + 6.0, stack.center().y), &items, target.as_ref().map(|t| t.0.as_path()), copy);
 
         if released {
             self.dnd = None;
@@ -172,33 +175,70 @@ impl SkiApp {
         (self.dnd_view.contains(pos) && self.can_modify_here() && self.accepts(&self.current_path, items)).then(|| (self.current_path.clone(), None))
     }
 
-    /// Drags coming from other windows (or back from this one): highlight the target under the
-    /// pointer and carry out the drop.
+    /// Drags coming from other windows, or from this one once the compositor carries them:
+    /// highlight the target under the pointer and carry out the drop.
     pub(super) fn update_system_dnd(&mut self, ctx: &egui::Context) {
         let Some(wl) = &mut self.wl_dnd else { return };
+        // Read even in the file dialog, which takes no drops: the clipboard comes through it too
         let poll = wl.poll();
+        if self.picking() {
+            return;
+        }
         let scale = ctx.input(|i| i.viewport().native_pixels_per_point).unwrap_or(1.0) / ctx.pixels_per_point();
         let to_ui = |(x, y): (f64, f64)| egui::pos2(x as f32 * scale, y as f32 * scale);
+        // This window keeps the keyboard during its own drags, so Ctrl and Shift are seen here
+        let modifiers = ctx.input(|i| i.modifiers);
         if poll.busy || poll.hover.is_some() {
             ctx.request_repaint();
         }
         if let Some(hover) = poll.hover {
-            let target = self.system_drop_target(to_ui(hover.pos), &hover.paths);
+            let pos = to_ui(hover.pos);
+            let target = self.system_drop_target(pos, &hover.paths);
             // The files are not known until they have been read; until then the spot counts as fine
             let ok = target.is_some() || hover.paths.is_empty();
             if let Some(wl) = &mut self.wl_dnd {
                 wl.set_accepting(ok);
             }
-            if let Some((_, Some(rect))) = target {
-                let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::unique("item_drag")));
-                painter.rect_filled(rect, egui::CornerRadius::same(material::radius_md()), self.theme.tint(34));
+            let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::unique("item_drag")));
+            if let Some((_, Some(rect))) = &target {
+                painter.rect_filled(*rect, egui::CornerRadius::same(material::radius_md()), self.theme.tint(34));
+            }
+            // Beside the compositor's picture of the files, which sits at the pointer
+            if hover.own && let Some((dest, _)) = &target {
+                let copy = Self::copies(&hover.paths, dest, modifiers);
+                let anchor = pos + egui::vec2(SYSTEM_ICON * scale + 4.0, SYSTEM_ICON * scale * 0.6);
+                self.paint_drop_hint(&painter, anchor, &hover.paths, Some(dest), copy);
             }
         }
         if let Some(drop) = poll.dropped {
             if let Some((dest, _)) = self.system_drop_target(to_ui(drop.pos), &drop.paths) {
-                self.drop_items(drop.paths, dest, drop.copy);
+                // Most compositors leave the choice to the window dropped on, which goes by the drive
+                let copy = drop.copy || Self::copies(&drop.paths, &dest, if drop.own { modifiers } else { egui::Modifiers::NONE });
+                self.drop_items(drop.paths, dest, copy);
             }
         }
+    }
+
+    /// The pill beside the dragged files that says what letting go does, its left end at `anchor`.
+    fn paint_drop_hint(&self, painter: &egui::Painter, anchor: egui::Pos2, items: &[PathBuf], dest: Option<&Path>, copy: bool) {
+        let theme = &self.theme;
+        let what = Self::describe_count(items);
+        let line = match dest {
+            Some(dest) if trash::is_trash_folder(dest) => trf("Move {} to the trash", &[&what]),
+            Some(dest) => {
+                let name = dest.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| tr("Computer").to_owned());
+                if copy { trf("Copy {} to “{}”", &[&what, &name]) } else { trf("Move {} to “{}”", &[&what, &name]) }
+            }
+            None => what,
+        };
+        let galley = painter.layout_no_wrap(line, egui::FontId::proportional(material::FONT_BODY), theme.text);
+        let chip_size = galley.size() + egui::vec2(36.0, 16.0);
+        let chip = egui::Rect::from_min_size(egui::pos2(anchor.x, anchor.y - chip_size.y / 2.0), chip_size);
+        painter.rect_filled(chip.translate(egui::vec2(0.0, 2.0)), material::pill(chip), egui::Color32::from_black_alpha(60));
+        painter.rect_filled(chip, material::pill(chip), theme.surface2);
+        let icon = if dest.is_some_and(trash::is_trash_folder) { icons::TRASH } else if copy { icons::COPY } else { icons::FOLDER_MOVE };
+        material::paint_icon(painter, egui::pos2(chip.left() + 16.0, chip.center().y), icon, material::ICON_SM, theme.mauve);
+        painter.galley(egui::pos2(chip.left() + 30.0, chip.center().y - galley.size().y / 2.0), galley, theme.text);
     }
 
     /// The files being dragged as a small pile of cards, each with its preview or type icon, and
