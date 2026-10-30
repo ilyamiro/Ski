@@ -46,7 +46,7 @@ let
   common = {
     inherit src;
     pname = "ski";
-    version = "0.3.0";
+    version = "0.3.1";
     strictDeps = true;
 
     # rustc already uses several threads per crate, and wgpu, resvg and the like are big, so
