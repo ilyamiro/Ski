@@ -510,19 +510,28 @@ pub fn paint_item_icon(painter: &egui::Painter, item: &FileItem, center: Pos2, s
     painter.image(tex.id(), shown, Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), Color32::WHITE.gamma_multiply(fade));
 }
 
-/// A folder drawn in two flat layers: a slightly darker back panel with the tab, and the front panel over it.
+/// A folder drawn in two flat layers: a slightly darker back panel that only shows as the tab (rounded on its
+/// outer corner, sloping down on the right), and the front panel over it.
 pub fn paint_folder(painter: &egui::Painter, center: Pos2, size: f32, color: Color32) {
     let w = size * 1.05;
     let h = w * 0.8;
     let body = Rect::from_center_size(center, Vec2::new(w, h));
-    let radius = (w * 0.12).round() as u8;
-    let back = lerp_color(color, Color32::BLACK, 0.2).gamma_multiply(color.a() as f32 / 255.0);
-    let tab = Rect::from_min_size(body.min, Vec2::new(w * 0.4, h * 0.3));
-    painter.rect_filled(tab, CornerRadius { nw: radius, ne: radius, sw: 0, se: 0 }, back);
-    let back_body = Rect::from_min_max(Pos2::new(body.left(), body.top() + h * 0.12), body.max);
-    painter.rect_filled(back_body, CornerRadius::same(radius), back);
-    let front = Rect::from_min_max(Pos2::new(body.left(), body.top() + h * 0.3), body.max);
-    painter.rect_filled(front, CornerRadius::same(radius), color);
+    let r = w * 0.1;
+    let alpha = color.a() as f32 / 255.0;
+    let back = lerp_color(color, Color32::BLACK, 0.2).gamma_multiply(alpha);
+    let front_top = body.top() + r;
+    let tab_right = body.left() + w * 0.35;
+    let mut tab = vec![Pos2::new(body.left(), front_top + r)];
+    for i in 0..=8 {
+        let a = std::f32::consts::PI * (1.0 + 0.5 * i as f32 / 8.0);
+        tab.push(Pos2::new(body.left() + r + r * a.cos(), body.top() + r + r * a.sin()));
+    }
+    tab.push(Pos2::new(tab_right, body.top()));
+    tab.push(Pos2::new(tab_right + r, front_top));
+    tab.push(Pos2::new(tab_right + r, front_top + r));
+    painter.add(egui::Shape::convex_polygon(tab, back, egui::Stroke::NONE));
+    let front = Rect::from_min_max(Pos2::new(body.left(), front_top), body.max);
+    painter.rect_filled(front, CornerRadius::same(r.round() as u8), color);
 }
 
 /// Sharpest resolution the icons are rasterized at is the first one that covers the drawn size.
