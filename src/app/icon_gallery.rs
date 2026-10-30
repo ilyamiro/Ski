@@ -36,7 +36,7 @@ impl SkiApp {
                 // The title shares the header's row, its left edge on the rows' icon column
                 let (row, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), CONTROL_HEIGHT), egui::Sense::hover());
                 chrome::drag_area(ui, row, ui.scope_id().with("ig_side_drag"));
-                material::paint_label(ui, row.left() + material::INSET_ICON - 9.0, row.center().y, tr("Icon style"), material::FONT_TITLE, theme.text, row.width());
+                material::paint_label(ui, row.left() + material::INSET_ICON - 15.0, row.center().y, tr("Icon style"), material::FONT_TITLE, theme.text, row.width());
                 ui.add_space(8.0 - ui.spacing().item_spacing.y);
                 ui.spacing_mut().item_spacing.y = 2.0;
                 for s in IconStyle::ALL {

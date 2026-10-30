@@ -12,6 +12,7 @@ mod drives_ui;
 mod file_actions;
 mod folder_sizes;
 mod icon_gallery;
+mod settings_window;
 mod theme_editor;
 mod jobs_ui;
 mod network_ui;
@@ -236,18 +237,6 @@ pub(crate) enum Dialog {
         format: ArchiveFormat,
         first_frame: bool,
     },
-    Settings {
-        tab: usize,
-        font_query: String,
-        hex: String,
-        picking: Option<usize>,
-        defaults: Vec<Option<String>>,
-        keybind_search: String,
-        capture: Option<(crate::keymap::Action, Option<usize>)>,
-        conflict_warning: Option<(String, crate::keymap::Action, crate::keymap::Action, Option<usize>)>,
-        /// The "Browse more themes" page of Appearance, open with its search text.
-        theme_browser: Option<String>,
-    },
     Shortcuts,
     /// A copy or move found its target name taken and waits for the answer.
     Conflict { request: Option<ConflictRequest>, all: bool },
@@ -471,6 +460,12 @@ pub struct SkiApp {
     /// Which two file kinds (from `ICON_SAMPLES`) the icon style cards show beside the folder; drawn again each time Settings opens.
     pub(crate) icon_card_samples: [usize; 2],
     /// The theme editor is open over Settings, and which color's picker is open in it.
+    /// The Settings window, while it is open.
+    pub(crate) settings_win: Option<crate::settings_ui::SettingsState>,
+    /// Settings was asked for while open: bring its window forward.
+    pub(crate) settings_raise: bool,
+    /// Settings just opened: its first category takes the keyboard focus.
+    pub(crate) settings_fresh: bool,
     pub(crate) theme_editor: bool,
     theme_picker: Option<&'static str>,
     /// What the editor is working on; kept while it fades out.
@@ -632,6 +627,9 @@ impl SkiApp {
             picker: None,
             icon_gallery: None,
             icon_card_samples: [0, 1],
+            settings_win: None,
+            settings_raise: false,
+            settings_fresh: false,
             theme_editor: false,
             theme_picker: None,
             theme_draft: None,
@@ -1636,13 +1634,6 @@ impl SkiApp {
             return;
         }
 
-        // Escape peels the layers off one at a time: a color picker, the theme editor, then Settings
-        if self.theme_editor && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
-            if self.theme_picker.take().is_none() {
-                self.close_theme_editor();
-            }
-            return;
-        }
         if ctx.input(|i| i.key_pressed(egui::Key::Escape))
             && !matches!(self.dialog, Some(Dialog::Conflict { .. }))
             && (self.dialog.is_some() || self.menu.take().is_some()) {
@@ -2339,11 +2330,11 @@ impl eframe::App for SkiApp {
         self.render_jobs_popover(&ctx);
         self.render_menu(&ctx);
         self.render_dialog(&ctx);
-        self.render_theme_editor(&ctx);
         self.render_toast(&ctx);
         self.theme = window_theme;
         self.render_picker(&ctx);
         self.render_icon_gallery(&ctx);
+        self.render_settings_window(&ctx);
         self.render_drop_overlay(&ctx);
         self.update_system_dnd(&ctx);
         self.update_item_drag(&ctx);
@@ -4974,7 +4965,6 @@ impl SkiApp {
             });
 
         let preferred = match &dialog {
-            Dialog::Settings { .. } => 860.0,
             Dialog::OpenWith { .. } => 480.0,
             Dialog::BatchRename { .. } => 560.0,
             Dialog::QuickLook { .. } => 720.0,
@@ -5010,7 +5000,6 @@ impl SkiApp {
                             Dialog::Alert { .. } => self.alert_dialog_contents(ui, &mut dialog),
                             Dialog::Properties { .. } => self.properties_contents(ui, &mut dialog),
                             Dialog::OpenWith { .. } => self.open_with_contents(ui, &mut dialog),
-                            Dialog::Settings { .. } => self.settings_dialog_contents(ui, &mut dialog),
                             Dialog::BatchRename { .. } => self.batch_rename_contents(ui, &mut dialog),
                             Dialog::Compress { .. } => self.compress_contents(ui, &mut dialog),
                             Dialog::Shortcuts => self.shortcuts_contents(ui),
@@ -5035,7 +5024,6 @@ impl SkiApp {
         let dialog_rect = dialog_area.response.rect;
         let outside_click = is_open
             && !matches!(dialog, Dialog::Conflict { .. })
-            && !self.theme_editor
             && !click_consumed
             && ctx.input(|i| {
                 i.pointer.primary_clicked()

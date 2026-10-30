@@ -4,7 +4,7 @@ use crate::i18n::{self, tr, tr_dyn, trf, Language};
 
 use eframe::egui::{self, Color32, CornerRadius, Pos2, Rect, Vec2};
 
-use crate::app::{app_row, Dialog, SkiApp, ViewMode};
+use crate::app::{app_row, SkiApp, ViewMode};
 use crate::fs::apps::{self, AppEntry};
 use crate::fs::file_item::{FileItem, ICON_SAMPLES};
 use crate::fs::scanner::{SortBy, SortOrder};
@@ -17,6 +17,8 @@ use crate::ui::material::{self, button, chip, choice_row, filled_icon_button, gr
 use crate::ui::theme::{self, SerpantinumTheme, ACCENTS};
 
 const CATEGORY_COUNT: i32 = 8;
+/// The widest the settings column grows in a wide window.
+const PAGE_WIDTH: f32 = 720.0;
 /// The category that lists the sidebar's places.
 pub(crate) const SIDEBAR_TAB: usize = 3;
 
@@ -24,16 +26,51 @@ fn category_focus_id() -> egui::Id {
     egui::Id::unique("set_cat_focus")
 }
 
+/// What the Settings window holds while it is open: the category and the state of its pages.
+pub(crate) struct SettingsState {
+    pub(crate) tab: usize,
+    font_query: String,
+    hex: String,
+    picking: Option<usize>,
+    defaults: Vec<Option<String>>,
+    keybind_search: String,
+    capture: Option<(Action, Option<usize>)>,
+    conflict_warning: Option<(String, Action, Action, Option<usize>)>,
+    /// The "Browse more themes" page of Appearance, open with its search text.
+    theme_browser: Option<String>,
+}
+
+/// The categories in the order of the window's sidebar: the page number, its icon and its name.
+fn categories() -> [(usize, &'static str, &'static str); CATEGORY_COUNT as usize] {
+    [
+        (0, icons::COG, tr("General")),
+        (1, icons::TUNE, tr("Appearance")),
+        (2, icons::FOLDER_OPEN, tr("Files & View")),
+        (SIDEBAR_TAB, icons::SIDEBAR, tr("Sidebar")),
+        (4, icons::CURSOR, tr("Behavior")),
+        (5, icons::KEYBOARD, tr("Keybindings")),
+        (6, icons::APPS, tr("Applications")),
+        (7, icons::TEMPLATE, tr("Plugins")),
+    ]
+}
+
 impl SkiApp {
     pub(crate) fn open_settings_dialog(&mut self) {
         self.open_settings_at(0);
     }
 
+    /// Opens the Settings window on a category, or brings an open one forward and switches it.
     pub(crate) fn open_settings_at(&mut self, tab: usize) {
         self.capturing_key = false;
+        if let Some(state) = self.settings_win.as_mut() {
+            state.tab = tab;
+            self.settings_raise = true;
+            return;
+        }
         apps::preload_category_defaults();
+        self.settings_fresh = true;
         self.icon_card_samples = pick_icon_card_samples();
-        self.dialog = Some(Dialog::Settings {
+        self.settings_win = Some(SettingsState {
             tab,
             font_query: String::new(),
             hex: self.settings.accent.clone().unwrap_or_default(),
@@ -57,34 +94,69 @@ impl SkiApp {
         self.saved_settings = self.settings.clone();
     }
 
-    pub(crate) fn settings_dialog_contents(&mut self, ui: &mut egui::Ui, dialog: &mut Dialog) -> bool {
-        let Dialog::Settings {
-            tab,
-            font_query,
-            hex,
-            picking,
-            defaults,
-            keybind_search,
-            capture,
-            conflict_warning,
-            theme_browser,
-        } = dialog else {
-            return false;
-        };
+    /// The name of the category that is open, for the window's header.
+    pub(crate) fn settings_category_name(state: &SettingsState) -> &'static str {
+        categories().iter().find(|c| c.0 == state.tab).map_or("", |c| c.2)
+    }
 
+    /// The column of categories down the side, under the window's title.
+    pub(crate) fn settings_sidebar(&mut self, ui: &mut egui::Ui, state: &mut SettingsState) {
         let ctx = ui.ctx().clone();
         let theme = self.theme;
-        // The title lines up with the category icons below it, and the close button sits further out
-        let area = ui.available_rect_before_wrap();
-        let header_rect = egui::Rect::from_min_max(egui::pos2(area.left() + material::INSET_ICON - material::ICON_MD / 2.0 - 6.0, area.top()), egui::pos2(area.right() + 10.0, area.bottom()));
-        let shown = ui.scope_builder(egui::UiBuilder::new().max_rect(header_rect), |ui| material::dialog_header_sized(ui, tr("Settings"), None, &theme, "set_close", None, material::FONT_TITLE + 4.0).0);
-        let close = shown.inner;
-        ui.advance_cursor_after_rect(shown.response.rect);
-        ui.add_space(8.0);
+        ui.spacing_mut().item_spacing = egui::vec2(0.0, 2.0);
 
-        let max_height = (ctx.content_rect().height() - 140.0).clamp(340.0, 620.0);
+        let categories = categories();
+        // One Tab stop for the whole list: Up and Down walk through the categories,
+        // Right (or Tab) goes into the settings of the chosen one
+        let focus_id = category_focus_id();
+        let want = ctx.data_mut(|d| d.remove_temp::<usize>(focus_id));
+        let fresh = material::dialog_fresh(&ctx);
+        let mut key = None;
+        for (idx, icon, label) in categories {
+            let resp = nav_item_roving(ui, ("set_cat_nav", idx), icon, label, &theme, state.tab == idx, state.tab == idx);
+            if resp.clicked() {
+                state.tab = idx;
+                if self.capturing_key {
+                    self.capturing_key = false;
+                    state.capture = None;
+                    state.conflict_warning = None;
+                }
+            }
+            if want == Some(idx) || (fresh && state.tab == idx) {
+                resp.request_focus();
+            }
+            if state.tab == idx {
+                key = material::take_arrow(&ctx, &resp, true, true);
+            }
+        }
+        let step = match key {
+            Some(egui::Key::ArrowDown) => 1,
+            Some(egui::Key::ArrowUp) => -1,
+            Some(egui::Key::ArrowRight) => {
+                // Let the first widget drawn after the list take the focus, as Tab would
+                ctx.memory_mut(|m| {
+                    if let Some(id) = m.focused() {
+                        m.surrender_focus(id);
+                    }
+                    m.move_focus(egui::FocusDirection::Next);
+                });
+                0
+            }
+            _ => 0,
+        };
+        let next = (state.tab as i32 + step).clamp(0, categories.len() as i32 - 1) as usize;
+        if next != state.tab {
+            state.tab = next;
+            ctx.data_mut(|d| d.insert_temp(focus_id, next));
+        }
+    }
 
-        // Ctrl+PageUp / Ctrl+PageDown (or Ctrl+Tab) switch category from anywhere in the dialog
+    /// The settings of the chosen category, in a column that stops growing with the window.
+    pub(crate) fn settings_page(&mut self, ui: &mut egui::Ui, state: &mut SettingsState) {
+        let SettingsState { tab, font_query, hex, picking, defaults, keybind_search, capture, conflict_warning, theme_browser } = state;
+        let ctx = ui.ctx().clone();
+
+        // Ctrl+PageUp / Ctrl+PageDown (or Ctrl+Tab) switch category from anywhere in the window
         if !self.capturing_key {
             let switch = ctx.input_mut(|i| {
                 let ctrl = egui::Modifiers::CTRL;
@@ -102,84 +174,21 @@ impl SkiApp {
             }
         }
 
-        ui.horizontal_top(|ui| {
-            ui.spacing_mut().item_spacing.x = 16.0;
-            // The dialog keeps one height for every category
-            ui.set_min_height(max_height);
-            // Left pane: categories
-            // The categories are a plain list on the dialog's own surface, as the sidebar is in the main window
-            egui::Frame::new()
-                .show(ui, |ui| ui.vertical(|ui| {
-                ui.set_width(168.0);
-                ui.set_min_height(max_height);
-                ui.spacing_mut().item_spacing = egui::vec2(0.0, 2.0);
-
-                let categories: [(usize, &str, &str); CATEGORY_COUNT as usize] = [
-                    (0, icons::COG, tr("General")),
-                    (1, icons::TUNE, tr("Appearance")),
-                    (2, icons::FOLDER_OPEN, tr("Files & View")),
-                    (SIDEBAR_TAB, icons::SIDEBAR, tr("Sidebar")),
-                    (4, icons::CURSOR, tr("Behavior")),
-                    (5, icons::KEYBOARD, tr("Keybindings")),
-                    (6, icons::APPS, tr("Applications")),
-                    (7, icons::TEMPLATE, tr("Plugins")),
-                ];
-
-                // One Tab stop for the whole list: Up and Down walk through the categories,
-                // Right (or Tab) goes into the settings of the chosen one
-                let focus_id = category_focus_id();
-                let want = ctx.data_mut(|d| d.remove_temp::<usize>(focus_id));
-                let fresh = material::dialog_fresh(&ctx);
-                let mut key = None;
-                for (idx, icon, label) in categories {
-                    let resp = nav_item_roving(ui, ("set_cat_nav", idx), icon, label, &theme, *tab == idx, *tab == idx);
-                    if resp.clicked() {
-                        *tab = idx;
-                        if self.capturing_key {
-                            self.capturing_key = false;
-                            *capture = None;
-                            *conflict_warning = None;
-                        }
-                    }
-                    if want == Some(idx) || (fresh && *tab == idx) {
-                        resp.request_focus();
-                    }
-                    if *tab == idx {
-                        key = material::take_arrow(&ctx, &resp, true, true);
-                    }
-                }
-                let step = match key {
-                    Some(egui::Key::ArrowDown) => 1,
-                    Some(egui::Key::ArrowUp) => -1,
-                    Some(egui::Key::ArrowRight) => {
-                        // Let the first widget drawn after the list take the focus, as Tab would
-                        ctx.memory_mut(|m| {
-                            if let Some(id) = m.focused() {
-                                m.surrender_focus(id);
-                            }
-                            m.move_focus(egui::FocusDirection::Next);
-                        });
-                        0
-                    }
-                    _ => 0,
-                };
-                let next = (*tab as i32 + step).clamp(0, categories.len() as i32 - 1) as usize;
-                if next != *tab {
-                    *tab = next;
-                    ctx.data_mut(|d| d.insert_temp(focus_id, next));
-                }
-            }));
-
-            // Right pane: the settings of the chosen category
-            ui.vertical(|ui| {
-                ui.set_width(ui.available_width());
-                let enter_t = material::animate_enter(ui.ctx(), ui.make_persistent_id(("set_tab_enter", *tab)), material::ANIM_FAST);
-                ui.set_opacity(ui.opacity() * enter_t);
-                egui::ScrollArea::vertical()
-                    .max_height(max_height)
-                    .auto_shrink([false, false])
-                    .id_salt(("set_scroll", *tab))
-                    .show(ui, |ui| {
+        let full = ui.available_width();
+        let column = full.min(PAGE_WIDTH);
+        let side = ((full - column) / 2.0).floor();
+        let enter_t = material::animate_enter(&ctx, ui.make_persistent_id(("set_tab_enter", *tab)), material::ANIM_FAST);
+        ui.set_opacity(ui.opacity() * enter_t);
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .id_salt(("set_scroll", *tab))
+            .show(ui, |ui| {
+                ui.add_space(4.0);
+                ui.horizontal_top(|ui| {
+                    ui.spacing_mut().item_spacing.x = 0.0;
+                    ui.add_space(side);
+                    ui.vertical(|ui| {
+                        ui.set_width(column - 12.0);
                         ui.spacing_mut().item_spacing = egui::vec2(6.0, 8.0);
                         match *tab {
                             0 => self.general_tab(ui),
@@ -191,27 +200,22 @@ impl SkiApp {
                             6 => self.applications_tab(ui, picking, defaults),
                             _ => self.plugins_tab(ui),
                         }
+                        ui.add_space(8.0);
                     });
-                // Left from a row that starts at the pane's edge goes back to the category list
-                let pane = ui.min_rect();
-                let focused = ctx.memory(|m| m.focused());
-                if let Some(rect) = focused.and_then(|id| ctx.read_response(id)).map(|r| r.rect)
-                    && rect.left() <= pane.left() + 24.0
-                    && pane.contains(rect.center())
-                    && !self.capturing_key
-                    && !ctx.text_edit_focused()
-                    && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowLeft))
-                {
-                    ctx.data_mut(|d| d.insert_temp(category_focus_id(), *tab));
-                }
+                });
             });
-        });
-
-        if close {
-            self.capturing_key = false;
+        // Left from a row that starts at the page's edge goes back to the category list
+        let pane = ui.min_rect();
+        let focused = ctx.memory(|m| m.focused());
+        if let Some(rect) = focused.and_then(|id| ctx.read_response(id)).map(|r| r.rect)
+            && rect.left() <= pane.left() + side + 24.0
+            && pane.contains(rect.center())
+            && !self.capturing_key
+            && !ctx.text_edit_focused()
+            && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowLeft))
+        {
+            ctx.data_mut(|d| d.insert_temp(category_focus_id(), *tab));
         }
-
-        close
     }
 
     fn general_tab(&mut self, ui: &mut egui::Ui) {

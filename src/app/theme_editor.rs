@@ -1,4 +1,4 @@
-//! The theme editor: a card over Settings for making a custom theme or changing one. It has the
+//! The theme editor: a card over the Settings window for making a custom theme or changing one. It has the
 //! theme's name, a live preview, palettes to start from, and every color with its swatch (which
 //! opens a color picker of its own) and its hex code.
 use super::*;
@@ -85,7 +85,7 @@ impl SkiApp {
     }
 
     pub(super) fn render_theme_editor(&mut self, ctx: &egui::Context) {
-        if self.theme_editor && !matches!(self.dialog, Some(Dialog::Settings { .. })) {
+        if self.theme_editor && self.settings_win.is_none() {
             self.close_theme_editor();
         }
         let t = material::animate(ctx, egui::Id::unique("theme_editor_anim"), self.theme_editor);
