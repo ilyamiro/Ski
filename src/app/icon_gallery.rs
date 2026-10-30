@@ -136,8 +136,9 @@ fn section(ui: &egui::Ui, theme: &SerpantinumTheme, rect: egui::Rect, text: &str
 
 /// Padding inside the folder strip, the same above the largest folder as at the sides.
 const STRIP_PAD: f32 = 16.0;
-/// From a folder's bottom edge to the middle of its size label under it.
-const SIZE_LABEL: f32 = 16.0;
+/// From a folder's bottom edge to the middle of its size label under it, clear of the underside
+/// some styles draw below the edge.
+const SIZE_LABEL: f32 = 24.0;
 
 /// Height of the folder strip: the largest folder (0.84 × its size tall) and the labels under it.
 fn strip_height() -> f32 {
