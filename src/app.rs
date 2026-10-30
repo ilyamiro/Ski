@@ -29,7 +29,7 @@ use crate::fs::{
     network::{self, Address},
     file_item::FileItem,
     apps::{self, AppEntry},
-    places::{load_folder_icons, save_folder_icons, Place, PlaceGroup, PlaceKind, BOOKMARKS_PATH, RECENT_PATH, is_virtual},
+    places::{load_folder_icons, save_folder_icons, Place, PlaceGroup, PlaceKind, SidebarPlace, BOOKMARKS_PATH, RECENT_PATH, is_virtual},
     props::{FolderScan, Properties},
     scanner::{natural_cmp, read_folder, sort_items, starts_with_folded, ListOptions, TypeFilter},
     recent,
@@ -67,8 +67,12 @@ enum MenuTarget {
     Main,
     /// The Trash entry of the sidebar.
     TrashPlace(PathBuf),
-    /// A folder place of the sidebar.
-    Place(PathBuf),
+    /// The Recent or Bookmarks entry of the sidebar, and where it leads.
+    View(SidebarPlace, PathBuf),
+    /// The empty part of the sidebar, below its entries.
+    Sidebar,
+    /// A folder place of the sidebar, and which built-in place it is.
+    Place(PathBuf, Option<SidebarPlace>),
     /// A drive of the sidebar: its device, name and where it is mounted (empty when it is not).
     Drive(Drive, String, PathBuf),
     /// A server of the sidebar's Network section.
@@ -123,6 +127,12 @@ enum MenuAction {
     Unpin(PathBuf),
     Bookmark(PathBuf),
     Unbookmark(PathBuf),
+    /// Show or hide a built-in place of the sidebar.
+    ShowPlace(SidebarPlace, bool),
+    /// List the hidden places in the sidebar, faded, each with a box to tick it back in.
+    EditSidebar(bool),
+    /// Settings, on the Sidebar page.
+    SidebarSettings,
     /// Entries that open to the side while the pointer rests on this one.
     Submenu(Vec<MenuEntry>),
     NewFile,
@@ -177,6 +187,8 @@ pub(crate) enum ConfirmAction {
 /// Action offered by a toast, such as undoing a move to the trash.
 enum ToastAction {
     Undo,
+    /// Put back a place just hidden from the sidebar.
+    ShowPlace(SidebarPlace),
 }
 
 struct Toast {
@@ -363,6 +375,8 @@ pub struct SkiApp {
     ctx: egui::Context,
     /// Where each pinned row was drawn last frame, for reordering by dragging.
     pin_rects: Vec<egui::Rect>,
+    /// The sidebar lists its hidden places too, faded, each with a box to tick it back in.
+    sidebar_editing: bool,
     dnd: Option<dnd::Dnd>,
     /// Files dropped into the folder on show, selected as they turn up in the listing.
     arrivals: Option<dnd::Arrivals>,
@@ -407,7 +421,7 @@ pub struct SkiApp {
     search: Search,
 
     // Places
-    places: Vec<Place>,
+    pub(crate) places: Vec<Place>,
 
     // Header search field and settings popup
     show_search: bool,
@@ -540,6 +554,7 @@ impl SkiApp {
             net: network_ui::NetState::new(),
             ctx: ctx.clone(),
             pin_rects: Vec::new(),
+            sidebar_editing: false,
             dnd: None,
             arrivals: None,
             drop_zones: Vec::new(),
@@ -2814,15 +2829,18 @@ impl SkiApp {
         let mut plugin_click: Option<(&'static str, String)> = None;
         let mut plugin_edit: Option<(&'static str, String)> = None;
         let mut net_events = Vec::new();
+        let editing = self.sidebar_editing;
+        let mut place_shown: Option<(SidebarPlace, bool)> = None;
+        let mut done_editing = false;
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
             ui.spacing_mut().item_spacing.y = 2.0;
             let mut first = true;
             // Sections: Main, user folders, pinned folders, devices; a divider sits between them
             for section in 0..4 {
                 let places: Vec<(usize, &Place)> = match section {
-                    0 => self.places.iter().enumerate().filter(|(_, p)| p.group == PlaceGroup::Main).collect(),
-                    1 => self.places.iter().enumerate().filter(|(_, p)| p.group == PlaceGroup::Folders).collect(),
-                    3 => self.places.iter().enumerate().filter(|(_, p)| p.group == PlaceGroup::Devices).collect(),
+                    0 => self.places.iter().enumerate().filter(|(_, p)| p.group == PlaceGroup::Main && self.place_listed(p)).collect(),
+                    1 => self.places.iter().enumerate().filter(|(_, p)| p.group == PlaceGroup::Folders && self.place_listed(p)).collect(),
+                    3 => self.places.iter().enumerate().filter(|(_, p)| p.group == PlaceGroup::Devices && self.place_listed(p)).collect(),
                     _ => Vec::new(),
                 };
                 if section == 2 && self.pins.is_empty() || section != 2 && places.is_empty() {
@@ -2874,9 +2892,27 @@ impl SkiApp {
                         PlaceKind::Bookmarks => self.in_bookmarks(),
                         PlaceKind::Folder => place.drive.as_ref().is_none_or(|d| d.mounted) && self.current_path == place.path,
                     };
-                    // Removable drives keep room for the eject button, so the name does not run under it
-                    let reserve = if place.drive.as_ref().is_some_and(|d| d.mounted && d.removable) { material::NAV_TRAILING } else { 0.0 };
-                    let resp = material::nav_item_with(ui, ("place", idx), place.icon, &tr_dyn(&place.name), &self.theme, browsing && here, reserve);
+                    // Removable drives keep room for the eject button, and built-in places for their tick box
+                    // while the hidden ones are shown, so the name does not run under it
+                    let ticking = editing && place.builtin.is_some();
+                    let reserve = if ticking || place.drive.as_ref().is_some_and(|d| d.mounted && d.removable) { material::NAV_TRAILING } else { 0.0 };
+                    let hidden = place.builtin.is_some_and(|b| !self.place_shown(b));
+                    let resp = ui
+                        .scope(|ui| {
+                            if hidden {
+                                ui.multiply_opacity(0.45);
+                            }
+                            material::nav_item_with(ui, ("place", idx), place.icon, &tr_dyn(&place.name), &self.theme, browsing && here, reserve)
+                        })
+                        .inner;
+                    if ticking && let Some(builtin) = place.builtin {
+                        let tick = egui::Rect::from_center_size(egui::pos2(resp.rect.right() - 22.0, resp.rect.center().y), egui::Vec2::splat(30.0));
+                        let ticked = ui.scope_builder(egui::UiBuilder::new().max_rect(tick), |ui| material::checkbox(ui, ("place_tick", builtin), !hidden, true, &self.theme)).inner;
+                        if ticked.on_hover_text(if hidden { tr("Show in sidebar") } else { tr("Hide from sidebar") }).clicked() {
+                            place_shown = Some((builtin, hidden));
+                            continue;
+                        }
+                    }
                     if place.kind == PlaceKind::Folder && place.drive.as_ref().is_none_or(|d| d.mounted) {
                         zones.push(dnd::DropZone { rect: resp.rect, dest: place.path.clone() });
                     }
@@ -2913,9 +2949,12 @@ impl SkiApp {
                         new_tab_at = Some(place.path.clone());
                     }
                     if resp.secondary_clicked()
-                        && place.kind == PlaceKind::Folder
                         && let Some(pos) = resp.interact_pointer_pos() {
-                            menu_at = Some((pos, if trash::is_trash_folder(&place.path) { MenuTarget::TrashPlace(place.path.clone()) } else { MenuTarget::Place(place.path.clone()) }));
+                            menu_at = Some((pos, match place.builtin {
+                                Some(SidebarPlace::Trash) => MenuTarget::TrashPlace(place.path.clone()),
+                                Some(view @ (SidebarPlace::Recent | SidebarPlace::Bookmarks)) => MenuTarget::View(view, place.path.clone()),
+                                builtin => MenuTarget::Place(place.path.clone(), builtin),
+                            }));
                         }
                 }
             }
@@ -2937,7 +2976,26 @@ impl SkiApp {
                     }
                 }
             }
+            if editing {
+                ui.add_space(8.0);
+                ui.vertical_centered(|ui| {
+                    done_editing = material::button(ui, "sidebar_done", Some(icons::CHECK), tr("Done"), &self.theme, material::ButtonKind::Tonal, true).clicked();
+                });
+            }
+            // The rest of the column answers a right click with the sidebar's own menu
+            let rest = (ui.clip_rect().bottom() - ui.cursor().top()).max(0.0);
+            let blank = ui.allocate_response(egui::vec2(ui.available_width(), rest), egui::Sense::click());
+            if blank.secondary_clicked()
+                && let Some(pos) = blank.interact_pointer_pos() {
+                    menu_at = Some((pos, MenuTarget::Sidebar));
+                }
         });
+        if let Some((place, shown)) = place_shown {
+            self.show_place(place, shown, false);
+        }
+        if done_editing {
+            self.sidebar_editing = false;
+        }
         if let Some((plugin, id)) = plugin_edit {
             self.plugins.sidebar_edit(plugin, &id);
         }
@@ -3542,9 +3600,12 @@ impl SkiApp {
             });
         if act
             && let Some(toast) = self.status_toast.as_mut()
-            && let Some(ToastAction::Undo) = toast.action.take() {
+            && let Some(action) = toast.action.take() {
                 toast.leaving = true;
-                self.undo();
+                match action {
+                    ToastAction::Undo => self.undo(),
+                    ToastAction::ShowPlace(place) => self.show_place(place, true, false),
+                }
             }
         ctx.request_repaint_after(std::time::Duration::from_millis(400));
     }
@@ -4045,6 +4106,9 @@ impl SkiApp {
             MenuAction::EmptyTrash => self.request_empty_trash(),
             MenuAction::Pin(path) | MenuAction::Unpin(path) => self.toggle_pin(path),
             MenuAction::Bookmark(path) | MenuAction::Unbookmark(path) => self.toggle_bookmark(path),
+            MenuAction::ShowPlace(place, shown) => self.show_place(place, shown, true),
+            MenuAction::EditSidebar(on) => self.sidebar_editing = on,
+            MenuAction::SidebarSettings => self.open_settings_at(crate::settings_ui::SIDEBAR_TAB),
             MenuAction::Submenu(_) => {}
             MenuAction::NewFile => self.open_create_dialog(false),
             MenuAction::NewFolder => self.open_create_dialog(true),
@@ -4122,6 +4186,9 @@ impl SkiApp {
                     | MenuAction::Unpin(_)
                     | MenuAction::Bookmark(_)
                     | MenuAction::Unbookmark(_)
+                    | MenuAction::ShowPlace(..)
+                    | MenuAction::EditSidebar(_)
+                    | MenuAction::SidebarSettings
                     | MenuAction::SelectAll
                     | MenuAction::InvertSelection
                     | MenuAction::SelectPattern
@@ -4384,11 +4451,23 @@ impl SkiApp {
             MenuTarget::TrashPlace(path) => vec![
                 vec![(icons::OPEN, tr("Open"), MenuAction::OpenPath(path.clone()))],
                 vec![(icons::DELETE_FOREVER, tr("Empty trash"), MenuAction::EmptyTrash)],
+                self.sidebar_entries(Some(SidebarPlace::Trash)),
             ],
-            MenuTarget::Place(path) => match FileItem::from_path(path) {
-                Some(item) => single_groups(&item, false, true),
-                None => vec![vec![(icons::OPEN, tr("Open"), MenuAction::OpenPath(path.clone()))]],
-            },
+            MenuTarget::View(place, path) => vec![
+                vec![(icons::OPEN, tr("Open"), MenuAction::OpenPath(path.clone()))],
+                self.sidebar_entries(Some(*place)),
+            ],
+            MenuTarget::Sidebar => vec![self.sidebar_entries(None)],
+            MenuTarget::Place(path, place) => {
+                let mut groups = match FileItem::from_path(path) {
+                    Some(item) => single_groups(&item, false, true),
+                    None => vec![vec![(icons::OPEN, tr("Open"), MenuAction::OpenPath(path.clone()))]],
+                };
+                if place.is_some() {
+                    groups.push(self.sidebar_entries(*place));
+                }
+                groups
+            }
             MenuTarget::Drive(drive, name, mount) => {
                 let (dev, name) = (drive.dev.clone(), name.clone());
                 if !drive.mounted {
@@ -4415,6 +4494,53 @@ impl SkiApp {
                 None => vec![vec![(icons::PIN_OFF, tr("Unpin from sidebar"), MenuAction::Unpin(path.clone()))]],
             },
         }
+    }
+
+    /// The sidebar's own entries of a menu opened on it: hiding (or, while the hidden places are
+    /// listed, showing) the place right-clicked, listing the hidden places, and its settings.
+    fn sidebar_entries(&self, clicked: Option<SidebarPlace>) -> Vec<MenuEntry> {
+        let mut entries = Vec::new();
+        if let Some(place) = clicked {
+            if self.place_shown(place) {
+                entries.push((icons::VISIBILITY_OFF, tr("Hide from sidebar"), MenuAction::ShowPlace(place, false)));
+            } else {
+                entries.push((icons::VISIBILITY, tr("Show in sidebar"), MenuAction::ShowPlace(place, true)));
+            }
+        }
+        if self.sidebar_editing {
+            entries.push((icons::CHECK, tr("Stop showing hidden places"), MenuAction::EditSidebar(false)));
+        } else if self.places.iter().any(|p| p.builtin.is_some_and(|b| !self.place_shown(b))) {
+            entries.push((icons::VISIBILITY, tr("Show hidden places"), MenuAction::EditSidebar(true)));
+        }
+        entries.push((icons::SIDEBAR, tr("Sidebar settings…"), MenuAction::SidebarSettings));
+        entries
+    }
+
+    pub(crate) fn place_shown(&self, place: SidebarPlace) -> bool {
+        !self.settings.hidden_places.contains(&place)
+    }
+
+    /// Whether the sidebar lists `place`: always, unless it is a hidden built-in one and the hidden
+    /// places are not being shown.
+    fn place_listed(&self, place: &Place) -> bool {
+        place.builtin.is_none_or(|b| self.sidebar_editing || self.place_shown(b))
+    }
+
+    /// Show or hide a built-in place. Hiding it from its menu offers to put it back at once.
+    pub(crate) fn show_place(&mut self, place: SidebarPlace, shown: bool, offer_undo: bool) {
+        if shown == self.place_shown(place) {
+            return;
+        }
+        if shown {
+            self.settings.hidden_places.retain(|p| *p != place);
+        } else {
+            self.settings.hidden_places.push(place);
+            if offer_undo && !self.sidebar_editing {
+                let name = self.places.iter().find(|p| p.builtin == Some(place)).map(|p| tr_dyn(&p.name).to_owned()).unwrap_or_default();
+                self.set_toast_action(trf("{} hidden from sidebar", &[&name]), ToastAction::ShowPlace(place));
+            }
+        }
+        self.persist_settings();
     }
 
     /// Undo and redo entries of the menus: only those that have something to do.
@@ -5703,6 +5829,17 @@ impl SkiApp {
                 let full = ui.available_width();
                 ui.spacing_mut().item_spacing.y = 4.0;
 
+                // The labels take the room the longest one needs (translations run longer than English), up
+                // to a share of the card; past that a label wraps instead of running into its value
+                let label_font = egui::FontId::proportional(12.5);
+                let widest = groups
+                    .iter()
+                    .flat_map(|(_, rows)| rows.iter())
+                    .map(|(label, _)| ui.painter().layout_no_wrap(label.to_string(), label_font.clone(), theme.subtext1).size().x)
+                    .fold(0.0, f32::max);
+                let label_w = (widest + 14.0).clamp(102.0, ((full - 32.0) * 0.45).max(102.0));
+                // A one-line label sits centred on the value's first line, as it did in its 18px slot
+                let label_drop = ((18.0 - ui.painter().layout_no_wrap("A".into(), label_font.clone(), theme.subtext1).size().y) / 2.0).max(0.0);
                 // Ownership belongs to the permissions tab, everything else to the details
                 let ownership = tr("Ownership");
                 for (title, rows) in groups.iter().filter(|(title, _)| (*title == ownership) == (*tab == 1)) {
@@ -5833,17 +5970,6 @@ pub(crate) fn app_row(
     let galley = ui.painter().layout_job(job);
     ui.painter().galley(egui::pos2(rect.left() + 48.0, rect.center().y - galley.size().y / 2.0), galley, color);
     resp
-                // The labels take the room the longest one needs (translations run longer than English), up
-                // to a share of the card; past that a label wraps instead of running into its value
-                let label_font = egui::FontId::proportional(12.5);
-                let widest = groups
-                    .iter()
-                    .flat_map(|(_, rows)| rows.iter())
-                    .map(|(label, _)| ui.painter().layout_no_wrap(label.to_string(), label_font.clone(), theme.subtext1).size().x)
-                    .fold(0.0, f32::max);
-                let label_w = (widest + 14.0).clamp(102.0, ((full - 32.0) * 0.45).max(102.0));
-                // A one-line label sits centred on the value's first line, as it did in its 18px slot
-                let label_drop = ((18.0 - ui.painter().layout_no_wrap("A".into(), label_font.clone(), theme.subtext1).size().y) / 2.0).max(0.0);
 }
 
 /// Single-line name entry shared by the new-item and rename dialogs. On the first frame it takes

@@ -1670,6 +1670,34 @@ pub fn switch_row_with(
     response
 }
 
+/// Setting row for one of a list of things to include: icon, label and a tick box at the right.
+pub fn check_row(
+    ui: &mut egui::Ui,
+    id_source: impl std::hash::Hash + std::fmt::Debug,
+    icon: &str,
+    label: &str,
+    theme: &SerpantinumTheme,
+    on: bool,
+) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(ui.available_width(), SETTING_HEIGHT), egui::Sense::click());
+    let id = ui.make_persistent_id(id_source);
+    let fx = fx(ui, id, &response, true, &FxSpec::ROW);
+    let t = animate(ui.ctx(), id.with("on"), on);
+    paint_fill(ui.painter(), rect, CornerRadius::same(radius_lg()), row_layer(theme, &fx), &fx);
+
+    paint_icon(ui.painter(), Pos2::new(rect.left() + INSET_ICON + 2.0, rect.center().y), icon, ICON_MD, lerp_color(theme.subtext0, theme.mauve, t));
+    let text_x = rect.left() + INSET_LABEL + 2.0;
+    paint_label(ui, text_x, rect.center().y, label, FONT_BODY, theme.text, rect.width() - (text_x - rect.left()) - 56.0);
+
+    // The same box as `checkbox`, pressed along with the row
+    let tick = Rect::from_center_size(Pos2::new(rect.right() - 28.0, rect.center().y), Vec2::splat(24.0 * lerp(1.0, 0.92, fx.press)));
+    paint_fill(ui.painter(), tick, CornerRadius::same(radius_sm()), lerp_color(theme.surface2, theme.mauve, t), &fx);
+    if t > 0.01 {
+        paint_icon(ui.painter(), tick.center(), icons::CHECK, 16.0 * (0.6 + 0.4 * t), on_color(theme, theme.mauve).gamma_multiply(t));
+    }
+    response
+}
+
 /// Setting row with a slider: icon and label at the left, a Material track with a round handle and the value at the right.
 /// Returns true when `value` changed.
 #[allow(clippy::too_many_arguments)]

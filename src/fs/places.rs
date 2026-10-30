@@ -22,6 +22,22 @@ pub enum PlaceKind {
     Bookmarks,
 }
 
+/// A place the sidebar always offers, which the user can hide and show again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub enum SidebarPlace {
+    Home,
+    Recent,
+    Bookmarks,
+    Trash,
+    Desktop,
+    Documents,
+    Downloads,
+    Pictures,
+    Music,
+    Videos,
+    Computer,
+}
+
 /// Sidebar sections, separated by dividers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PlaceGroup {
@@ -39,11 +55,13 @@ pub struct Place {
     pub group: PlaceGroup,
     /// The device behind a drive entry.
     pub drive: Option<super::drives::Drive>,
+    /// Which built-in place this is; drives and the like are `None`.
+    pub builtin: Option<SidebarPlace>,
 }
 
 impl Place {
     pub fn new(name: impl Into<String>, path: PathBuf, icon: &'static str, group: PlaceGroup) -> Self {
-        Self { name: name.into(), path, icon, kind: PlaceKind::Folder, group, drive: None }
+        Self { name: name.into(), path, icon, kind: PlaceKind::Folder, group, drive: None, builtin: None }
     }
 
     /// Pinned folders and files, saved in `~/.config/ski/pins.json`.
@@ -68,41 +86,42 @@ impl Place {
 
     pub fn default_places() -> Vec<Place> {
         use PlaceGroup::{Devices, Folders, Main};
+        let builtin = |place: Place, id: SidebarPlace| Place { builtin: Some(id), ..place };
         let mut places = Vec::new();
 
         if let Some(home) = dirs::home_dir() {
-            places.push(Place::new("Home", home, icons::HOME, Main));
+            places.push(builtin(Place::new("Home", home, icons::HOME, Main), SidebarPlace::Home));
         }
         places.push(Place {
             kind: PlaceKind::Recent,
-            ..Place::new("Recent", PathBuf::from(RECENT_PATH), icons::RECENT, Main)
+            ..builtin(Place::new("Recent", PathBuf::from(RECENT_PATH), icons::RECENT, Main), SidebarPlace::Recent)
         });
         places.push(Place {
             kind: PlaceKind::Bookmarks,
-            ..Place::new("Bookmarks", PathBuf::from(BOOKMARKS_PATH), icons::HEART, Main)
+            ..builtin(Place::new("Bookmarks", PathBuf::from(BOOKMARKS_PATH), icons::HEART, Main), SidebarPlace::Bookmarks)
         });
         if let Some(trash) = super::trash::files_dir() {
             // Created on demand, so the destination always exists
             let _ = std::fs::create_dir_all(&trash);
-            places.push(Place::new("Trash", trash, icons::TRASH, Main));
+            places.push(builtin(Place::new("Trash", trash, icons::TRASH, Main), SidebarPlace::Trash));
         }
 
         let user_dirs = [
-            ("Desktop", dirs::desktop_dir(), icons::DESKTOP),
-            ("Documents", dirs::document_dir(), icons::DOCUMENTS),
-            ("Downloads", dirs::download_dir(), icons::DOWNLOAD),
-            ("Pictures", dirs::picture_dir(), icons::IMAGE),
-            ("Music", dirs::audio_dir(), icons::AUDIO),
-            ("Videos", dirs::video_dir(), icons::VIDEO),
+            ("Desktop", dirs::desktop_dir(), icons::DESKTOP, SidebarPlace::Desktop),
+            ("Documents", dirs::document_dir(), icons::DOCUMENTS, SidebarPlace::Documents),
+            ("Downloads", dirs::download_dir(), icons::DOWNLOAD, SidebarPlace::Downloads),
+            ("Pictures", dirs::picture_dir(), icons::IMAGE, SidebarPlace::Pictures),
+            ("Music", dirs::audio_dir(), icons::AUDIO, SidebarPlace::Music),
+            ("Videos", dirs::video_dir(), icons::VIDEO, SidebarPlace::Videos),
         ];
-        for (name, dir, icon) in user_dirs {
+        for (name, dir, icon, id) in user_dirs {
             if let Some(dir) = dir.filter(|d| d.exists()) {
-                places.push(Place::new(name, dir, icon, Folders));
+                places.push(builtin(Place::new(name, dir, icon, Folders), id));
             }
         }
 
         // Drives follow from a background listing (see `drives_ui`), as `lsblk` would hold up the first frame
-        places.push(Place::new("Computer", PathBuf::from("/"), icons::STORAGE, Devices));
+        places.push(builtin(Place::new("Computer", PathBuf::from("/"), icons::STORAGE, Devices), SidebarPlace::Computer));
 
         // Compare against canonical paths so symlinked folders still highlight
         for place in &mut places {

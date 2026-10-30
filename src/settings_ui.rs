@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use crate::i18n::{self, tr, trf, Language};
+use crate::i18n::{self, tr, tr_dyn, trf, Language};
 
 use eframe::egui::{self, Color32, CornerRadius, Pos2, Rect, Vec2};
 
@@ -15,7 +15,9 @@ use crate::ui::icons;
 use crate::ui::material::{self, button, chip, choice_row, filled_icon_button, group_card, nav_item_roving, switch_row_with, ButtonKind, Column};
 use crate::ui::theme::{self, SerpantinumTheme, ACCENTS, MORE_PRESETS, PRESETS};
 
-const CATEGORY_COUNT: i32 = 7;
+const CATEGORY_COUNT: i32 = 8;
+/// The category that lists the sidebar's places.
+pub(crate) const SIDEBAR_TAB: usize = 3;
 
 fn category_focus_id() -> egui::Id {
     egui::Id::unique("set_cat_focus")
@@ -23,10 +25,14 @@ fn category_focus_id() -> egui::Id {
 
 impl SkiApp {
     pub(crate) fn open_settings_dialog(&mut self) {
+        self.open_settings_at(0);
+    }
+
+    pub(crate) fn open_settings_at(&mut self, tab: usize) {
         self.capturing_key = false;
         apps::preload_category_defaults();
         self.dialog = Some(Dialog::Settings {
-            tab: 0,
+            tab,
             font_query: String::new(),
             hex: self.settings.accent.clone().unwrap_or_default(),
             picking: None,
@@ -110,10 +116,11 @@ impl SkiApp {
                     (0, icons::COG, tr("General")),
                     (1, icons::TUNE, tr("Appearance")),
                     (2, icons::FOLDER_OPEN, tr("Files & View")),
-                    (3, icons::CURSOR, tr("Behavior")),
-                    (4, icons::KEYBOARD, tr("Keybindings")),
-                    (5, icons::APPS, tr("Applications")),
-                    (6, icons::TEMPLATE, tr("Plugins")),
+                    (SIDEBAR_TAB, icons::SIDEBAR, tr("Sidebar")),
+                    (4, icons::CURSOR, tr("Behavior")),
+                    (5, icons::KEYBOARD, tr("Keybindings")),
+                    (6, icons::APPS, tr("Applications")),
+                    (7, icons::TEMPLATE, tr("Plugins")),
                 ];
 
                 // One Tab stop for the whole list: Up and Down walk through the categories,
@@ -176,9 +183,10 @@ impl SkiApp {
                             0 => self.general_tab(ui),
                             1 => self.appearance_tab(ui, font_query, hex, theme_browser),
                             2 => self.files_view_tab(ui),
-                            3 => self.behavior_tab(ui),
-                            4 => self.keybindings_tab(ui, keybind_search, capture, conflict_warning),
-                            5 => self.applications_tab(ui, picking, defaults),
+                            SIDEBAR_TAB => self.sidebar_tab(ui),
+                            4 => self.behavior_tab(ui),
+                            5 => self.keybindings_tab(ui, keybind_search, capture, conflict_warning),
+                            6 => self.applications_tab(ui, picking, defaults),
                             _ => self.plugins_tab(ui),
                         }
                     });
@@ -619,6 +627,38 @@ impl SkiApp {
         let picked = material::chip_rows(ui, "fv_sort", &labels, |i| self.sort_by == fields[i], theme).map(|i| fields[i]);
         ui.add_space(4.0);
         picked
+    }
+
+    /// The places the sidebar offers, each with a box to keep it there, grouped as the sidebar is.
+    fn sidebar_tab(&mut self, ui: &mut egui::Ui) {
+        use crate::fs::places::PlaceGroup;
+        let theme = self.theme;
+        group_card(ui, &theme, |ui| {
+            if switch_row_with(ui, "sb_show_sidebar", icons::SIDEBAR, tr("Sidebar"), None, &theme, self.settings.show_sidebar).clicked() {
+                self.settings.show_sidebar = !self.settings.show_sidebar;
+                self.persist_settings();
+            }
+        });
+        material::section_label(ui, tr("Show these places in the sidebar"), &theme);
+        let mut change = None;
+        for group in [PlaceGroup::Main, PlaceGroup::Folders, PlaceGroup::Devices] {
+            let places: Vec<_> = self.places.iter().filter(|p| p.group == group).filter_map(|p| Some((p.builtin?, p.icon, tr_dyn(&p.name)))).collect();
+            if places.is_empty() {
+                continue;
+            }
+            group_card(ui, &theme, |ui| {
+                for (place, icon, name) in places {
+                    let shown = self.place_shown(place);
+                    if material::check_row(ui, ("sb_place", place), icon, &name, &theme, shown).clicked() {
+                        change = Some((place, !shown));
+                    }
+                }
+            });
+        }
+        if let Some((place, shown)) = change {
+            self.show_place(place, shown, false);
+        }
+        ui.label(egui::RichText::new(tr("Right-click a place in the sidebar to hide it, or the sidebar itself to show the hidden ones")).size(material::FONT_CAPTION).color(theme.subtext1));
     }
 
     fn files_view_tab(&mut self, ui: &mut egui::Ui) {

@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::app::ViewMode;
 use crate::i18n::tr;
+use crate::fs::places::SidebarPlace;
 use crate::fs::scanner::{SortBy, SortOrder};
 use crate::ui::icon_style::IconStyle;
 use crate::ui::material::Column;
@@ -74,6 +75,8 @@ pub struct Settings {
     pub grid_size: GridSize,
     pub grid_name_lines: u8,
     pub show_sidebar: bool,
+    /// Built-in sidebar places the user hid, from the sidebar's menu or Settings → Sidebar.
+    pub hidden_places: Vec<SidebarPlace>,
     pub show_status_bar: bool,
     pub show_thumbnails: bool,
     /// Previews and folder item counts also for files on servers, which reads them over the network.
@@ -259,6 +262,7 @@ impl Default for Settings {
             grid_size: GridSize::default(),
             grid_name_lines: 2,
             show_sidebar: true,
+            hidden_places: Vec::new(),
             show_status_bar: true,
             show_thumbnails: true,
             remote_previews: false,
