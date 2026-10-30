@@ -533,7 +533,6 @@ pub const CATALOG: &[(&str, &str)] = &[
     ("Added to bookmarks", "Añadido a marcadores"),
     ("Removed from bookmarks", "Quitado de marcadores"),
     ("Open in", "Abrir en"),
-    ("Customize", "Personalizar"),
     ("More actions", "Más acciones"),
     ("Open as administrator", "Abrir como administrador"),
     ("Administrator", "Administrador"),

@@ -533,7 +533,6 @@ pub const CATALOG: &[(&str, &str)] = &[
     ("Added to bookmarks", "Добавлено в закладки"),
     ("Removed from bookmarks", "Убрано из закладок"),
     ("Open in", "Открыть в"),
-    ("Customize", "Настроить"),
     ("More actions", "Ещё действия"),
     ("Open as administrator", "Открыть от имени администратора"),
     ("Administrator", "Администратор"),
