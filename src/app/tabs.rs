@@ -120,7 +120,7 @@ impl SkiApp {
         self.sort_by = state.sort_by;
         self.sort_order = state.sort_order;
         self.search = Search::new();
-        self.path_input = self.current_path.to_string_lossy().into_owned();
+        self.path_input = Self::path_text(&self.current_path);
         self.is_editing_path = false;
         self.show_search = !self.search_query.trim().is_empty();
         self.drag_select = None;
@@ -231,6 +231,10 @@ impl SkiApp {
 
     /// Open `path` in a new tab next to the current one and show it.
     pub(super) fn new_tab(&mut self, path: PathBuf) {
+        if let Some((address, password)) = Self::server_target(&path) {
+            self.open_address(address, password, super::OpenIn::NewTab);
+            return;
+        }
         self.open_tab(path, true);
     }
 
@@ -327,6 +331,8 @@ impl SkiApp {
             (icons::TRASH, tr("Trash").to_owned())
         } else if Some(path.as_path()) == dirs::home_dir().and_then(|h| h.canonicalize().ok()).as_deref() {
             (icons::HOME, tr("Home").to_owned())
+        } else if let Some(mount) = crate::fs::network::mount_of(path).filter(|m| m.local == *path) {
+            (icons::SERVER_NETWORK, self.server_label(&mount))
         } else {
             (icons::FOLDER, path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| tr("Computer").to_owned()))
         }

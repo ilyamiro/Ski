@@ -277,7 +277,8 @@ impl Thumbnails {
         self.queued.clear();
         self.current.clear();
         self.extras.clear();
-        for (path, stamp) in files {
+        // Files on servers are read only when the setting asks for that
+        for (path, stamp) in files.filter(|(p, _)| crate::fs::network::previews_allowed(p)) {
             self.enqueue(path, stamp, generation);
             self.current.push(path.to_path_buf());
         }

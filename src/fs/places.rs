@@ -129,7 +129,8 @@ fn load_paths_from(file: &std::path::Path) -> Vec<PathBuf> {
     Some(file)
         .and_then(|f| std::fs::read_to_string(f).ok())
         .and_then(|s| serde_json::from_str::<Vec<PathBuf>>(&s).ok())
-        .map(|paths| paths.into_iter().filter(|p| p.exists()).collect())
+        // Folders on a server stay while it is not connected; opening one connects
+        .map(|paths| paths.into_iter().filter(|p| p.exists() || super::network::address_of(p).is_some()).collect())
         .unwrap_or_default()
 }
 

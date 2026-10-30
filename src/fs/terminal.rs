@@ -78,6 +78,65 @@ pub fn open_in(dir: &Path, custom: &str) -> io::Result<()> {
         .map(|_| ())
 }
 
+/// How each terminal is told to run a command instead of a shell: the arguments before the command.
+const RUNS: &[(&str, &[&str])] = &[
+    ("ptyxis", &["--new-window", "--"]),
+    ("kgx", &["--"]),
+    ("gnome-terminal", &["--"]),
+    ("konsole", &["-e"]),
+    ("xfce4-terminal", &["-x"]),
+    ("kitty", &[]),
+    ("alacritty", &["-e"]),
+    ("foot", &[]),
+    ("wezterm", &["start", "--"]),
+    ("tilix", &["-e"]),
+    ("terminator", &["-x"]),
+    ("mate-terminal", &["-x"]),
+    ("urxvt", &["-e"]),
+    ("xterm", &["-e"]),
+    ("st", &["-e"]),
+    ("x-terminal-emulator", &["-e"]),
+];
+
+/// Start a terminal that runs `command`: the one of the settings, of `$TERMINAL`, or the first one
+/// installed. `None` when that terminal is not known to take a command.
+pub fn run(command: &[String], custom: &str) -> Option<io::Result<()>> {
+    let env = std::env::var("TERMINAL").ok().and_then(|t| t.split_whitespace().next().map(str::to_owned)).filter(|t| on_path(t));
+    let chosen = custom
+        .split_whitespace()
+        .next()
+        .map(str::to_owned)
+        .or(env)
+        .or_else(|| RUNS.iter().map(|(name, _)| *name).find(|name| on_path(name)).map(str::to_owned))?;
+    let name = Path::new(&chosen).file_name()?.to_string_lossy().into_owned();
+    let (_, before) = RUNS.iter().find(|(known, _)| *known == name)?;
+    Some(
+        Command::new(&chosen)
+            .args(*before)
+            .args(command)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .map(|_| ()),
+    )
+}
+
+/// The ssh command that logs in to `host` and opens a shell in `dir` there.
+pub fn ssh_command(user: Option<&str>, host: &str, port: Option<u16>, dir: &str) -> Vec<String> {
+    let mut command = vec!["ssh".to_owned(), "-t".to_owned()];
+    if let Some(port) = port {
+        command.extend(["-p".to_owned(), port.to_string()]);
+    }
+    command.push(match user {
+        Some(user) => format!("{user}@{host}"),
+        None => host.to_owned(),
+    });
+    let quoted = format!("'{}'", dir.replace('\'', "'\\''"));
+    command.push(format!("cd {quoted} 2>/dev/null; exec \"$SHELL\" -l"));
+    command
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -86,5 +145,12 @@ mod tests {
     fn folder_placeholder_is_filled() {
         assert_eq!(fill("--working-directory={}", Path::new("/a b")), "--working-directory=/a b");
         assert_eq!(detect("mycterm --flag").as_deref(), Some("mycterm"));
+    }
+
+    #[test]
+    fn ssh_opens_the_folder_on_the_server() {
+        let command = ssh_command(Some("me"), "example.com", Some(2222), "/srv/it's here");
+        assert_eq!(command[..5], ["ssh", "-t", "-p", "2222", "me@example.com"]);
+        assert_eq!(command[5], "cd '/srv/it'\\''s here' 2>/dev/null; exec \"$SHELL\" -l");
     }
 }

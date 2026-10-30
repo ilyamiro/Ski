@@ -112,21 +112,21 @@ impl SkiApp {
         let counting = self.sizes.counting.load(Ordering::Relaxed);
         let counted = !counting && std::mem::take(&mut self.sizes.counts_unsorted);
         if !self.in_recent() && !counting {
-            let missing = dirsize::uncounted(self.visible_first().filter(|i| i.is_dir).map(|i| i.path.as_path()), 400);
+            let missing = dirsize::uncounted(self.visible_first().filter(|i| i.is_dir && crate::fs::network::previews_allowed(&i.path)).map(|i| i.path.as_path()), 400);
             if !missing.is_empty() {
                 dirsize::count_in_background(missing, Arc::clone(&self.sizes.counting));
                 self.sizes.counts_unsorted = true;
             }
         }
         if self.settings.folder_sizes == FolderSizeMode::Always {
-            let wanted: Vec<PathBuf> = self.visible_first().filter(|i| i.is_dir).take(AUTO_ROWS).map(|i| i.path.clone()).collect();
+            let wanted: Vec<PathBuf> = self.visible_first().filter(|i| i.is_dir && crate::fs::network::previews_allowed(&i.path)).take(AUTO_ROWS).map(|i| i.path.clone()).collect();
             // Scrolling reorders what waits: the last one pushed to the front ends up first, so go backwards
             let end = self.visible_rows.end.min(self.items.len());
-            for item in self.items[self.visible_rows.start.min(end)..end].iter().rev().filter(|i| i.is_dir) {
+            for item in self.items[self.visible_rows.start.min(end)..end].iter().rev().filter(|i| i.is_dir && crate::fs::network::previews_allowed(&i.path)) {
                 self.sizes.prioritize(&item.path);
             }
             // The selection feeds the status line
-            let selected = self.selection.iter().filter_map(|&i| self.items.get(i)).filter(|i| i.is_dir).map(|i| i.path.as_path());
+            let selected = self.selection.iter().filter_map(|&i| self.items.get(i)).filter(|i| i.is_dir && crate::fs::network::previews_allowed(&i.path)).map(|i| i.path.as_path());
             self.sizes.request_all(wanted.iter().map(PathBuf::as_path).chain(selected));
         }
         self.sizes.tick();

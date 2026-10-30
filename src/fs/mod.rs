@@ -20,3 +20,5 @@ pub mod watch;
 pub mod dirsize;
 pub mod archive_list;
 pub mod complete;
+pub mod network;
+pub mod secrets;

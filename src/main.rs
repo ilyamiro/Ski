@@ -60,6 +60,11 @@ fn open_window(mut request: instance::Request) -> eframe::Result {
     // Tabs of the last session, which only a normal launch without a folder argument brings back
     let mut session = None;
     let given = if chooser.is_some() { None } else { args.first().filter(|a| !a.starts_with("--")).cloned() };
+    // A server address opens the usual start folder and connects; the server's folder follows once it is reachable
+    let (given, server) = match given {
+        Some(arg) if fs::network::Address::looks_like(&arg) && !arg.starts_with("file://") => (None, Some(arg)),
+        other => (other, None),
+    };
     // Several items dropped on the launcher at once: the first fills this window, each other gets its own
     if chooser.is_none() {
         for extra in args.iter().skip(1).filter(|a| !a.starts_with("--")) {
@@ -152,6 +157,9 @@ fn open_window(mut request: instance::Request) -> eframe::Result {
             }
             if let Some(path) = select {
                 app.select_path(&path);
+            }
+            if let Some(address) = server.filter(|_| chooser.is_none()) {
+                app.navigate_to(PathBuf::from(address));
             }
             app.chooser = chooser.map(|spec| {
                 if let Some(handle) = spec.parent.as_deref() {

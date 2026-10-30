@@ -64,7 +64,8 @@ fn mount_points() -> Vec<PathBuf> {
     for line in text.lines() {
         let mut fields = line.split_whitespace();
         let (Some(source), Some(mount), Some(kind)) = (fields.next(), fields.next(), fields.next()) else { continue };
-        let browsable = source.starts_with("/dev/") || (kind.starts_with("fuse") && !matches!(kind, "fuse.portal" | "fuse.gvfsd-fuse" | "fusectl"));
+        let network = matches!(kind, "fuse.sshfs" | "fuse.rclone" | "fuse.curlftpfs" | "fuse.davfs2");
+        let browsable = source.starts_with("/dev/") || (kind.starts_with("fuse") && !network && !matches!(kind, "fuse.portal" | "fuse.gvfsd-fuse" | "fusectl"));
         // Spaces and the like are written as octal escapes
         let mount = PathBuf::from(unescape_mount(mount));
         if browsable && !out.contains(&mount) {

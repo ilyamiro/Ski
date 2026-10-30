@@ -53,7 +53,7 @@ section = "utils"
 priority = "optional"
 extended-description = "A small, fast, keyboard-friendly file manager, which can also serve as the system's file chooser dialog."
 depends = "libc6, libwayland-client0, libxkbcommon0, libxkbcommon-x11-0, libx11-6, libxcursor1, libxi6, libxrandr2, libgl1, libegl1, xdg-utils"
-recommends = "ffmpeg, p7zip-full, shared-mime-info"
+recommends = "ffmpeg, p7zip-full, shared-mime-info, gvfs-backends, gvfs-fuse"
 assets = [
     ["target/stage/usr/bin/ski", "usr/bin/", "755"],
     ["target/stage/usr/share/applications/ski.desktop", "usr/share/applications/", "644"],
@@ -75,6 +75,10 @@ assets = [
     { source = "target/stage/usr/share/dbus-1/services/org.freedesktop.FileManager1.service", dest = "/usr/share/dbus-1/services/org.freedesktop.FileManager1.service", mode = "644" },
     { source = "target/stage/usr/share/licenses/ski/LICENSE", dest = "/usr/share/licenses/ski/LICENSE", mode = "644", doc = false },
 ]
+
+[package.metadata.generate-rpm.recommends]
+gvfs-fuse = "*"
+gvfs-smb = "*"
 
 [package.metadata.generate-rpm.requires]
 libwayland-client = "*"

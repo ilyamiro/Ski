@@ -13,6 +13,7 @@ mod file_actions;
 mod folder_sizes;
 mod icon_gallery;
 mod jobs_ui;
+mod network_ui;
 mod perms;
 mod plugin_ui;
 mod quick_look;
@@ -21,9 +22,11 @@ mod watching;
 mod tabs;
 use swipe::{Swipe, SwipeDetector};
 use tabs::TabSlot;
+use network_ui::OpenIn;
 
 use crate::fs::{
     drives::Drive,
+    network::{self, Address},
     file_item::FileItem,
     apps::{self, AppEntry},
     places::{load_folder_icons, save_folder_icons, Place, PlaceGroup, PlaceKind, BOOKMARKS_PATH, RECENT_PATH, is_virtual},
@@ -68,6 +71,8 @@ enum MenuTarget {
     Place(PathBuf),
     /// A drive of the sidebar: its device, name and where it is mounted (empty when it is not).
     Drive(Drive, String, PathBuf),
+    /// A server of the sidebar's Network section.
+    Server(Box<network_ui::NetRow>),
 }
 
 type MenuEntry = (&'static str, &'static str, MenuAction);
@@ -142,6 +147,14 @@ enum MenuAction {
     Plugin(&'static str, String, Vec<PathBuf>, Option<&'static str>),
     /// Measure these folders.
     CalcSize(Vec<PathBuf>),
+    ConnectToServer,
+    Connect(Address, OpenIn),
+    /// Disconnect the server mounted at this folder.
+    Disconnect(PathBuf),
+    SaveServer(Address),
+    EditServer(usize),
+    RemoveServer(usize),
+    ForgetPassword(Address),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -227,6 +240,26 @@ pub(crate) enum Dialog {
     /// A dialog a plugin draws itself: the plugin's id.
     Plugin(&'static str),
     QuickLook { item: Box<FileItem>, preview: Box<quick_look::Preview> },
+    /// The address of a server to connect to; `busy` is the connection it started.
+    Connect { text: String, save: bool, error: Option<String>, first_frame: bool, busy: Option<u64> },
+    /// A server asks for an account, for the connection `id`.
+    Login {
+        id: u64,
+        server: String,
+        user: String,
+        domain: String,
+        password: String,
+        show_domain: bool,
+        /// The label of the button that connects without an account, when the server allows that.
+        anonymous: Option<&'static str>,
+        retry: bool,
+        remember: bool,
+        reveal: bool,
+        first_frame: bool,
+    },
+    /// A server asks a question, such as whether to trust its key.
+    NetQuestion { id: u64, title: String, body: String, choices: Vec<String> },
+    EditServer { index: usize, name: String, text: String, error: Option<String>, first_frame: bool },
 }
 
 /// Rubber-band drag selection started inside the file listing.
@@ -325,6 +358,9 @@ pub struct SkiApp {
     /// A folder another part of the app wants shown (settings buttons), opened at the next frame.
     pub(crate) pending_open: Option<PathBuf>,
     drive_state: drives_ui::DriveState,
+    net: network_ui::NetState,
+    /// For work that reports back from other threads.
+    ctx: egui::Context,
     /// Where each pinned row was drawn last frame, for reordering by dragging.
     pin_rects: Vec<egui::Rect>,
     dnd: Option<dnd::Dnd>,
@@ -469,6 +505,7 @@ impl SkiApp {
         settings.last_dir = Some(canonical_path.clone());
         crate::fs::file_item::set_format_options(settings.decimal_units, settings.relative_dates);
         crate::fs::file_item::set_show_extensions(settings.show_extensions);
+        network::set_remote_previews(settings.remote_previews);
         let view_mode = if settings.remember_view_per_folder {
             settings.folder_views.get(&canonical_path).copied().unwrap_or(settings.view_mode)
         } else {
@@ -500,6 +537,8 @@ impl SkiApp {
             reserved: Vec::new(),
             pending_open: None,
             drive_state: drives_ui::DriveState::new(),
+            net: network_ui::NetState::new(),
+            ctx: ctx.clone(),
             pin_rects: Vec::new(),
             dnd: None,
             arrivals: None,
@@ -583,11 +622,16 @@ impl SkiApp {
 
         app.reload_items();
         app.request_drive_listing(ctx, true);
+        app.request_network_listing(ctx, true);
         app
     }
 
     pub fn navigate_to(&mut self, target: PathBuf) {
         if target == self.current_path {
+            return;
+        }
+        if let Some((address, password)) = Self::server_target(&target) {
+            self.open_address(address, password, OpenIn::Here);
             return;
         }
 
@@ -604,6 +648,20 @@ impl SkiApp {
         }
     }
 
+    /// The server address `target` stands for: one typed as an address, or a folder on a server
+    /// that is not connected now. Opening it connects first.
+    fn server_target(target: &Path) -> Option<(Address, Option<String>)> {
+        if let Some(text) = target.to_str().filter(|t| Address::looks_like(t) && !t.starts_with("file://")) {
+            return Address::parse_login(text);
+        }
+        (network::is_remote(target) && network::is_disconnected(target)).then(|| network::address_of(target).map(|a| (a, None))).flatten()
+    }
+
+    /// What the path field shows for `path`: a server address for a folder on a server.
+    pub(crate) fn path_text(path: &Path) -> String {
+        network::display_path(path).unwrap_or_else(|| path.to_string_lossy().into_owned())
+    }
+
     /// Switch to `path` after the history was updated: reset everything that belonged to the old place.
     fn arrive(&mut self, path: PathBuf) {
         self.sizes.cancel_all();
@@ -616,7 +674,7 @@ impl SkiApp {
                     self.view_mode = saved_mode;
                 }
         }
-        self.path_input = self.current_path.to_string_lossy().to_string();
+        self.path_input = Self::path_text(&self.current_path);
         self.selected_index = None;
         self.drag_select = None;
         self.last_rubberband = None;
@@ -1232,6 +1290,10 @@ impl SkiApp {
 
     /// Another Ski window on `path`.
     fn open_window(&mut self, path: &Path) {
+        if let Some((address, password)) = Self::server_target(path) {
+            self.open_address(address, password, OpenIn::NewWindow);
+            return;
+        }
         let started = std::env::current_exe()
             .and_then(|exe| std::process::Command::new(exe).arg(path).spawn());
         if let Err(err) = started {
@@ -1493,6 +1555,8 @@ impl SkiApp {
             tr("Recent").to_owned()
         } else if trash::is_trash_folder(&self.current_path) {
             tr("Trash").to_owned()
+        } else if let Some(mount) = network::mount_of(&self.current_path).filter(|m| m.local == self.current_path) {
+            self.server_label(&mount)
         } else {
             self.current_path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| tr("Computer").to_owned())
         }
@@ -1859,7 +1923,7 @@ impl SkiApp {
 
         if self.is_act_pressed(ctx, crate::keymap::Action::EditPath) {
             self.is_editing_path = true;
-            self.path_input = self.current_path.to_string_lossy().to_string();
+            self.path_input = Self::path_text(&self.current_path);
             handled = true;
         }
 
@@ -1884,6 +1948,10 @@ impl SkiApp {
 
         if !self.picking() && self.is_act_pressed(ctx, crate::keymap::Action::NewWindow) {
             self.new_window();
+            handled = true;
+        }
+        if self.is_act_pressed(ctx, crate::keymap::Action::ConnectToServer) {
+            self.open_connect_dialog();
             handled = true;
         }
 
@@ -2044,6 +2112,7 @@ impl eframe::App for SkiApp {
         }
         self.poll_watch(&ctx);
         self.poll_drives(&ctx);
+        self.poll_network(&ctx);
         self.drop_zones.clear();
         self.sync_settings(&ctx);
         let shown_px = match self.view_mode {
@@ -2460,7 +2529,7 @@ impl SkiApp {
         }
         if self.path_suggestions_for != self.path_input {
             self.path_suggestions_for.clone_from(&self.path_input);
-            self.path_suggestions = crate::fs::complete::dir_completions(&self.path_input);
+            self.path_suggestions = network::completions(&self.path_input).unwrap_or_else(|| crate::fs::complete::dir_completions(&self.path_input));
             // Nothing left to complete once the typed folder is the only match
             if self.path_suggestions.len() == 1 && self.path_suggestions[0] == self.path_input {
                 self.path_suggestions.clear();
@@ -2645,7 +2714,7 @@ impl SkiApp {
             self.navigate_to(path);
         } else if edit || field.clicked() {
             self.is_editing_path = true;
-            self.path_input = self.current_path.to_string_lossy().to_string();
+            self.path_input = Self::path_text(&self.current_path);
         }
     }
 
@@ -2705,14 +2774,18 @@ impl SkiApp {
         let path = &self.current_path;
         let trash_root = trash::files_dir().map(canon);
         let home = dirs::home_dir().map(canon);
+        let server = network::mount_of(path).map(|m| (if m.is_device() { icons::CELLPHONE } else { icons::SERVER_NETWORK }, self.server_label(&m), m.local));
         let (root, icon, name) = if let Some(t) = trash_root.filter(|t| path.starts_with(t)) {
-            (t, icons::TRASH, tr("Trash"))
+            (t, icons::TRASH, tr("Trash").to_owned())
+        } else if let Some((icon, name, local)) = server {
+            // A server starts its own trail, named after it rather than after the folder it is mounted in
+            (local, icon, name)
         } else if let Some(h) = home.filter(|h| path.starts_with(h)) {
-            (h, icons::HOME, tr("Home"))
+            (h, icons::HOME, tr("Home").to_owned())
         } else {
-            (PathBuf::from("/"), icons::STORAGE, tr("Computer"))
+            (PathBuf::from("/"), icons::STORAGE, tr("Computer").to_owned())
         };
-        let mut crumbs = vec![Crumb { icon: Some(icon), label: name.to_owned(), path: root.clone() }];
+        let mut crumbs = vec![Crumb { icon: Some(icon), label: name, path: root.clone() }];
         let mut acc = root.clone();
         if let Ok(rel) = path.strip_prefix(&root) {
             for part in rel.components() {
@@ -2740,6 +2813,7 @@ impl SkiApp {
         let plugin_rows = self.plugins.sidebar();
         let mut plugin_click: Option<(&'static str, String)> = None;
         let mut plugin_edit: Option<(&'static str, String)> = None;
+        let mut net_events = Vec::new();
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
             ui.spacing_mut().item_spacing.y = 2.0;
             let mut first = true;
@@ -2762,7 +2836,8 @@ impl SkiApp {
                 if section == 2 {
                     let mut rects = Vec::with_capacity(self.pins.len());
                     for (idx, pin) in self.pins.iter().enumerate() {
-                        let is_dir = pin.is_dir();
+                        // A pinned folder on a server that is not connected is still a folder: opening it connects
+                        let is_dir = pin.is_dir() || network::is_remote(pin) && network::is_disconnected(pin);
                         let selected = browsing && is_dir && self.current_path == *pin;
                         let name = pin.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| pin.display().to_string());
                         let icon = if is_dir { icons::FOLDER } else { FileItem::from_path(pin).map_or(icons::FILE, |i| i.file_type.icon()) };
@@ -2844,6 +2919,11 @@ impl SkiApp {
                         }
                 }
             }
+            // Servers, after the drives
+            if !first {
+                material::divider(ui, &self.theme);
+            }
+            net_events = self.network_sidebar(ui, browsing, &mut zones);
             if !plugin_rows.is_empty() {
                 material::divider(ui, &self.theme);
                 for (plugin, entry) in &plugin_rows {
@@ -2867,6 +2947,7 @@ impl SkiApp {
         }
 
         self.drop_zones.extend(zones);
+        self.apply_network_events(ui.ctx(), net_events);
         if let Some((from, to)) = reorder {
             let pin = self.pins.remove(from);
             self.pins.insert(to, pin);
@@ -3810,6 +3891,16 @@ impl SkiApp {
 
     /// Move to the trash, with an Undo in the toast.
     fn trash_paths(&mut self, paths: Vec<PathBuf>) {
+        // Servers have no trash: what is on one is deleted for good, after asking, as Nautilus does
+        let (remote, paths): (Vec<PathBuf>, Vec<PathBuf>) = paths.into_iter().partition(|p| network::is_remote(p));
+        if !remote.is_empty() {
+            self.dialog = Some(Dialog::Confirm {
+                title: tr("Delete permanently?").to_owned(),
+                body: trf("Files on a server can't be moved to the trash. {} will be deleted for good.", &[&Self::describe_count(&remote)]),
+                confirm: tr("Delete").to_owned(),
+                action: ConfirmAction::DeleteForever(remote),
+            });
+        }
         if paths.is_empty() {
             return;
         }
@@ -3975,6 +4066,17 @@ impl SkiApp {
             MenuAction::Eject(dev, name, mount) => self.unmount_drive(ctx, dev, name, mount, true),
             MenuAction::Plugin(plugin, id, paths, confirm) => self.run_plugin_entry(ctx, plugin, id, paths, confirm),
             MenuAction::CalcSize(paths) => self.calculate_sizes(&paths),
+            MenuAction::ConnectToServer => self.open_connect_dialog(),
+            MenuAction::Connect(address, open) => self.open_address(address, None, open),
+            MenuAction::Disconnect(local) => {
+                if let Some(mount) = self.net.mounts.iter().find(|m| m.local == local).cloned() {
+                    self.disconnect(ctx, mount);
+                }
+            }
+            MenuAction::SaveServer(address) => self.save_server(address),
+            MenuAction::EditServer(index) => self.open_edit_server(index),
+            MenuAction::RemoveServer(index) => self.remove_server(index),
+            MenuAction::ForgetPassword(address) => self.forget_password(address),
             MenuAction::Redo => self.redo(),
             MenuAction::OpenSettings => self.open_settings_dialog(),
             MenuAction::Shortcuts => self.dialog = Some(Dialog::Shortcuts),
@@ -4030,6 +4132,13 @@ impl SkiApp {
                     | MenuAction::Mount(..)
                     | MenuAction::Unmount(..)
                     | MenuAction::Eject(..)
+                    | MenuAction::ConnectToServer
+                    | MenuAction::Connect(..)
+                    | MenuAction::Disconnect(_)
+                    | MenuAction::SaveServer(_)
+                    | MenuAction::EditServer(_)
+                    | MenuAction::RemoveServer(_)
+                    | MenuAction::ForgetPassword(_)
             ),
         }
     }
@@ -4259,6 +4368,7 @@ impl SkiApp {
             ],
             MenuTarget::Main => vec![
                 vec![(icons::NEW_WINDOW, tr("New window"), MenuAction::NewWindow), (icons::NEW_TAB, tr("New tab"), MenuAction::NewTab)],
+                vec![(icons::LAN_CONNECT, tr("Connect to server…"), MenuAction::ConnectToServer)],
                 self.history_entries(),
                 self.plugin_folder_group().filter(|_| !self.in_recent() && !self.in_trash() && !self.in_bookmarks()).unwrap_or_default(),
                 vec![
@@ -4299,6 +4409,7 @@ impl SkiApp {
                     ]
                 }
             }
+            MenuTarget::Server(row) => self.server_menu(row),
             MenuTarget::Pin(path) => match FileItem::from_path(path) {
                 Some(item) => single_groups(&item, true, false),
                 None => vec![vec![(icons::PIN_OFF, tr("Unpin from sidebar"), MenuAction::Unpin(path.clone()))]],
@@ -4348,6 +4459,7 @@ impl SkiApp {
             MenuAction::DeleteForever(_) => A::DeleteForever,
             MenuAction::CopyPath(_) => A::CopyPath,
             MenuAction::Pin(_) | MenuAction::Unpin(_) => A::PinFolder,
+            MenuAction::ConnectToServer => A::ConnectToServer,
             _ => return None,
         };
         crate::keymap::hint(&self.settings.keybinds, act, self.settings.vim_keys)
@@ -4611,6 +4723,8 @@ impl SkiApp {
             Dialog::QuickLook { .. } => 720.0,
             Dialog::Plugin(id) => self.plugins.window_width(id),
             Dialog::Confirm { .. } | Dialog::Alert { .. } => 400.0,
+            Dialog::Connect { .. } => 480.0,
+            Dialog::Login { .. } | Dialog::NetQuestion { .. } => 420.0,
             _ => 440.0,
         };
         let width = (screen.width() - 32.0).clamp(240.0, preferred);
@@ -4647,6 +4761,10 @@ impl SkiApp {
                             Dialog::SelectPattern { .. } => self.select_pattern_contents(ui, &mut dialog),
                             Dialog::QuickLook { .. } => self.quick_look_contents(ui, &mut dialog),
                             Dialog::Plugin(_) => self.plugin_dialog_contents(ui, &mut dialog),
+                            Dialog::Connect { .. } => self.connect_dialog_contents(ui, &mut dialog),
+                            Dialog::Login { .. } => self.login_dialog_contents(ui, &mut dialog),
+                            Dialog::NetQuestion { .. } => self.net_question_contents(ui, &mut dialog),
+                            Dialog::EditServer { .. } => self.edit_server_contents(ui, &mut dialog),
                         };
                     });
             });
@@ -5494,6 +5612,9 @@ impl SkiApp {
             }
         } else if !item.is_dir {
             subtitle = format!("{} · {}", props.kind, item.formatted_size());
+        }
+        if let Some(address) = network::display_path(&item.path) {
+            groups[0].1.push((tr("Server address"), address));
         }
         for group in self.plugins.properties(item) {
             groups.push((group.title, group.rows));

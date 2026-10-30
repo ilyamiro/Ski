@@ -723,6 +723,13 @@ impl SkiApp {
                 self.settings.show_thumbnails = !self.settings.show_thumbnails;
                 self.persist_settings();
             }
+            let desc = Some(tr("Thumbnails and folder item counts for files on servers, which reads them over the network"));
+            if switch_row_with(ui, "fv_remote_previews", icons::SERVER_NETWORK, tr("Previews on servers"), desc, &theme, self.settings.remote_previews).clicked() {
+                self.settings.remote_previews = !self.settings.remote_previews;
+                crate::fs::network::set_remote_previews(self.settings.remote_previews);
+                self.persist_settings();
+                self.reread_items();
+            }
             if switch_row_with(ui, "fv_show_exts", icons::DOCUMENT, tr("File extensions"), None, &theme, self.settings.show_extensions).clicked() {
                 self.settings.show_extensions = !self.settings.show_extensions;
                 self.persist_settings();

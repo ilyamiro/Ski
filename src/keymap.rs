@@ -58,10 +58,11 @@ pub enum Action {
     QuickLook,
     AssignTags,
     ReopenTab,
+    ConnectToServer,
 }
 
 impl Action {
-    pub const ALL: [Action; 51] = [
+    pub const ALL: [Action; 52] = [
         Action::MoveDown, Action::MoveUp, Action::Open, Action::ParentFolder, Action::Back, Action::Forward,
         Action::First, Action::Last, Action::Filter, Action::EditPath, Action::ToggleHidden, Action::ZoomIn, Action::ZoomOut, Action::ListView,
         Action::GridView, Action::PinFolder, Action::Properties, Action::Copy, Action::Cut, Action::Paste,
@@ -71,7 +72,7 @@ impl Action {
         Action::NewTab, Action::CloseTab, Action::NextTab, Action::PrevTab,
         Action::Undo, Action::Redo, Action::Duplicate, Action::MakeLink, Action::OpenTerminal, Action::OpenAsAdmin,
         Action::InvertSelection, Action::SelectPattern, Action::SelectNone, Action::ContextMenu,
-        Action::ShowJobs, Action::QuickLook, Action::AssignTags, Action::ReopenTab,
+        Action::ShowJobs, Action::QuickLook, Action::AssignTags, Action::ReopenTab, Action::ConnectToServer,
     ];
 
     /// Stable id used as the key in settings.json.
@@ -94,7 +95,7 @@ impl Action {
             Action::InvertSelection => "invert_selection", Action::SelectPattern => "select_pattern",
             Action::SelectNone => "select_none", Action::ContextMenu => "context_menu",
             Action::ShowJobs => "show_jobs", Action::QuickLook => "quick_look", Action::AssignTags => "assign_tags",
-            Action::ReopenTab => "reopen_tab",
+            Action::ReopenTab => "reopen_tab", Action::ConnectToServer => "connect_to_server",
         }
     }
 
@@ -118,7 +119,7 @@ impl Action {
             Action::InvertSelection => tr("Invert selection"), Action::SelectPattern => tr("Select matching…"),
             Action::SelectNone => tr("Deselect all"), Action::ContextMenu => tr("Open context menu"),
             Action::ShowJobs => tr("Show file operations"), Action::QuickLook => tr("Quick Look"), Action::AssignTags => tr("Add tag…"),
-            Action::ReopenTab => tr("Reopen closed tab"),
+            Action::ReopenTab => tr("Reopen closed tab"), Action::ConnectToServer => tr("Connect to server…"),
         }
     }
 
@@ -127,7 +128,7 @@ impl Action {
         match self {
             Action::MoveDown | Action::MoveUp | Action::Open | Action::ParentFolder | Action::Back
             | Action::Forward | Action::First | Action::Last | Action::EditPath | Action::GoHome
-            | Action::NewTab | Action::CloseTab | Action::NextTab | Action::PrevTab | Action::ReopenTab => tr("Navigation"),
+            | Action::NewTab | Action::CloseTab | Action::NextTab | Action::PrevTab | Action::ReopenTab | Action::ConnectToServer => tr("Navigation"),
             Action::Filter | Action::ToggleHidden | Action::ZoomIn | Action::ZoomOut | Action::ListView | Action::GridView | Action::Refresh
             | Action::Settings | Action::ShowShortcuts | Action::Quit => tr("View"),
             _ => tr("Files"),
@@ -156,6 +157,7 @@ impl Action {
             Action::InvertSelection => &["Ctrl+Shift+I"], Action::SelectPattern => &["Ctrl+S"],
             Action::SelectNone => &["Ctrl+Shift+A"], Action::ContextMenu => &["Menu", "Shift+F10"],
             Action::ShowJobs => &["Ctrl+J"], Action::QuickLook => &["Space"], Action::AssignTags => &["Alt+T"], Action::ReopenTab => &["Ctrl+Shift+T"],
+            Action::ConnectToServer => &["Ctrl+K"],
         }
     }
 }

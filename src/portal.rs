@@ -289,8 +289,12 @@ struct FileManager;
 impl FileManager {
     fn show(uris: &[String]) {
         let Ok(exe) = std::env::current_exe() else { return };
-        for path in uris.iter().filter_map(|u| crate::chooser::from_uri(u)) {
-            let _ = Command::new(&exe).arg(path).stdin(Stdio::null()).spawn();
+        // Server addresses are handed on as they are; the new window connects to them
+        let targets = uris.iter().filter_map(|u| {
+            crate::chooser::from_uri(u).map(PathBuf::into_os_string).or_else(|| crate::fs::network::Address::looks_like(u).then(|| u.into()))
+        });
+        for target in targets {
+            let _ = Command::new(&exe).arg(target).stdin(Stdio::null()).spawn();
         }
     }
 }

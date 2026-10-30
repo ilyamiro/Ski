@@ -27,6 +27,15 @@ in
       '';
     };
 
+    servers = lib.mkOption {
+      type = lib.types.bool;
+      default = true;
+      description = ''
+        Turn on GVfs, which Ski uses to open folders on servers (SMB, SFTP, FTP, WebDAV)
+        from Connect to server.
+      '';
+    };
+
     filePicker = lib.mkOption {
       type = lib.types.bool;
       default = true;
@@ -43,6 +52,10 @@ in
     (lib.mkIf cfg.defaultFileManager {
       xdg.mime.defaultApplications."inode/directory" = "ski.desktop";
       services.dbus.packages = [ cfg.package ];
+    })
+
+    (lib.mkIf cfg.servers {
+      services.gvfs.enable = lib.mkDefault true;
     })
 
     (lib.mkIf cfg.filePicker {

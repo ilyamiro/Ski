@@ -76,6 +76,8 @@ pub struct Settings {
     pub show_sidebar: bool,
     pub show_status_bar: bool,
     pub show_thumbnails: bool,
+    /// Previews and folder item counts also for files on servers, which reads them over the network.
+    pub remote_previews: bool,
     pub show_extensions: bool,
     pub relative_dates: bool,
     pub decimal_units: bool,
@@ -259,6 +261,7 @@ impl Default for Settings {
             show_sidebar: true,
             show_status_bar: true,
             show_thumbnails: true,
+            remote_previews: false,
             show_extensions: true,
             relative_dates: true,
             decimal_units: false,

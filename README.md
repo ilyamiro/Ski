@@ -128,6 +128,7 @@ org.freedesktop.impl.portal.FileChooser=ski
 ```sh
 ski              # open the current folder
 ski ~/Downloads  # open a specific folder
+ski sftp://me@example.com/srv  # connect to a server and open a folder on it
 ```
 
 | To | Do this |
@@ -139,6 +140,7 @@ ski ~/Downloads  # open a specific folder
 | Move or copy by dragging | Drag items onto a folder, sidebar place, breadcrumb or tab. Hold `Ctrl` to copy. |
 | Open a folder in a tab | Middle-click it, or `Ctrl+T` for a new tab. Settings → General → Open Ski in → Restore last tabs brings back the tabs of the last session. |
 | Eject a drive | Hover it in the sidebar and click the eject button |
+| Open a folder on a server | `Ctrl+K`, or type its address (`smb://nas/media`) into the path field. See [Servers](#servers). |
 | Switch list and grid | `Ctrl+1` and `Ctrl+2` |
 | Go back and forward on a touchpad | Swipe sideways with two fingers over the files (off by default: Settings → Behavior → Touchpad) |
 | Settings | `Ctrl+,` |
@@ -171,6 +173,7 @@ Right-click anything for a menu that shows the shortcut of each action.
 | `Ctrl+H` | Show or hide hidden files |
 | `F5` | Refresh |
 | `Ctrl+N` | New window |
+| `Ctrl+K` | Connect to a server |
 | `Ctrl+T` / `Ctrl+W` | New tab / close tab (closes the window on the last tab) |
 | `Ctrl+Shift+T` | Reopen the last closed tab |
 | `Ctrl+Tab` / `Ctrl+Shift+Tab`, `Ctrl+PageDown` / `Ctrl+PageUp` | Next / previous tab |
@@ -241,6 +244,29 @@ File operations: copies, and moves to another disk, that write to the same disk 
 
 Typing in a folder jumps to the file whose name starts with what you typed (Settings → Behavior → Type to jump); `/` or Ctrl+F still searches.
 
+## Servers
+
+Ski opens folders on other computers like any other folder: Windows and NAS shares (SMB), SSH servers (SFTP), FTP and FTPS, WebDAV, Apple shares (AFP) and NFS. Press `Ctrl+K` or click **Connect to server…** at the bottom of the sidebar, then type an address:
+
+| Server | Address |
+| --- | --- |
+| Windows share, NAS | `smb://nas/media`, `smb://WORKGROUP;me@nas/media`, or `\\nas\media` |
+| SSH | `sftp://me@example.com/home/me`, `sftp://me@example.com:2222/`, or `me@example.com:/srv` |
+| FTP | `ftp://ftp.example.com/pub`, `ftps://` for FTP over TLS |
+| WebDAV (Nextcloud and others) | `davs://cloud.example.com/remote.php/dav/files/me` |
+
+The same addresses work in the path field (`Ctrl+L`) and on the command line. When a server wants a password, Ski asks for it. **Remember password** keeps it in your keyring (GNOME Keyring, KWallet or KeePassXC), filed the way GNOME Files files it, so a password saved by either is found by the other. SSH logs in with your keys and `ssh-agent` first. An SSH server Ski has never seen shows its key fingerprint before connecting. FTP servers and shares that allow it can be opened anonymously or as a guest.
+
+Connected servers appear under the drives in the sidebar, with a button to disconnect. **Keep in sidebar** keeps a server there while it is disconnected, and clicking it connects again. Right-click a server to rename it, change its address, forget its password or remove it. A folder on a server can be pinned too, and opening the pin reconnects.
+
+Copying, opening files with other apps, Quick Look and dragging to other programs work as they do with local files. A few things differ:
+
+- Servers have no trash. **Move to trash** asks before deleting the files permanently.
+- Thumbnails and folder item counts are skipped on servers, because they read every file over the network. Settings → Files → **Previews on servers** turns them on.
+- **Open in terminal** (`F4`) on an SSH server logs in with `ssh` and opens a shell in the same folder there.
+
+Ski mounts servers through GVfs, the service GNOME Files uses, which most desktops have. Without GVfs it uses `sshfs` for SSH and `rclone` for the others, if they are installed.
+
 ## Archives
 
 `.zip` and `.tar.gz` work out of the box. Other formats use system tools and only appear when those are installed:
@@ -261,6 +287,7 @@ On Debian or Ubuntu: `sudo apt install xz-utils bzip2 zstd p7zip-full`.
 - **Want X11 on a Wayland session:** `env -u WAYLAND_DISPLAY ski`.
 - **Interface too small or large:** Settings → Appearance → Size.
 - **Missing `.7z` or `.tar.xz` when compressing:** install the tools listed under Archives.
+- **"Install GVfs…" when connecting to a server:** install GVfs with its FUSE part and backends (`gvfs-backends` and `gvfs-fuse` on Debian or Ubuntu, `gvfs-fuse` and `gvfs-smb` on Fedora, `services.gvfs.enable = true` on NixOS), or `sshfs` / `rclone`. Log out and back in afterwards.
 
 Found a bug? Open an [issue](https://github.com/ilyamiro/Ski/issues) with your distribution and whether you use Wayland or X11.
 

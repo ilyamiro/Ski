@@ -66,6 +66,16 @@ impl SkiApp {
 
     pub(super) fn open_terminal(&mut self, dir: &Path) {
         let dir = if dir.is_dir() { dir.to_path_buf() } else { dir.parent().map(Path::to_path_buf).unwrap_or_else(|| self.current_path.clone()) };
+        // On an SSH server the terminal logs in there, in the same folder
+        if let Some(address) = crate::fs::network::address_of(&dir).filter(|a| a.scheme == crate::fs::network::Scheme::Sftp) {
+            let command = crate::fs::terminal::ssh_command(address.user.as_deref(), &address.host, address.port, &address.path);
+            if let Some(started) = crate::fs::terminal::run(&command, self.settings.terminal.trim()) {
+                if let Err(err) = started {
+                    self.set_toast(err.to_string());
+                }
+                return;
+            }
+        }
         if let Err(err) = crate::fs::terminal::open_in(&dir, self.settings.terminal.trim()) {
             self.set_toast(err.to_string());
         }
