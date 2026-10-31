@@ -1775,7 +1775,9 @@ impl SkiApp {
             handled = true;
         }
 
-        if grid {
+        // egui's consume_key ignores an extra Alt, so leave Alt and Ctrl arrows to their shortcuts
+        // (Alt+← and Alt+→ go back and forward)
+        if grid && !ctx.input(|i| i.modifiers.alt || i.modifiers.command) {
             // Sideways arrows walk the tiles of a row; they stay free in the list
             let side = ctx.input_mut(|i| {
                 let mut step = 0;
