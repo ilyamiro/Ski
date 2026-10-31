@@ -78,6 +78,9 @@ pub struct Settings {
     pub grid_size: GridSize,
     pub grid_name_lines: u8,
     pub show_sidebar: bool,
+    /// Every disk and partition in the sidebar's Devices, internal ones too; off lists only what is
+    /// plugged in or mounted under `/run/media`, `/media` or `/mnt`, beside Computer.
+    pub show_all_partitions: bool,
     /// Built-in sidebar places the user hid, from the sidebar's menu or Settings → Sidebar.
     pub hidden_places: Vec<SidebarPlace>,
     /// Places off by default (`SidebarPlace::opt_in`) that the user turned on.
@@ -268,6 +271,7 @@ impl Default for Settings {
             grid_size: GridSize::default(),
             grid_name_lines: 2,
             show_sidebar: true,
+            show_all_partitions: true,
             hidden_places: Vec::new(),
             shown_places: Vec::new(),
             show_status_bar: true,

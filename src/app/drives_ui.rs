@@ -72,7 +72,7 @@ impl SkiApp {
         ctx.request_repaint_after(REFRESH);
     }
 
-    pub(super) fn request_drive_listing(&mut self, ctx: &egui::Context, now: bool) {
+    pub(crate) fn request_drive_listing(&mut self, ctx: &egui::Context, now: bool) {
         let state = &mut self.drive_state;
         if state.listing || !now && state.last.elapsed() < REFRESH {
             return;
@@ -80,8 +80,9 @@ impl SkiApp {
         state.listing = true;
         state.last = Instant::now();
         let (tx, ctx) = (state.tx.clone(), ctx.clone());
+        let all = self.settings.show_all_partitions;
         std::thread::spawn(move || {
-            let mut found = drives::list();
+            let mut found = drives::list(all);
             let mut spaces = HashMap::new();
             for place in &mut found {
                 if place.drive.as_ref().is_none_or(|d| d.mounted) {

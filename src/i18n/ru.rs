@@ -436,6 +436,8 @@ pub const CATALOG: &[(&str, &str)] = &[
     ("The trash has no record of where this came from", "В корзине нет сведений о прежнем расположении"),
     ("{} Volume", "Том {}"),
     ("{} free of {}", "Свободно {} из {}"),
+    ("Show all disks and partitions", "Показывать все диски и разделы"),
+    ("Internal disks and partitions too; off shows only Computer and the drives you plug in", "Внутренние диски и разделы тоже; если выключено, видны только «Компьютер» и подключённые накопители"),
     ("Cannot put {} inside itself", "Нельзя поместить {} внутрь самого себя"),
     ("Copy of {}", "Копирование {}"),
     ("Move of {}", "Перемещение {}"),

@@ -672,6 +672,13 @@ impl SkiApp {
                 self.settings.show_sidebar = !self.settings.show_sidebar;
                 self.persist_settings();
             }
+            let all = self.settings.show_all_partitions;
+            let about = tr("Internal disks and partitions too; off shows only Computer and the drives you plug in");
+            if switch_row_with(ui, "sb_all_partitions", icons::HARD_DISK, tr("Show all disks and partitions"), Some(about), &theme, all).clicked() {
+                self.settings.show_all_partitions = !all;
+                self.persist_settings();
+                self.request_drive_listing(ui.ctx(), true);
+            }
         });
         material::section_label(ui, tr("Show these places in the sidebar"), &theme);
         let mut change = None;

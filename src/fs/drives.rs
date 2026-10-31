@@ -60,7 +60,7 @@ fn mount_points(node: &Value) -> Vec<&str> {
     all
 }
 
-fn walk(node: &Value, inherited_removable: bool, out: &mut Vec<Place>) {
+fn walk(node: &Value, inherited_removable: bool, all: bool, out: &mut Vec<Place>) {
     let removable = inherited_removable || truthy(&node["rm"]) || truthy(&node["hotplug"]);
     let kind = text(node, "type").unwrap_or_default();
     let fstype = text(node, "fstype");
@@ -71,29 +71,34 @@ fn walk(node: &Value, inherited_removable: bool, out: &mut Vec<Place>) {
     let boot_part = text(node, "parttype").is_some_and(|t| BOOT_PART_TYPES.contains(&t.to_ascii_lowercase().as_str()));
 
     let browsable = fstype.is_some_and(|f| !NOT_BROWSABLE.contains(&f)) && !matches!(kind, "loop" | "rom") && !has_children;
-    // The system's own root is the sidebar's Computer
-    let listed = browsable && !mounts.contains(&"/") && (mount.is_some() || !boot_part);
+    let user_mount = mount.as_ref().is_some_and(|m| MOUNT_ROOTS.iter().any(|r| m.starts_with(r)));
+    // The system's own root is the sidebar's Computer. Without `all`, only what the user plugged in or mounted
+    let listed = browsable
+        && !mounts.contains(&"/")
+        && (mount.is_some() || !boot_part)
+        && (all || user_mount || (mount.is_none() && removable));
     if listed && let Some(dev) = text(node, "path") {
         let label = text(node, "label").map(str::to_owned).or_else(|| {
             mount.as_ref().and_then(|m| m.file_name()).map(|n| n.to_string_lossy().into_owned())
         });
         let name = label.unwrap_or_else(|| trf("{} Volume", &[&text(node, "size").unwrap_or("Drive")]));
-        let system = mount.as_ref().is_some_and(|m| !MOUNT_ROOTS.iter().any(|r| m.starts_with(r)));
+        let system = mount.is_some() && !user_mount;
         let icon = if removable { icons::USB } else { icons::HARD_DISK };
         let mut place = Place::new(name, mount.clone().unwrap_or_default(), icon, PlaceGroup::Devices);
         place.drive = Some(Drive { dev: dev.to_owned(), mounted: mount.is_some(), removable, system });
         out.push(place);
     }
     for child in node.get("children").and_then(Value::as_array).into_iter().flatten() {
-        walk(child, removable, out);
+        walk(child, removable, all, out);
     }
 }
 
-pub fn parse_lsblk(json: &str) -> Vec<Place> {
+/// The drives in `lsblk`'s JSON; `all` lists internal disks and partitions too, not just removable ones and user mounts.
+pub fn parse_lsblk(json: &str, all: bool) -> Vec<Place> {
     let mut out: Vec<Place> = Vec::new();
     if let Ok(root) = serde_json::from_str::<Value>(json) {
         for node in root["blockdevices"].as_array().into_iter().flatten() {
-            walk(node, false, &mut out);
+            walk(node, false, all, &mut out);
         }
     }
     // A device under several holders (RAID, multipath) shows up once per holder
@@ -105,13 +110,13 @@ pub fn parse_lsblk(json: &str) -> Vec<Place> {
 }
 
 /// Drives to show, or what sits in the usual mount folders when `lsblk` is missing.
-pub fn list() -> Vec<Place> {
+pub fn list(all: bool) -> Vec<Place> {
     // `mountpoints` and `parttype` are missing from old `lsblk`, which then refuses the whole list
     const COLUMNS: [&str; 2] = ["NAME,PATH,LABEL,SIZE,MOUNTPOINT,MOUNTPOINTS,RM,HOTPLUG,TYPE,FSTYPE,PARTTYPE", "NAME,PATH,LABEL,SIZE,MOUNTPOINT,RM,HOTPLUG,TYPE,FSTYPE"];
     for columns in COLUMNS {
         if let Ok(o) = Command::new("lsblk").args(["-J", "-o", columns]).output()
             && o.status.success() {
-                return parse_lsblk(&String::from_utf8_lossy(&o.stdout));
+                return parse_lsblk(&String::from_utf8_lossy(&o.stdout), all);
             }
     }
     from_mount_roots()
@@ -216,7 +221,7 @@ mod tests {
 
     #[test]
     fn lists_every_partition_but_the_root() {
-        let drives = parse_lsblk(SAMPLE);
+        let drives = parse_lsblk(SAMPLE, true);
         let mut seen: Vec<(&str, bool, bool)> = drives.iter().map(|p| {
             let d = p.drive.as_ref().unwrap();
             (d.dev.as_str(), d.mounted, d.system)
@@ -244,12 +249,20 @@ mod tests {
             {"name":"nvme1n1p4","path":"/dev/nvme1n1p4","label":"Recovery","size":"700M","mountpoint":null,"mountpoints":[null],"rm":false,"hotplug":false,"type":"part","fstype":"ntfs","parttype":"de94bba4-06d1-4d40-a16a-bfd50179d6ac"}]},
           {"name":"nvme0n1","path":"/dev/nvme0n1","label":null,"size":"500G","mountpoint":null,"mountpoints":[null],"rm":false,"hotplug":false,"type":"disk","fstype":null,"parttype":null,"children":[
             {"name":"nvme0n1p1","path":"/dev/nvme0n1p1","label":null,"size":"500G","mountpoint":"/home","mountpoints":["/home","/nix","/"],"rm":false,"hotplug":false,"type":"part","fstype":"btrfs","parttype":"0fc63daf-8483-4772-8e79-3d69d8477de4"}]}]}"#;
-        let drives = parse_lsblk(json);
+        let drives = parse_lsblk(json, true);
+        assert!(parse_lsblk(json, false).is_empty());
         let names: Vec<&str> = drives.iter().map(|p| p.name.as_str()).collect();
         assert_eq!(names, vec!["Windows"]);
         let windows = drives[0].drive.as_ref().unwrap();
         assert!(!windows.mounted && !windows.removable);
         assert_eq!(drives[0].icon, icons::HARD_DISK);
+    }
+
+    #[test]
+    fn without_all_lists_user_mounts_and_unmounted_removables_only() {
+        let mut seen: Vec<String> = parse_lsblk(SAMPLE, false).iter().map(|p| p.drive.as_ref().unwrap().dev.clone()).collect();
+        seen.sort();
+        assert_eq!(seen, vec!["/dev/sda1", "/dev/sda2"]);
     }
 
     #[test]

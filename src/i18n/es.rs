@@ -436,6 +436,8 @@ pub const CATALOG: &[(&str, &str)] = &[
     ("The trash has no record of where this came from", "La papelera no tiene registro de su origen"),
     ("{} Volume", "Volumen de {}"),
     ("{} free of {}", "{} libres de {}"),
+    ("Show all disks and partitions", "Mostrar todos los discos y particiones"),
+    ("Internal disks and partitions too; off shows only Computer and the drives you plug in", "También los discos y particiones internos; desactivado muestra solo Equipo y las unidades que conectes"),
     ("Cannot put {} inside itself", "No se puede poner {} dentro de sí mismo"),
     ("Copy of {}", "Copia de {}"),
     ("Move of {}", "Movimiento de {}"),
