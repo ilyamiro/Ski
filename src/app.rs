@@ -4453,6 +4453,7 @@ impl SkiApp {
                     many => manage.push((icons::RENAME, tr("Rename…"), MenuAction::RenameMany(many.to_vec()))),
                 }
                 manage.push((icons::TRASH, tr("Move to trash"), MenuAction::Trash(paths.clone())));
+                manage.push((icons::DELETE_FOREVER, tr("Delete permanently"), MenuAction::DeleteForever(paths.clone())));
             }
             let mut more = vec![
                 (icons::DUPLICATE, tr("Duplicate"), MenuAction::Duplicate(paths.clone())),
