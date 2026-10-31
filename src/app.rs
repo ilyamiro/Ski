@@ -5462,7 +5462,10 @@ impl SkiApp {
     /// Declared each frame of the main window; its contents are drawn by its own redraws, so it
     /// keeps up when the main window is out of sight.
     fn render_picker(&mut self, ctx: &egui::Context) {
-        let Some(picker) = self.picker.as_ref() else { return };
+        let Some(picker) = self.picker.as_ref() else {
+            chrome::reap_closed_viewport(ctx, egui::ViewportId::from_hash_of("ski_folder_picker"));
+            return;
+        };
         let title = match picker.op {
             _ if picker.icon_for.is_some() => tr("Folder icon"),
             TransferOp::Copy => tr("Copy to"),

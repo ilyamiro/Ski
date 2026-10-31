@@ -33,6 +33,28 @@ pub(super) fn close_own_viewport(ctx: &egui::Context) {
     ctx.request_repaint();
 }
 
+/// Lets go of a deferred window that was closed but is still around.
+///
+/// A window that closed itself (`close_own_viewport`) is left as its own parent, and egui keeps a
+/// window whose parent is alive. A repaint asked for it after it was dropped (its close asks for
+/// two) brings it back with that parent, so it then never goes: an empty window stays up, the main
+/// window redraws without pause, and closing the main window leaves it hanging. Its parent takes
+/// it back for one pass with nothing to draw, and egui drops it on the next as an unused child.
+pub(super) fn reap_closed_viewport(ctx: &egui::Context, id: egui::ViewportId) {
+    if !ctx.input(|i| i.raw.viewports.contains_key(&id)) {
+        return;
+    }
+    let pass = ctx.cumulative_pass_nr();
+    let key = egui::Id::unique("ski_reaped_viewport").with(id);
+    // Declared every pass it would be kept; every other pass lets it go
+    if ctx.data(|d| d.get_temp::<u64>(key)).is_some_and(|last| last + 1 == pass) {
+        return;
+    }
+    ctx.data_mut(|d| d.insert_temp(key, pass));
+    ctx.show_viewport_deferred(id, egui::ViewportBuilder::default(), |_, _| {});
+    ctx.request_repaint();
+}
+
 /// The places column, `width` wide while it slides in or out.
 pub(super) fn sidebar<R>(ui: &mut egui::Ui, id: &str, width: f32, theme: &SerpantinumTheme, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
     let panel = egui::Panel::left(id)

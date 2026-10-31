@@ -62,6 +62,7 @@ impl SkiApp {
     pub(super) fn render_settings_window(&mut self, ctx: &egui::Context) {
         let id = egui::ViewportId::from_hash_of("ski_settings");
         if self.settings_win.is_none() {
+            chrome::reap_closed_viewport(ctx, id);
             if self.theme_editor {
                 self.close_theme_editor();
             }

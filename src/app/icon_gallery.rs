@@ -23,6 +23,7 @@ impl SkiApp {
     /// contents are drawn by its own redraws, so it keeps up when the other windows are out of sight.
     pub(super) fn render_icon_gallery(&mut self, ctx: &egui::Context) {
         if self.icon_gallery.is_none() {
+            chrome::reap_closed_viewport(ctx, egui::ViewportId::from_hash_of("ski_icon_gallery"));
             return;
         }
         let builder = chrome::viewport(tr("Icon style")).with_inner_size([920.0, 660.0]).with_min_inner_size([600.0, 420.0]);
