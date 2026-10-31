@@ -23,6 +23,8 @@ pub(super) struct SizeScheduler {
     counting: Arc<AtomicBool>,
     /// A count was started and its results not sorted in yet.
     counts_unsorted: bool,
+    /// Folders the user asked about with "Calculate size", told about in a toast once all are measured.
+    pub(super) asked: Vec<PathBuf>,
 }
 
 impl SizeScheduler {
@@ -51,11 +53,21 @@ impl SizeScheduler {
         self.queue.push_front(path.to_path_buf());
     }
 
-    /// Leaving the folder: stop everything and forget what was waiting.
+    /// Leaving the folder: stop everything and forget what was waiting, except the folders the
+    /// user asked about, whose total still comes as a toast (a sidebar place is not in any listing).
     pub(super) fn cancel_all(&mut self) {
-        self.running.clear();
-        self.queue.clear();
+        let asked = &self.asked;
+        self.running.retain(|(p, _)| asked.contains(p));
+        self.queue.retain(|p| asked.contains(p));
         dirsize::drop_pending();
+        for path in self.running.iter().map(|(p, _)| p).chain(&self.queue) {
+            dirsize::mark_pending(path);
+        }
+    }
+
+    /// Being measured or waiting to be.
+    fn in_flight(&self, path: &Path) -> bool {
+        self.running.iter().any(|(p, _)| p == path) || self.queue.iter().any(|p| p == path)
     }
 
     /// Stops the scans that cover `path` (a measurement made while it changes would be stale).
@@ -130,6 +142,7 @@ impl SkiApp {
             self.sizes.request_all(wanted.iter().map(PathBuf::as_path).chain(selected));
         }
         self.sizes.tick();
+        self.announce_sizes();
         if counted && self.sort_by == SortBy::Size {
             self.resort_items();
         }
@@ -138,13 +151,51 @@ impl SkiApp {
         }
     }
 
-    /// "Calculate size" on folders.
+    /// "Calculate size" on folders. A toast says it started, and another the total once known.
     pub(super) fn calculate_sizes(&mut self, paths: &[PathBuf]) {
-        for path in paths.iter().filter(|p| p.is_dir()) {
+        let folders: Vec<PathBuf> = paths.iter().filter(|p| p.is_dir()).cloned().collect();
+        for path in &folders {
             self.sizes.discard(path);
             dirsize::forget(path);
             self.sizes.request(path);
         }
+        self.set_toast(match folders.as_slice() {
+            [] => return,
+            [one] => trf("Calculating the size of “{}”…", &[&folder_name(one)]),
+            _ => tr("Calculating the size of the selected folders…").to_owned(),
+        });
+        self.sizes.asked = folders;
+    }
+
+    /// Once the folders asked about are all measured, their total as a toast.
+    fn announce_sizes(&mut self) {
+        if self.sizes.asked.is_empty() {
+            return;
+        }
+        // One whose scan was dropped (its folder changed while measured) has nothing to say
+        let asked = std::mem::take(&mut self.sizes.asked);
+        let (mut known, mut waiting) = (Vec::new(), false);
+        for path in &asked {
+            match dirsize::totals(path) {
+                Some(t) => known.push(t),
+                None => waiting |= self.sizes.in_flight(path),
+            }
+        }
+        if waiting {
+            self.sizes.asked = asked;
+            return;
+        }
+        if known.is_empty() {
+            return;
+        }
+        let bytes = crate::fs::file_item::format_bytes_ext(known.iter().map(|t| t.shown()).sum(), self.settings.decimal_units);
+        let partial = known.iter().any(|t| t.partial);
+        self.set_toast(match (asked.as_slice(), partial) {
+            ([one], false) => trf("“{}” takes {}", &[&folder_name(one), &bytes]),
+            ([one], true) => trf("“{}” takes at least {}", &[&folder_name(one), &bytes]),
+            (_, false) => trf("The selected folders take {}", &[&bytes]),
+            (_, true) => trf("The selected folders take at least {}", &[&bytes]),
+        });
     }
 
     /// Changes on disk below these paths make the totals above them stale.
@@ -196,6 +247,14 @@ impl SkiApp {
             return None;
         }
         Some((bytes, waiting, partial))
+    }
+}
+
+/// How a folder is called in a toast; the root is the sidebar's Computer.
+fn folder_name(path: &Path) -> String {
+    match path.file_name() {
+        Some(name) => name.to_string_lossy().into_owned(),
+        None => tr("Computer").to_owned(),
     }
 }
 

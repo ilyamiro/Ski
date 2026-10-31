@@ -6259,6 +6259,34 @@ mod tests {
         std::fs::remove_dir_all(&work).unwrap();
     }
 
+    /// "Calculate size" says it started, keeps measuring a folder that is not in the listing after
+    /// leaving for another folder, and tells the total in a toast.
+    #[test]
+    fn calculate_size_reports_in_a_toast() {
+        let work = std::env::temp_dir().join(format!("ski_app_calcsize_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&work);
+        std::fs::create_dir_all(work.join("place/inner")).unwrap();
+        std::fs::create_dir_all(work.join("elsewhere")).unwrap();
+        std::fs::write(work.join("place/inner/data.bin"), vec![0u8; 3000]).unwrap();
+
+        let ctx = egui::Context::default();
+        let mut app = SkiApp::new(work.join("elsewhere"), SerpantinumTheme::default(), Settings::default(), &ctx);
+        let place = work.join("place");
+        app.calculate_sizes(std::slice::from_ref(&place));
+        let toast = |app: &SkiApp| app.status_toast.as_ref().map(|t| t.message.clone()).unwrap_or_default();
+        assert_eq!(toast(&app), "Calculating the size of “place”…");
+        app.sizes.cancel_all();
+        for _ in 0..300 {
+            app.tick_folder_sizes(&ctx);
+            if app.sizes.asked.is_empty() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert_eq!(toast(&app), format!("“place” takes {}", crate::fs::file_item::format_bytes(3000)));
+        std::fs::remove_dir_all(&work).unwrap();
+    }
+
     /// Sorting by size orders folders by how many items they hold, not by their bytes.
     #[test]
     fn sorting_by_size_orders_folders_by_item_count() {
