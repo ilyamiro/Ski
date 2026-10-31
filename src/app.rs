@@ -2036,6 +2036,7 @@ impl SkiApp {
                 event(|e| matches!(e, egui::Event::Paste(_) | egui::Event::PasteImage(_))),
             )
         });
+        let text_input_focused = ctx.egui_wants_keyboard_input();
         if self.picking() {
         } else if ev_copy || self.is_act_pressed(ctx, crate::keymap::Action::Copy) {
             self.set_clipboard(ctx, self.selected_paths(), false);
@@ -2043,7 +2044,9 @@ impl SkiApp {
         } else if ev_cut || self.is_act_pressed(ctx, crate::keymap::Action::Cut) {
             self.set_clipboard(ctx, self.selected_paths(), true);
             handled = true;
-        } else if ev_paste || self.is_act_pressed(ctx, crate::keymap::Action::Paste) {
+        } else if !text_input_focused
+            && (ev_paste || self.is_act_pressed(ctx, crate::keymap::Action::Paste))
+        {
             self.paste();
             handled = true;
         }
