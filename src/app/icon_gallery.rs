@@ -31,6 +31,7 @@ impl SkiApp {
             // SAFETY: see `AppPtr`; the app outlives every window
             let app = unsafe { &mut *app.get() };
             app.icon_gallery_ui(ui);
+            app.copy_text_out(ui.ctx());
         });
     }
 

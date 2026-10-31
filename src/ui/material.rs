@@ -1033,7 +1033,22 @@ pub fn nav_item_with(
     selected: bool,
     trailing: f32,
 ) -> egui::Response {
-    nav_item_sense(ui, id_source, icon, label, theme, selected, trailing, egui::Sense::click_and_drag())
+    nav_item_sense(ui, id_source, icon, label, theme, selected, trailing, None, egui::Sense::click_and_drag())
+}
+
+/// `nav_item_with` for a drive: a thin bar under the name shows how full it is (0 to 1), as in Nautilus.
+#[allow(clippy::too_many_arguments)]
+pub fn nav_item_usage(
+    ui: &mut egui::Ui,
+    id_source: impl std::hash::Hash + std::fmt::Debug,
+    icon: &str,
+    label: &str,
+    theme: &SerpantinumTheme,
+    selected: bool,
+    trailing: f32,
+    usage: Option<f32>,
+) -> egui::Response {
+    nav_item_sense(ui, id_source, icon, label, theme, selected, trailing, usage, egui::Sense::click_and_drag())
 }
 
 /// `nav_item_with` for a list that has one Tab stop: only the entry with `tab_stop` is focusable,
@@ -1048,7 +1063,7 @@ pub fn nav_item_roving(
     tab_stop: bool,
 ) -> egui::Response {
     let sense = if tab_stop { egui::Sense::click() } else { egui::Sense::CLICK };
-    nav_item_sense(ui, id_source, icon, label, theme, selected, 0.0, sense)
+    nav_item_sense(ui, id_source, icon, label, theme, selected, 0.0, None, sense)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1060,6 +1075,7 @@ fn nav_item_sense(
     theme: &SerpantinumTheme,
     selected: bool,
     trailing: f32,
+    usage: Option<f32>,
     sense: egui::Sense,
 ) -> egui::Response {
     let (rect, response) = ui.allocate_exact_size(Vec2::new(ui.available_width(), ENTRY_HEIGHT), sense);
@@ -1073,7 +1089,22 @@ fn nav_item_sense(
 
     let color = lerp_color(theme.subtext0, theme.text, fx.hover.max(sel_t));
     paint_icon(ui.painter(), Pos2::new(rect.left() + INSET_ICON, rect.center().y), icon, ICON_MD, color);
-    paint_label(ui, rect.left() + INSET_LABEL, rect.center().y, label, FONT_BODY, color, rect.width() - INSET_LABEL - 14.0 - trailing);
+    let label_width = rect.width() - INSET_LABEL - 14.0 - trailing;
+    let Some(used) = usage else {
+        paint_label(ui, rect.left() + INSET_LABEL, rect.center().y, label, FONT_BODY, color, label_width);
+        return response;
+    };
+    // The name moves up to make room for the bar, which spans the name's column
+    paint_label(ui, rect.left() + INSET_LABEL, rect.center().y - 4.0, label, FONT_BODY, color, label_width);
+    let track = Rect::from_min_size(Pos2::new(rect.left() + INSET_LABEL, rect.center().y + 9.0), Vec2::new(label_width.max(0.0), 3.0));
+    let round = CornerRadius::same(2);
+    ui.painter().rect_filled(track, round, theme.with_alpha(theme.text, 34));
+    // Nearly full shows in red, like a warning
+    let fill = lerp_color(theme.mauve, theme.red, ((used - 0.85) / 0.1).clamp(0.0, 1.0));
+    let filled = Rect::from_min_size(track.min, Vec2::new(track.width() * used.clamp(0.0, 1.0), track.height()));
+    if filled.width() > 0.0 {
+        ui.painter().rect_filled(filled, round, fill);
+    }
     response
 }
 

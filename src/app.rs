@@ -1428,7 +1428,7 @@ impl SkiApp {
         crate::fs::file_item::set_format_options(self.settings.decimal_units, self.settings.relative_dates);
         crate::fs::file_item::set_show_extensions(self.settings.show_extensions);
 
-        if self.settings.remember_view_per_folder {
+        if self.settings.remember_view_per_folder && self.chooser.is_none() {
             self.settings.folder_views.insert(self.current_path.clone(), self.view_mode);
         }
 
@@ -1437,8 +1437,14 @@ impl SkiApp {
             self.settings.session_tabs = paths;
             self.settings.session_active = active;
         }
+        // The file dialog keeps its view apart, so it neither takes nor changes the main window's
+        let (view_mode, chooser_view_mode) = match self.chooser {
+            Some(_) => (self.settings.view_mode, self.view_mode),
+            None => (self.view_mode, self.settings.chooser_view_mode),
+        };
         let current = Settings {
-            view_mode: self.view_mode,
+            view_mode,
+            chooser_view_mode,
             sort_by: self.sort_by,
             sort_order: self.sort_order,
             show_hidden: self.show_hidden,
@@ -2151,11 +2157,21 @@ impl eframe::App for SkiApp {
     }
 
     fn raw_input_hook(&mut self, _ctx: &egui::Context, raw_input: &mut egui::RawInput) {
-        // egui's stand-in clipboard always holds `CLIP_STAND_IN`, so every paste shortcut arrives here
+        // egui-winit's clipboard shortcuts are off (main.rs): the shortcuts become clipboard events
+        // here, a paste carrying the system clipboard's text. This runs for every window, Settings
+        // and the pickers too
         for event in &mut raw_input.events {
-            if let egui::Event::Paste(text) = event {
-                *text = self.system_text().unwrap_or_default().replace("\r\n", "\n");
-            }
+            let egui::Event::Key { key, pressed: true, modifiers, .. } = *event else { continue };
+            let command = modifiers.command_only();
+            *event = if key == egui::Key::Paste || (command && key == egui::Key::V) || (modifiers.shift_only() && key == egui::Key::Insert) {
+                egui::Event::Paste(self.system_text().unwrap_or_default().replace("\r\n", "\n"))
+            } else if key == egui::Key::Copy || (command && key == egui::Key::C) {
+                egui::Event::Copy
+            } else if key == egui::Key::Cut || (command && key == egui::Key::X) {
+                egui::Event::Cut
+            } else {
+                continue;
+            };
         }
         if std::mem::take(&mut self.release_pointer) {
             // Far off, so the release cannot count as a click
@@ -2351,25 +2367,19 @@ impl eframe::App for SkiApp {
     }
 }
 
-/// What egui's own clipboard holds instead of copied text, which goes to the system's (see
-/// wayland_dnd.rs for why egui's clipboard is left out): with something in it, egui-winit turns
-/// every paste shortcut into a paste event, whose text `raw_input_hook` then fills in.
-const CLIP_STAND_IN: &str = "\u{E000}";
-
 impl SkiApp {
-    /// Sends the text copied this frame to the system clipboard.
+    /// Sends the text copied this frame in the window of `ctx` to the system clipboard, since
+    /// egui's own clipboard is left out of the build (see wayland_dnd.rs).
     fn copy_text_out(&mut self, ctx: &egui::Context) {
-        let first = ctx.cumulative_pass_nr() == 0;
         let copied: Vec<String> = ctx.output_mut(|o| {
             let mut copied = Vec::new();
-            for command in &mut o.commands {
-                if let egui::OutputCommand::CopyText(text) = command {
-                    copied.push(std::mem::replace(text, CLIP_STAND_IN.to_owned()));
+            o.commands.retain_mut(|command| match command {
+                egui::OutputCommand::CopyText(text) => {
+                    copied.push(std::mem::take(text));
+                    false
                 }
-            }
-            if first {
-                o.commands.push(egui::OutputCommand::CopyText(CLIP_STAND_IN.to_owned()));
-            }
+                _ => true,
+            });
             copied
         });
         if let Some(text) = copied.into_iter().last() {
@@ -3018,14 +3028,22 @@ impl SkiApp {
                     // A glyph chosen for the folder replaces the place's own icon
                     let own = crate::fs::places::folder_glyph(&place.path).map(String::from);
                     let place_icon = own.as_deref().unwrap_or(place.icon);
+                    // Mounted drives and the computer's own disk show how full they are
+                    let shows_space = place.drive.as_ref().map_or(place.builtin == Some(SidebarPlace::Computer), |d| d.mounted);
+                    let space = shows_space.then(|| drives_ui::space_hint(&self.drive_state.spaces, &place.path, self.settings.decimal_units)).flatten();
                     let resp = ui
                         .scope(|ui| {
                             if hidden {
                                 ui.multiply_opacity(0.45);
                             }
-                            material::nav_item_with(ui, ("place", idx), place_icon, &tr_dyn(&place.name), &self.theme, browsing && here, reserve)
+                            let usage = space.as_ref().map(|(used, _)| *used);
+                            material::nav_item_usage(ui, ("place", idx), place_icon, &tr_dyn(&place.name), &self.theme, browsing && here, reserve, usage)
                         })
                         .inner;
+                    let resp = match space {
+                        Some((_, words)) => resp.on_hover_text(words),
+                        None => resp,
+                    };
                     if ticking && let Some(builtin) = place.builtin {
                         let tick = egui::Rect::from_center_size(egui::pos2(resp.rect.right() - 22.0, resp.rect.center().y), egui::Vec2::splat(30.0));
                         let ticked = ui.scope_builder(egui::UiBuilder::new().max_rect(tick), |ui| material::checkbox(ui, ("place_tick", builtin), !hidden, true, &self.theme)).inner;
@@ -4603,11 +4621,15 @@ impl SkiApp {
                 if !drive.mounted {
                     vec![vec![(icons::USB, tr("Mount"), MenuAction::Mount(dev, name))]]
                 } else {
-                    let mut leave = vec![(icons::UNMOUNT, tr("Unmount"), MenuAction::Unmount(dev.clone(), name.clone(), mount.clone()))];
-                    if drive.removable {
+                    // What the system mounted (`/boot`, `/home`...) it also unmounts
+                    let mut leave = Vec::new();
+                    if !drive.system {
+                        leave.push((icons::UNMOUNT, tr("Unmount"), MenuAction::Unmount(dev.clone(), name.clone(), mount.clone())));
+                    }
+                    if drive.removable && !drive.system {
                         leave.push((icons::EJECT, tr("Eject"), MenuAction::Eject(dev, name, mount.clone())));
                     }
-                    vec![
+                    let groups = vec![
                         vec![
                             (icons::OPEN, tr("Open"), MenuAction::OpenPath(mount.clone())),
                             (icons::NEW_TAB, tr("Open in new tab"), MenuAction::OpenInNewTab(mount.clone())),
@@ -4615,7 +4637,8 @@ impl SkiApp {
                         ],
                         leave,
                         vec![(icons::INFO, tr("Properties"), MenuAction::Properties(mount.clone()))],
-                    ]
+                    ];
+                    groups.into_iter().filter(|g| !g.is_empty()).collect()
                 }
             }
             MenuTarget::Server(row) => self.server_menu(row),
@@ -5457,6 +5480,7 @@ impl SkiApp {
             // SAFETY: see `AppPtr`; the app outlives every window
             let app = unsafe { &mut *app.get() };
             app.picker_ui(ui);
+            app.copy_text_out(ui.ctx());
         });
     }
 

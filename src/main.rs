@@ -136,6 +136,10 @@ fn open_window(mut request: instance::Request) -> eframe::Result {
         centered: chooser.is_some(),
         // Starts several times faster than wgpu, which has to bring up Vulkan first
         renderer: eframe::Renderer::Glow,
+        // egui-winit would answer Ctrl+V from its own clipboard, which is left out of the build (see
+        // wayland_dnd.rs), so it pasted nothing; `SkiApp::raw_input_hook` turns the shortcuts into
+        // clipboard events with the system's text instead, in every window
+        clipboard_shortcuts: false,
         ..Default::default()
     };
 
@@ -168,8 +172,8 @@ fn open_window(mut request: instance::Request) -> eframe::Result {
                     x11_parent::attach(cc, handle);
                 }
                 let parent = spec.parent.as_deref().and_then(|handle| wayland_parent::attach(cc, handle));
-                // A dialog opens as a list with sortable column headers, whatever the file manager last used
-                app.view_mode = app::ViewMode::List;
+                // A dialog opens the way the last one was left, whatever the file manager itself uses
+                app.view_mode = app.settings.chooser_view_mode;
                 let mut chooser = chooser::Chooser::new(spec);
                 chooser.parent = parent;
                 chooser

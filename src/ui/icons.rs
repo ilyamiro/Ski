@@ -91,6 +91,7 @@ pub const DELETE_FOREVER: &str = "\u{f05e8}";
 pub const RESTORE: &str = "\u{f099b}";
 pub const RENAME: &str = "\u{f03eb}";
 pub const USB: &str = "\u{f0553}";
+pub const HARD_DISK: &str = "\u{f02ca}";
 pub const UNDO: &str = "\u{f054d}";
 pub const SEARCH_OFF: &str = "\u{f0968}";
 

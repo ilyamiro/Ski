@@ -435,6 +435,7 @@ pub const CATALOG: &[(&str, &str)] = &[
     ("{}, {}-bit", "{}, {} бит"),
     ("The trash has no record of where this came from", "В корзине нет сведений о прежнем расположении"),
     ("{} Volume", "Том {}"),
+    ("{} free of {}", "Свободно {} из {}"),
     ("Cannot put {} inside itself", "Нельзя поместить {} внутрь самого себя"),
     ("Copy of {}", "Копирование {}"),
     ("Move of {}", "Перемещение {}"),

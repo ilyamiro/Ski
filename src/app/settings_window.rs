@@ -78,6 +78,7 @@ impl SkiApp {
             // SAFETY: see `AppPtr`; the app outlives every window
             let app = unsafe { &mut *app.get() };
             app.settings_viewport_ui(ui);
+            app.copy_text_out(ui.ctx());
         });
     }
 

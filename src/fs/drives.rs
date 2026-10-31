@@ -1,5 +1,5 @@
 //! Removable and extra drives: list them with `lsblk`, mount and eject them with `udisksctl`.
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use serde_json::Value;
@@ -16,13 +16,26 @@ pub struct Drive {
     pub mounted: bool,
     /// Can be powered off, as USB sticks and cards can.
     pub removable: bool,
+    /// Mounted by the system itself (`/boot`, `/home`...), so it is not offered for unmounting.
+    pub system: bool,
 }
 
-/// Where the desktop and the user put drives; other mount points (`/`, `/boot`, `/nix`...) are not listed.
+/// Where the desktop and the user put drives. A drive mounted anywhere else was mounted by the system.
 const MOUNT_ROOTS: &[&str] = &["/run/media", "/media", "/mnt"];
 
 /// Filesystems that are not something to browse.
-const NOT_BROWSABLE: &[&str] = &["swap", "LVM2_member", "crypto_LUKS", "linux_raid_member", "zfs_member", "isw_raid_member"];
+const NOT_BROWSABLE: &[&str] = &["swap", "LVM2_member", "crypto_LUKS", "linux_raid_member", "zfs_member", "isw_raid_member", "bcache", "ddf_raid_member"];
+
+/// Partitions that belong to a system's boot rather than hold files, listed only while mounted:
+/// EFI system, Microsoft reserved, Windows recovery and BIOS boot (GPT), EFI and hidden recovery (MBR).
+const BOOT_PART_TYPES: &[&str] = &[
+    "c12a7328-f81f-11d2-ba4b-00a0c93ec93b",
+    "e3c9e316-0b5c-4db8-817d-f92df00215ae",
+    "de94bba4-06d1-4d40-a16a-bfd50179d6ac",
+    "21686148-6449-6e6f-744e-656564454649",
+    "0xef",
+    "0x27",
+];
 
 fn truthy(v: &Value) -> bool {
     match v {
@@ -37,25 +50,38 @@ fn text<'a>(v: &'a Value, key: &str) -> Option<&'a str> {
     v.get(key).and_then(Value::as_str).filter(|s| !s.is_empty())
 }
 
+/// Every folder a device is mounted at: `mountpoints` from newer `lsblk`, else `mountpoint`.
+fn mount_points(node: &Value) -> Vec<&str> {
+    let mut all: Vec<&str> = node.get("mountpoints").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str).collect();
+    if all.is_empty() {
+        all.extend(text(node, "mountpoint"));
+    }
+    all.retain(|m| !m.is_empty() && m.starts_with('/'));
+    all
+}
+
 fn walk(node: &Value, inherited_removable: bool, out: &mut Vec<Place>) {
     let removable = inherited_removable || truthy(&node["rm"]) || truthy(&node["hotplug"]);
     let kind = text(node, "type").unwrap_or_default();
     let fstype = text(node, "fstype");
-    let mount = text(node, "mountpoint").map(PathBuf::from);
+    let mounts = mount_points(node);
+    // A user's mount wins over a system one when the device is mounted at both
+    let mount = mounts.iter().find(|m| MOUNT_ROOTS.iter().any(|r| Path::new(m).starts_with(r))).or(mounts.first()).map(PathBuf::from);
     let has_children = node.get("children").and_then(Value::as_array).is_some_and(|c| !c.is_empty());
+    let boot_part = text(node, "parttype").is_some_and(|t| BOOT_PART_TYPES.contains(&t.to_ascii_lowercase().as_str()));
 
-    let browsable = fstype.is_some_and(|f| !NOT_BROWSABLE.contains(&f)) && !matches!(kind, "loop") && !has_children;
-    let listed = match &mount {
-        Some(m) => MOUNT_ROOTS.iter().any(|r| m.starts_with(r)),
-        None => removable && browsable,
-    };
-    if browsable && listed && let Some(dev) = text(node, "path") {
+    let browsable = fstype.is_some_and(|f| !NOT_BROWSABLE.contains(&f)) && !matches!(kind, "loop" | "rom") && !has_children;
+    // The system's own root is the sidebar's Computer
+    let listed = browsable && !mounts.contains(&"/") && (mount.is_some() || !boot_part);
+    if listed && let Some(dev) = text(node, "path") {
         let label = text(node, "label").map(str::to_owned).or_else(|| {
             mount.as_ref().and_then(|m| m.file_name()).map(|n| n.to_string_lossy().into_owned())
         });
         let name = label.unwrap_or_else(|| trf("{} Volume", &[&text(node, "size").unwrap_or("Drive")]));
-        let mut place = Place::new(name, mount.clone().unwrap_or_default(), icons::USB, PlaceGroup::Devices);
-        place.drive = Some(Drive { dev: dev.to_owned(), mounted: mount.is_some(), removable });
+        let system = mount.as_ref().is_some_and(|m| !MOUNT_ROOTS.iter().any(|r| m.starts_with(r)));
+        let icon = if removable { icons::USB } else { icons::HARD_DISK };
+        let mut place = Place::new(name, mount.clone().unwrap_or_default(), icon, PlaceGroup::Devices);
+        place.drive = Some(Drive { dev: dev.to_owned(), mounted: mount.is_some(), removable, system });
         out.push(place);
     }
     for child in node.get("children").and_then(Value::as_array).into_iter().flatten() {
@@ -64,22 +90,58 @@ fn walk(node: &Value, inherited_removable: bool, out: &mut Vec<Place>) {
 }
 
 pub fn parse_lsblk(json: &str) -> Vec<Place> {
-    let mut out = Vec::new();
+    let mut out: Vec<Place> = Vec::new();
     if let Ok(root) = serde_json::from_str::<Value>(json) {
         for node in root["blockdevices"].as_array().into_iter().flatten() {
             walk(node, false, &mut out);
         }
     }
-    out.sort_by_key(|p| p.name.to_lowercase());
+    // A device under several holders (RAID, multipath) shows up once per holder
+    let mut seen = std::collections::HashSet::new();
+    out.retain(|p| p.drive.as_ref().is_none_or(|d| seen.insert(d.dev.clone())));
+    // The computer's own disks first, then what is plugged in
+    out.sort_by_key(|p| (p.drive.as_ref().is_some_and(|d| d.removable), p.name.to_lowercase()));
     out
 }
 
-/// Drives to show, or nothing when `lsblk` is missing.
+/// Drives to show, or what sits in the usual mount folders when `lsblk` is missing.
 pub fn list() -> Vec<Place> {
-    let output = Command::new("lsblk").args(["-J", "-o", "NAME,PATH,LABEL,SIZE,MOUNTPOINT,RM,HOTPLUG,TYPE,FSTYPE"]).output();
-    match output {
-        Ok(o) if o.status.success() => parse_lsblk(&String::from_utf8_lossy(&o.stdout)),
-        _ => from_mount_roots(),
+    // `mountpoints` and `parttype` are missing from old `lsblk`, which then refuses the whole list
+    const COLUMNS: [&str; 2] = ["NAME,PATH,LABEL,SIZE,MOUNTPOINT,MOUNTPOINTS,RM,HOTPLUG,TYPE,FSTYPE,PARTTYPE", "NAME,PATH,LABEL,SIZE,MOUNTPOINT,RM,HOTPLUG,TYPE,FSTYPE"];
+    for columns in COLUMNS {
+        if let Ok(o) = Command::new("lsblk").args(["-J", "-o", columns]).output()
+            && o.status.success() {
+                return parse_lsblk(&String::from_utf8_lossy(&o.stdout));
+            }
+    }
+    from_mount_roots()
+}
+
+/// Used and total bytes of the filesystem holding `path`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Space {
+    pub used: u64,
+    pub total: u64,
+    /// What an ordinary user can still write, which leaves out the blocks kept for root.
+    pub free: u64,
+}
+
+impl Space {
+    pub fn of(path: &Path) -> Option<Space> {
+        use std::os::unix::ffi::OsStrExt;
+        let c = std::ffi::CString::new(path.as_os_str().as_bytes()).ok()?;
+        let mut st: libc::statvfs = unsafe { std::mem::zeroed() };
+        // SAFETY: a valid C string and a statvfs to fill
+        if unsafe { libc::statvfs(c.as_ptr(), &mut st) } != 0 {
+            return None;
+        }
+        let unit = st.f_frsize as u64;
+        let total = st.f_blocks as u64 * unit;
+        (total > 0).then(|| Space { used: total.saturating_sub(st.f_bfree as u64 * unit), total, free: st.f_bavail as u64 * unit })
+    }
+
+    pub fn fraction(&self) -> f32 {
+        (self.used as f64 / self.total as f64).clamp(0.0, 1.0) as f32
     }
 }
 
@@ -153,15 +215,46 @@ mod tests {
         {"name":"sdb1","path":"/dev/sdb1","label":"data","size":"1T","mountpoint":null,"rm":false,"hotplug":false,"type":"part","fstype":"ext4"}]}]}"#;
 
     #[test]
-    fn lists_user_mounts_and_unmounted_removables_only() {
+    fn lists_every_partition_but_the_root() {
         let drives = parse_lsblk(SAMPLE);
-        let mut seen: Vec<(&str, bool)> = drives.iter().map(|p| {
+        let mut seen: Vec<(&str, bool, bool)> = drives.iter().map(|p| {
             let d = p.drive.as_ref().unwrap();
-            (d.dev.as_str(), d.mounted)
+            (d.dev.as_str(), d.mounted, d.system)
         }).collect();
         seen.sort();
-        assert_eq!(seen, vec![("/dev/sda1", true), ("/dev/sda2", false)]);
+        assert_eq!(seen, vec![
+            ("/dev/nvme0n1p1", true, true),
+            ("/dev/sda1", true, false),
+            ("/dev/sda2", false, false),
+            ("/dev/sdb1", false, false),
+        ]);
         let stick = drives.iter().find(|p| p.name == "STICK").unwrap();
         assert_eq!(stick.path, PathBuf::from("/run/media/me/STICK"));
+        // Internal disks come before the ones plugged in
+        assert!(!drives[0].drive.as_ref().unwrap().removable);
+    }
+
+    #[test]
+    fn lists_a_windows_partition_but_not_its_boot_ones() {
+        let json = r#"{"blockdevices":[
+          {"name":"nvme1n1","path":"/dev/nvme1n1","label":null,"size":"1T","mountpoint":null,"mountpoints":[null],"rm":false,"hotplug":false,"type":"disk","fstype":null,"parttype":null,"children":[
+            {"name":"nvme1n1p1","path":"/dev/nvme1n1p1","label":"SYSTEM","size":"100M","mountpoint":null,"mountpoints":[null],"rm":false,"hotplug":false,"type":"part","fstype":"vfat","parttype":"c12a7328-f81f-11d2-ba4b-00a0c93ec93b"},
+            {"name":"nvme1n1p2","path":"/dev/nvme1n1p2","label":null,"size":"16M","mountpoint":null,"mountpoints":[null],"rm":false,"hotplug":false,"type":"part","fstype":null,"parttype":"e3c9e316-0b5c-4db8-817d-f92df00215ae"},
+            {"name":"nvme1n1p3","path":"/dev/nvme1n1p3","label":"Windows","size":"900G","mountpoint":null,"mountpoints":[null],"rm":false,"hotplug":false,"type":"part","fstype":"ntfs","parttype":"ebd0a0a2-b9e5-4433-87c0-68b6b72699c7"},
+            {"name":"nvme1n1p4","path":"/dev/nvme1n1p4","label":"Recovery","size":"700M","mountpoint":null,"mountpoints":[null],"rm":false,"hotplug":false,"type":"part","fstype":"ntfs","parttype":"de94bba4-06d1-4d40-a16a-bfd50179d6ac"}]},
+          {"name":"nvme0n1","path":"/dev/nvme0n1","label":null,"size":"500G","mountpoint":null,"mountpoints":[null],"rm":false,"hotplug":false,"type":"disk","fstype":null,"parttype":null,"children":[
+            {"name":"nvme0n1p1","path":"/dev/nvme0n1p1","label":null,"size":"500G","mountpoint":"/home","mountpoints":["/home","/nix","/"],"rm":false,"hotplug":false,"type":"part","fstype":"btrfs","parttype":"0fc63daf-8483-4772-8e79-3d69d8477de4"}]}]}"#;
+        let drives = parse_lsblk(json);
+        let names: Vec<&str> = drives.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, vec!["Windows"]);
+        let windows = drives[0].drive.as_ref().unwrap();
+        assert!(!windows.mounted && !windows.removable);
+        assert_eq!(drives[0].icon, icons::HARD_DISK);
+    }
+
+    #[test]
+    fn space_of_the_root() {
+        let space = Space::of(Path::new("/")).unwrap();
+        assert!(space.total > 0 && space.used <= space.total && space.free <= space.total);
     }
 }

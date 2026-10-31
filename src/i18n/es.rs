@@ -435,6 +435,7 @@ pub const CATALOG: &[(&str, &str)] = &[
     ("{}, {}-bit", "{}, {} bits"),
     ("The trash has no record of where this came from", "La papelera no tiene registro de su origen"),
     ("{} Volume", "Volumen de {}"),
+    ("{} free of {}", "{} libres de {}"),
     ("Cannot put {} inside itself", "No se puede poner {} dentro de sí mismo"),
     ("Copy of {}", "Copia de {}"),
     ("Move of {}", "Movimiento de {}"),

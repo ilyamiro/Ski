@@ -1,13 +1,13 @@
 //! Drives in the sidebar: keep the list fresh, mount, unmount and eject without blocking the window.
 use super::*;
 use crate::fs::drives;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
 const REFRESH: Duration = Duration::from_secs(4);
 
 pub(super) enum DriveMsg {
-    Listed(Vec<Place>),
+    Listed(Vec<Place>, HashMap<PathBuf, drives::Space>),
     Mounted { dev: String, name: String, open: bool, result: Result<PathBuf, String> },
     Gone { dev: String, name: String, eject: bool, mount: PathBuf, result: Result<(), String> },
 }
@@ -19,12 +19,14 @@ pub(super) struct DriveState {
     listing: bool,
     /// Devices a mount or eject is working on.
     pub(super) busy: HashSet<String>,
+    /// How full each mounted drive and the computer's own disk are, by the folder they are at.
+    pub(super) spaces: HashMap<PathBuf, drives::Space>,
 }
 
 impl DriveState {
     pub(super) fn new() -> Self {
         let (tx, rx) = mpsc::channel();
-        Self { tx, rx, last: Instant::now(), listing: false, busy: HashSet::new() }
+        Self { tx, rx, last: Instant::now(), listing: false, busy: HashSet::new(), spaces: HashMap::new() }
     }
 }
 
@@ -33,8 +35,9 @@ impl SkiApp {
     pub(super) fn poll_drives(&mut self, ctx: &egui::Context) {
         while let Ok(msg) = self.drive_state.rx.try_recv() {
             match msg {
-                DriveMsg::Listed(found) => {
+                DriveMsg::Listed(found, spaces) => {
                     self.drive_state.listing = false;
+                    self.drive_state.spaces = spaces;
                     self.set_drive_places(found);
                 }
                 DriveMsg::Mounted { dev, name, open, result } => {
@@ -78,17 +81,23 @@ impl SkiApp {
         state.last = Instant::now();
         let (tx, ctx) = (state.tx.clone(), ctx.clone());
         std::thread::spawn(move || {
-            let _ = tx.send(DriveMsg::Listed(drives::list()));
+            let mut found = drives::list();
+            let mut spaces = HashMap::new();
+            for place in &mut found {
+                if place.drive.as_ref().is_none_or(|d| d.mounted) {
+                    place.path = place.path.canonicalize().unwrap_or_else(|_| place.path.clone());
+                    spaces.extend(drives::Space::of(&place.path).map(|s| (place.path.clone(), s)));
+                }
+            }
+            // The sidebar's Computer
+            spaces.extend(drives::Space::of(Path::new("/")).map(|s| (PathBuf::from("/"), s)));
+            let _ = tx.send(DriveMsg::Listed(found, spaces));
             ctx.request_repaint();
         });
     }
 
-    fn set_drive_places(&mut self, mut found: Vec<Place>) {
-        for place in &mut found {
-            if place.drive.as_ref().is_some_and(|d| d.mounted) {
-                place.path = place.path.canonicalize().unwrap_or_else(|_| place.path.clone());
-            }
-        }
+    /// Mounted drives come with their folder already canonical (see `request_drive_listing`).
+    fn set_drive_places(&mut self, found: Vec<Place>) {
         let same = |a: &Place, b: &Place| a.name == b.name && a.path == b.path && a.drive == b.drive;
         let old: Vec<&Place> = self.places.iter().filter(|p| p.drive.is_some()).collect();
         if old.len() == found.len() && old.iter().zip(&found).all(|(a, b)| same(a, b)) {
@@ -140,4 +149,11 @@ pub(super) fn row_button(ui: &mut egui::Ui, row: egui::Rect, row_hovered: bool, 
         material::paint_icon(ui.painter(), rect.center(), icon, material::ICON_SM, color.gamma_multiply(show));
     }
     resp.on_hover_text(tip).clicked()
+}
+
+/// How full the drive at `path` is, as a bar under its name, and the words for its tooltip.
+pub(super) fn space_hint(spaces: &HashMap<PathBuf, drives::Space>, path: &Path, decimal: bool) -> Option<(f32, String)> {
+    let space = spaces.get(path)?;
+    let fmt = |b| crate::fs::file_item::format_bytes_ext(b, decimal);
+    Some((space.fraction(), trf("{} free of {}", &[&fmt(space.free), &fmt(space.total)])))
 }

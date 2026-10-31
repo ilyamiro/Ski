@@ -32,6 +32,8 @@ pub struct Settings {
     pub icon_style: IconStyle,
 
     pub view_mode: ViewMode,
+    /// The file dialog's own list or grid, kept apart from the main window's.
+    pub chooser_view_mode: ViewMode,
     pub sort_by: SortBy,
     pub sort_order: SortOrder,
     pub show_hidden: bool,
@@ -237,6 +239,7 @@ impl Default for Settings {
             opacity: 100,
             icon_style: IconStyle::default(),
             view_mode: ViewMode::List,
+            chooser_view_mode: ViewMode::List,
             sort_by: SortBy::Name,
             sort_order: SortOrder::Ascending,
             show_hidden: false,
