@@ -454,7 +454,11 @@ impl SkiApp {
                 NetEvent::NewTab(path) => self.new_tab(path),
                 NetEvent::Disconnect(mount) => self.disconnect(ctx, mount),
                 NetEvent::Menu(pos, row) => self.open_menu(ctx, pos, MenuTarget::Server(Box::new(row))),
-                NetEvent::ConnectDialog => self.open_connect_dialog(),
+                NetEvent::ConnectDialog => {
+                    // The click that opened it is not a click outside the dialog
+                    self.menu_click_consumed = true;
+                    self.open_connect_dialog();
+                }
                 NetEvent::ShowConnect(shown) => self.show_place(SidebarPlace::ConnectToServer, shown, false),
                 NetEvent::ConnectMenu(pos) => self.open_menu(ctx, pos, MenuTarget::ConnectEntry),
             }
