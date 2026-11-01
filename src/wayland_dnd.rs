@@ -4,7 +4,9 @@
 //! target for drags from any window, Ski's own or another program's. Files travel as
 //! `text/uri-list`, like in Nautilus. The same data device carries the text clipboard: some
 //! compositors (Hyprland) talk to only the first data device a client makes, so egui's own
-//! clipboard, which would make another one, is left out of the build. The queue is dispatched from the frame loop (`poll`), which
+//! clipboard, which would make another one, is left out of the build. For the same reason the data
+//! device outlives its window: a resident process (instance.rs) hands it to the next window it opens,
+//! since a new device would hear of neither the clipboard nor drags there. The queue is dispatched from the frame loop (`poll`), which
 //! never touches the socket; a small thread reads it and wakes the loop when an event is for this queue.
 
 use std::collections::HashMap;
@@ -148,7 +150,40 @@ struct State {
     out: Option<Outgoing>,
 }
 
-pub struct WaylandDnd {
+/// The window's handle on the process's data device, which goes back to `KEPT` when the window closes.
+pub struct WaylandDnd(Option<Box<Device>>);
+
+thread_local! {
+    /// The data device of a window that closed, for the next window on the same display.
+    static KEPT: std::cell::RefCell<Option<Box<Device>>> = const { std::cell::RefCell::new(None) };
+}
+
+impl std::ops::Deref for WaylandDnd {
+    type Target = Device;
+    fn deref(&self) -> &Device {
+        self.0.as_ref().expect("taken only on drop")
+    }
+}
+
+impl std::ops::DerefMut for WaylandDnd {
+    fn deref_mut(&mut self) -> &mut Device {
+        self.0.as_mut().expect("taken only on drop")
+    }
+}
+
+impl Drop for WaylandDnd {
+    fn drop(&mut self) {
+        if let Some(mut device) = self.0.take() {
+            device.state.leave_window();
+            let _ = device.connection.flush();
+            KEPT.with(|kept| *kept.borrow_mut() = Some(device));
+        }
+    }
+}
+
+pub struct Device {
+    /// The `wl_display` the connection wraps, which tells whether a kept device fits a new window.
+    display: usize,
     connection: Connection,
     queue: EventQueue<State>,
     state: State,
@@ -175,11 +210,29 @@ impl WaylandDnd {
     pub fn new<W: HasWindowHandle + HasDisplayHandle>(window: &W, ctx: &eframe::egui::Context) -> Option<Self> {
         let RawDisplayHandle::Wayland(display) = window.display_handle().ok()?.as_raw() else { return None };
         let RawWindowHandle::Wayland(surface) = window.window_handle().ok()?.as_raw() else { return None };
+        let waker: std::task::Waker = std::sync::Arc::new(Repaint(ctx.clone())).into();
 
+        // A window the resident process opened after another closed takes over that one's device
+        if let Some(mut device) = KEPT.with(|kept| kept.borrow_mut().take()) {
+            if device.display == display.display.as_ptr() as usize {
+                // SAFETY: as below, the surface comes from the live window winit created
+                let surface_id = unsafe { ObjectId::from_ptr(WlSurface::interface(), surface.surface.as_ptr().cast()) }.ok()?;
+                device.surface = WlSurface::from_id(&device.connection, surface_id.clone()).ok()?;
+                device.state.surface = Some(surface_id);
+                device.waker = waker;
+                return Some(Self(Some(device)));
+            }
+        }
+        Device::new(display.display.as_ptr() as usize, surface.surface.as_ptr() as usize, waker).map(|d| Self(Some(Box::new(d))))
+    }
+}
+
+impl Device {
+    fn new(display: usize, surface: usize, waker: std::task::Waker) -> Option<Self> {
         // SAFETY: both pointers come from the live window winit created, which outlives this
         // object; the display stays owned by winit (a foreign display is never disconnected by us).
-        let connection = Connection::from_backend(unsafe { Backend::from_foreign_display(display.display.as_ptr().cast()) });
-        let surface_id = unsafe { ObjectId::from_ptr(WlSurface::interface(), surface.surface.as_ptr().cast()) }.ok()?;
+        let connection = Connection::from_backend(unsafe { Backend::from_foreign_display(display as *mut _) });
+        let surface_id = unsafe { ObjectId::from_ptr(WlSurface::interface(), surface as *mut _) }.ok()?;
         let surface = WlSurface::from_id(&connection, surface_id.clone()).ok()?;
 
         let (globals, queue) = registry_queue_init::<State>(&connection).ok()?;
@@ -192,9 +245,8 @@ impl WaylandDnd {
         connection.flush().ok()?;
 
         let state = State { surface: Some(surface_id), ..State::default() };
-        let waker = std::sync::Arc::new(Repaint(ctx.clone())).into();
         Self::spawn_reader(connection.clone());
-        Some(Self { connection, queue, state, surface, compositor, shm, manager, device, _seat: seat, waker })
+        Some(Self { display, connection, queue, state, surface, compositor, shm, manager, device, _seat: seat, waker })
     }
 
     /// Reads the socket for this queue in the way libwayland expects of each reader (prepare, wait
@@ -526,6 +578,17 @@ fn render_icon(size: usize, scale: f32, count: usize, style: &IconStyle) -> Vec<
 }
 
 impl State {
+    /// Lets go of what belonged to the window that closed; the clipboard and the seat stay.
+    fn leave_window(&mut self) {
+        self.end_drag();
+        for incoming in self.hover.take().into_iter().chain(self.dropping.take()) {
+            self.offers.remove(&incoming.offer.id());
+            incoming.offer.destroy();
+        }
+        self.surface = None;
+        self.press_serial = None;
+    }
+
     fn end_drag(&mut self) {
         if let Some(out) = self.out.take() {
             out.source.destroy();
