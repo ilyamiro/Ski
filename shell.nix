@@ -9,7 +9,6 @@ let
     libxcursor
     libxi
     libxrandr
-    vulkan-loader
   ];
 in
 pkgs.mkShell {

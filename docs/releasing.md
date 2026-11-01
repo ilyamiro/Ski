@@ -6,10 +6,9 @@ Pushing a tag `vX.Y.Z` runs `.github/workflows/release.yml`, which builds Ski an
 
 1. Start from a clean, up-to-date `master` (`git status`, `git pull`). Release only what is committed and pushed.
 2. Pick the version (semver; while below 1.0, a new feature bumps the minor, a fix the patch).
-3. Set it in all three places, which must agree:
+3. Set it in both places, which must agree (the Nix source build reads it from `Cargo.toml`):
    - `Cargo.toml`: `version`
    - `Cargo.lock`: the `ski` entry. Cargo updates it on the next `cargo build --release`; check that `git diff Cargo.lock` shows only that one line.
-   - `default.nix`: `version` in `common`
 4. Check it builds the way CI does: `cargo build --release --locked`.
 5. Commit with `chore: release vX.Y.Z` and push `master`.
 6. Optional dry run, which builds and packages but publishes nothing: `gh workflow run release.yml --ref master`, then `gh run watch`.
@@ -20,6 +19,9 @@ Pushing a tag `vX.Y.Z` runs `.github/workflows/release.yml`, which builds Ski an
    ```
 8. Wait for the run (about 8 minutes): `gh run list --workflow=release.yml --limit 1`, then `gh run watch <id> --exit-status`.
 9. Confirm the release has four assets: `gh release view vX.Y.Z --json assets -q '.assets[].name'`. The notes are generated from the commits since the last tag; edit them with `gh release edit` if they need tidying.
+10. The run's last step commits `nix/release.json` (the new version and the tarball's hash) to `master`, which makes the Nix package (`default.nix`, `nix/bin.nix`) install the new binary instead of compiling. `git pull` before the next commit.
+
+Never edit or re-upload a release's tarball after that commit: its hash would no longer match and the Nix install would fail. To fix one by hand, `nix-prefetch-url <tarball url>` and put `sha256-` plus the base64 of that hash (`nix-hash --type sha256 --to-sri <hash>`) into `nix/release.json`.
 
 ## Things that go wrong
 

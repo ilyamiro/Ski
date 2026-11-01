@@ -1,92 +1,10 @@
 # Usage in configuration.nix (or import nix/module.nix and set programs.ski.enable = true):
 #   environment.systemPackages = [ (pkgs.callPackage /path/to/Ski { }) ];
-{ pkgs ? import <nixpkgs> { } }:
+#
+# By default this is the binary of the latest release (nix/release.json), which installs in seconds.
+# `{ fromSource = true; }` compiles this checkout instead (nix/package.nix), which takes minutes.
+{ pkgs ? import <nixpkgs> { }, fromSource ? false }:
 
-let
-  inherit (pkgs) lib;
-
-  # Crane builds the dependencies as a derivation of their own, keyed on Cargo.toml and Cargo.lock,
-  # so editing src/ recompiles only Ski and not egui, wgpu and the rest
-  crane = fetchTarball {
-    url = "https://github.com/ipetkov/crane/archive/refs/tags/v0.24.0.tar.gz";
-    sha256 = "06y3dvs9ms4c70r2ia50k77650yrihc09jibqbqrzly23dn42s4m";
-  };
-  craneLib = import crane { inherit pkgs; };
-
-  runtimeLibs = with pkgs; [
-    libGL
-    wayland
-    libxkbcommon
-    libx11
-    libxcursor
-    libxi
-    libxrandr
-    vulkan-loader
-  ];
-
-  runtimeTools = with pkgs; [
-    xdg-utils
-    fontconfig
-    gnutar
-    p7zip
-    ffmpeg-headless
-  ];
-
-  # Only what the build reads, so editing the README, docs or nix files doesn't rebuild
-  src = lib.fileset.toSource {
-    root = ./.;
-    fileset = lib.fileset.unions [
-      ./Cargo.toml
-      ./Cargo.lock
-      ./src
-      ./assets
-    ];
-  };
-
-  common = {
-    inherit src;
-    pname = "ski";
-    version = "0.4.2";
-    strictDeps = true;
-
-    # rustc already uses several threads per crate, and wgpu, resvg and the like are big, so
-    # one job per core can exhaust the RAM. Eight jobs is a middle ground for a 16-core, 16 GB machine;
-    # lower it if the build runs out of memory.
-    CARGO_BUILD_JOBS = "8";
-    nativeBuildInputs = with pkgs; [ pkg-config makeWrapper ];
-  };
-
-  cargoArtifacts = craneLib.buildDepsOnly common;
-in
-craneLib.buildPackage (common // {
-  inherit cargoArtifacts;
-
-  # The sandbox's HOME is read-only, and the tests exercise the preview cache on disk
-  preCheck = ''
-    export XDG_CACHE_HOME=$TMPDIR/cache
-  '';
-
-  postInstall = ''
-    install -Dm644 assets/ski.desktop $out/share/applications/ski.desktop
-    install -Dm644 assets/logo.svg $out/share/icons/hicolor/scalable/apps/ski.svg
-
-    install -Dm644 assets/ski.portal $out/share/xdg-desktop-portal/portals/ski.portal
-    for name in org.freedesktop.impl.portal.desktop.ski org.freedesktop.FileManager1; do
-      install -Dm644 assets/$name.service $out/share/dbus-1/services/$name.service
-      substituteInPlace $out/share/dbus-1/services/$name.service --replace-fail @out@ $out
-    done
-
-    wrapProgram $out/bin/ski \
-      --prefix LD_LIBRARY_PATH : ${lib.makeLibraryPath runtimeLibs} \
-      --prefix PATH : ${lib.makeBinPath runtimeTools} \
-      --suffix XDG_DATA_DIRS : ${pkgs.shared-mime-info}/share
-  '';
-
-  meta = {
-    description = "A small, fast, keyboard-friendly file manager";
-    homepage = "https://github.com/ilyamiro/Ski";
-    license = lib.licenses.mit;
-    mainProgram = "ski";
-    platforms = lib.platforms.linux;
-  };
-})
+if fromSource || pkgs.stdenv.hostPlatform.system != "x86_64-linux"
+then import ./nix/package.nix { inherit pkgs; }
+else import ./nix/bin.nix { inherit pkgs; }

@@ -74,6 +74,8 @@ To install it on NixOS, import the package in `configuration.nix`. It ships its 
 environment.systemPackages = [ (pkgs.callPackage /path/to/Ski { }) ];
 ```
 
+This installs the binary of the latest release, patched for Nix, in a few seconds; `git pull` and rebuild to update. To compile your checkout instead (several minutes the first time, and after each change to the dependencies), use `(pkgs.callPackage /path/to/Ski { fromSource = true; })`. Other architectures than x86_64 always compile.
+
 ### NixOS: default file manager and system file dialog
 
 `nix/module.nix` installs Ski and makes it the default file manager and the system's open / save dialog:
@@ -84,6 +86,7 @@ environment.systemPackages = [ (pkgs.callPackage /path/to/Ski { }) ];
   programs.ski.enable = true;
   # programs.ski.defaultFileManager = false;  # keep your current file manager
   # programs.ski.filePicker = false;          # keep your current file dialog
+  # programs.ski.package = pkgs.callPackage /path/to/Ski { fromSource = true; };  # compile instead of the release binary
 }
 ```
 

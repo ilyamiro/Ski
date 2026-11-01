@@ -15,7 +15,7 @@ in
       type = lib.types.package;
       default = pkgs.callPackage ../default.nix { };
       defaultText = lib.literalExpression "pkgs.callPackage ./default.nix { }";
-      description = "The Ski package to use.";
+      description = "The Ski package to use: the latest release binary by default; `pkgs.callPackage /path/to/Ski { fromSource = true; }` compiles the checkout.";
     };
 
     defaultFileManager = lib.mkOption {
