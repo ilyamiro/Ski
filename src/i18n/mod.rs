@@ -6,16 +6,15 @@
 //! * `trf(key, args)` – a label with `{}` (next argument) or `{0}`, `{1}` (explicit argument) holes.
 //! * `trn(n, one, other)` – a count: `trn(3, "{} item", "{} items")`. Catalogs store the plural
 //!   forms of the `other` text separated by `|`, in the order of the language's plural rule.
+//!
+//! Each language's catalog is a JSON file next to this module (`ru.json`, `de.json`, …): one object
+//! whose keys are the English texts and whose values are their translations. The files are built
+//! into the binary and parsed the first time the language is used. Adding a language takes its JSON
+//! file plus its arms in the `Language` matches below.
 use std::collections::HashMap;
 use std::fmt::Display;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU8, Ordering};
-
-mod de;
-mod es;
-mod fr;
-mod ru;
-mod vi;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Language {
@@ -26,8 +25,6 @@ pub enum Language {
     French,
     Vietnamese,
 }
-
-type Catalog = &'static [(&'static str, &'static str)];
 
 impl Language {
     pub const ALL: [Language; 6] = [Language::English, Language::Russian, Language::German, Language::Spanish, Language::French, Language::Vietnamese];
@@ -65,15 +62,33 @@ impl Language {
         Language::ALL.iter().position(|l| *l == self).unwrap_or(0)
     }
 
-    fn catalog(self) -> Catalog {
+    /// The language's JSON catalog as built into the binary.
+    fn source(self) -> &'static str {
         match self {
-            Language::English => &[],
-            Language::Russian => ru::CATALOG,
-            Language::German => de::CATALOG,
-            Language::Spanish => es::CATALOG,
-            Language::French => fr::CATALOG,
-            Language::Vietnamese => vi::CATALOG,
+            Language::English => "{}",
+            Language::Russian => include_str!("ru.json"),
+            Language::German => include_str!("de.json"),
+            Language::Spanish => include_str!("es.json"),
+            Language::French => include_str!("fr.json"),
+            Language::Vietnamese => include_str!("vi.json"),
         }
+    }
+
+    /// The catalog's entries in file order.
+    fn catalog(self) -> Result<Vec<(String, String)>, serde_json::Error> {
+        serde_json::from_str::<Entries>(self.source()).map(|e| e.0)
+    }
+
+    /// The catalog as a lookup table, parsed once. A broken file leaves the language in English.
+    fn table(self) -> &'static HashMap<String, String> {
+        static TABLES: [OnceLock<HashMap<String, String>>; Language::ALL.len()] = [const { OnceLock::new() }; Language::ALL.len()];
+        TABLES[self.index()].get_or_init(|| match self.catalog() {
+            Ok(entries) => entries.into_iter().filter(|(_, t)| !t.is_empty()).collect(),
+            Err(e) => {
+                eprintln!("ski: the {} translation is broken: {e}", self.code());
+                HashMap::new()
+            }
+        })
     }
 
     /// Index into the `|`-separated plural forms for a count of `n`.
@@ -92,6 +107,30 @@ impl Language {
                 }
             }
         }
+    }
+}
+
+/// A catalog's entries as a list. Reading the JSON object straight into a map would quietly keep only
+/// the last of two equal keys; the list lets the tests catch duplicates.
+struct Entries(Vec<(String, String)>);
+
+impl<'de> serde::Deserialize<'de> for Entries {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Visitor;
+        impl<'de> serde::de::Visitor<'de> for Visitor {
+            type Value = Entries;
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("an object mapping English texts to their translations")
+            }
+            fn visit_map<A: serde::de::MapAccess<'de>>(self, mut map: A) -> Result<Entries, A::Error> {
+                let mut entries = Vec::with_capacity(map.size_hint().unwrap_or(0));
+                while let Some(entry) = map.next_entry()? {
+                    entries.push(entry);
+                }
+                Ok(Entries(entries))
+            }
+        }
+        deserializer.deserialize_map(Visitor)
     }
 }
 
@@ -120,15 +159,10 @@ pub fn resolve(setting: &str) -> Language {
     if setting == "system" { system_language() } else { Language::from_code(setting).unwrap_or(Language::English) }
 }
 
-fn tables() -> &'static [HashMap<&'static str, &'static str>] {
-    static TABLES: OnceLock<Vec<HashMap<&'static str, &'static str>>> = OnceLock::new();
-    TABLES.get_or_init(|| Language::ALL.iter().map(|l| l.catalog().iter().copied().collect()).collect())
-}
-
-fn lookup(key: &'static str) -> Option<&'static str> {
+fn lookup(key: &str) -> Option<&'static str> {
     match language() {
         Language::English => None,
-        lang => tables()[lang.index()].get(key).copied().filter(|t| !t.is_empty()),
+        lang => lang.table().get(key).map(String::as_str),
     }
 }
 
@@ -147,10 +181,7 @@ pub const INDIRECT: &[&str] = &[
 /// Translate a text that is only known at run time (a place name stored as English). Unknown
 /// texts, such as the name of a drive, come back unchanged.
 pub fn tr_dyn(text: &str) -> String {
-    match language() {
-        Language::English => text.to_owned(),
-        lang => tables()[lang.index()].get(text).copied().filter(|t| !t.is_empty()).unwrap_or(text).to_owned(),
-    }
+    lookup(text).unwrap_or(text).to_owned()
 }
 
 /// Translate a label.
@@ -282,7 +313,7 @@ mod tests {
         assert!(keys.len() > 100, "found only {} keys; the scanner is broken", keys.len());
         let mut missing = Vec::new();
         for lang in Language::ALL.into_iter().filter(|l| *l != Language::English) {
-            let table: HashMap<_, _> = lang.catalog().iter().copied().collect();
+            let table: HashMap<_, _> = lang.catalog().unwrap_or_else(|e| panic!("{}.json: {e}", lang.code())).into_iter().collect();
             for (key, plural) in &keys {
                 match table.get(key.as_str()) {
                     None => missing.push(format!("{}: {key:?}", lang.code())),
@@ -302,9 +333,9 @@ mod tests {
         let keys: std::collections::HashSet<String> = keys_in_sources().into_iter().map(|(k, _)| k).collect();
         for lang in Language::ALL.into_iter().filter(|l| *l != Language::English) {
             let mut seen = std::collections::HashSet::new();
-            for (key, _) in lang.catalog() {
-                assert!(seen.insert(*key), "{}: duplicate {key:?}", lang.code());
-                assert!(keys.contains(*key), "{}: unused entry {key:?}", lang.code());
+            for (key, _) in lang.catalog().unwrap_or_else(|e| panic!("{}.json: {e}", lang.code())) {
+                assert!(keys.contains(&key), "{}: unused entry {key:?}", lang.code());
+                assert!(seen.insert(key.clone()), "{}: duplicate {key:?}", lang.code());
             }
         }
     }
