@@ -15,6 +15,7 @@ mod de;
 mod es;
 mod fr;
 mod ru;
+mod vi;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Language {
@@ -23,12 +24,13 @@ pub enum Language {
     German,
     Spanish,
     French,
+    Vietnamese,
 }
 
 type Catalog = &'static [(&'static str, &'static str)];
 
 impl Language {
-    pub const ALL: [Language; 5] = [Language::English, Language::Russian, Language::German, Language::Spanish, Language::French];
+    pub const ALL: [Language; 6] = [Language::English, Language::Russian, Language::German, Language::Spanish, Language::French, Language::Vietnamese];
 
     pub fn code(self) -> &'static str {
         match self {
@@ -37,6 +39,7 @@ impl Language {
             Language::German => "de",
             Language::Spanish => "es",
             Language::French => "fr",
+            Language::Vietnamese => "vi",
         }
     }
 
@@ -48,6 +51,7 @@ impl Language {
             Language::German => "Deutsch",
             Language::Spanish => "Español",
             Language::French => "Français",
+            Language::Vietnamese => "Tiếng Việt",
         }
     }
 
@@ -68,6 +72,7 @@ impl Language {
             Language::German => de::CATALOG,
             Language::Spanish => es::CATALOG,
             Language::French => fr::CATALOG,
+            Language::Vietnamese => vi::CATALOG,
         }
     }
 
@@ -76,6 +81,7 @@ impl Language {
         match self {
             Language::English | Language::German | Language::Spanish => usize::from(n != 1),
             Language::French => usize::from(n > 1),
+            Language::Vietnamese => 0,
             Language::Russian => {
                 if n % 10 == 1 && n % 100 != 11 {
                     0
@@ -280,7 +286,7 @@ mod tests {
             for (key, plural) in &keys {
                 match table.get(key.as_str()) {
                     None => missing.push(format!("{}: {key:?}", lang.code())),
-                    Some(t) if *plural && t.split('|').count() < if lang == Language::Russian { 3 } else { 2 } => {
+                    Some(t) if *plural && t.split('|').count() < match lang { Language::Russian => 3, Language::Vietnamese => 1, _ => 2 } => {
                         missing.push(format!("{}: plural forms of {key:?}", lang.code()))
                     }
                     Some(t) if !*plural && holes(t) != holes(key) => missing.push(format!("{}: holes of {key:?}", lang.code())),
