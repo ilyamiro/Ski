@@ -2004,6 +2004,22 @@ pub fn choice_row_with(
     let width = ui.available_width();
     let inline = INSET_LABEL + label_w + 16.0 + seg_w + 8.0 <= width;
 
+    // Even the card's full width can't hold the text (long translations): a dropdown instead,
+    // since squeezing the cells would run their labels into each other
+    if glyphs.is_none() && !inline && seg_w > width - 16.0 {
+        let body = egui::FontId::proportional(FONT_BODY);
+        let text_w = options.iter().map(|o| ui.painter().layout_no_wrap((*o).to_owned(), body.clone(), theme.text).size().x).fold(0.0, f32::max);
+        let dd_w = (text_w + 54.0).min(width * 0.6);
+        let (rect, _) = ui.allocate_exact_size(Vec2::new(width, SETTING_HEIGHT), egui::Sense::hover());
+        paint_icon(ui.painter(), Pos2::new(rect.left() + INSET_ICON + 2.0, rect.center().y), icon, ICON_MD, theme.subtext0);
+        paint_label(ui, rect.left() + INSET_LABEL + 2.0, rect.center().y, label, FONT_BODY, theme.text, width - INSET_LABEL - dd_w - 24.0);
+        let dd_rect = Rect::from_min_size(Pos2::new(rect.right() - dd_w - 8.0, rect.center().y - 16.0), Vec2::new(dd_w, 32.0));
+        let owned: Vec<String> = options.iter().map(|o| (*o).to_owned()).collect();
+        let mut pick = selected;
+        let changed = ui.scope_builder(egui::UiBuilder::new().max_rect(dd_rect), |ui| dropdown(ui, id, &owned, &mut pick, theme)).inner;
+        return changed.then_some(pick);
+    }
+
     let seg_h = CONTROL_HEIGHT;
     let height = if inline { SETTING_HEIGHT } else { SETTING_HEIGHT + seg_h + 2.0 };
     let (rect, _) = ui.allocate_exact_size(Vec2::new(width, height), egui::Sense::hover());
