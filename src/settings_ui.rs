@@ -30,7 +30,7 @@ fn category_focus_id() -> egui::Id {
 pub(crate) struct SettingsState {
     pub(crate) tab: usize,
     font_query: String,
-    hex: String,
+    pub(crate) hex: String,
     picking: Option<usize>,
     defaults: Vec<Option<String>>,
     keybind_search: String,

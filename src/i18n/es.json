@@ -140,6 +140,8 @@
   "Detected: {}": "Detectado: {}",
   "{} is now the default for {}": "{} es ahora la predeterminada para {}",
   "Refreshed": "Actualizado",
+  "Settings reloaded": "Ajustes recargados",
+  "Settings file has an error: {}": "Error en settings.json: {}",
   "Nothing to paste": "Nada que pegar",
   "Open a regular folder to paste into": "Abre una carpeta normal donde pegar",
   "Can't move a folder over itself": "No se puede mover una carpeta sobre sí misma",

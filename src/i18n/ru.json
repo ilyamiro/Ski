@@ -140,6 +140,8 @@
   "Detected: {}": "Найдено: {}",
   "{} is now the default for {}": "{} теперь открывает {} по умолчанию",
   "Refreshed": "Обновлено",
+  "Settings reloaded": "Настройки перезагружены",
+  "Settings file has an error: {}": "Ошибка в settings.json: {}",
   "Nothing to paste": "Нечего вставлять",
   "Open a regular folder to paste into": "Откройте обычную папку, чтобы вставить в неё",
   "Can't move a folder over itself": "Нельзя переместить папку на саму себя",

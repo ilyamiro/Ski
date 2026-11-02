@@ -273,6 +273,17 @@ impl Plugins {
         self.enabled.insert(id.to_owned(), on);
     }
 
+    /// Takes all the switches at once (the settings file changed); plugins that go off close their window.
+    pub fn set_enabled_map(&mut self, enabled: &BTreeMap<String, bool>) {
+        let was_on: Vec<&'static str> = self.list.iter().map(|p| p.id()).filter(|id| self.is_enabled(id)).collect();
+        self.enabled = enabled.clone();
+        for id in was_on {
+            if !self.is_enabled(id) {
+                self.close_window(id);
+            }
+        }
+    }
+
     pub fn enabled_map(&self) -> &BTreeMap<String, bool> {
         &self.enabled
     }

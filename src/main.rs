@@ -9,6 +9,7 @@ mod plugins;
 mod portal;
 mod settings;
 mod settings_ui;
+mod settings_watch;
 mod theme_watch;
 mod thumbs;
 mod ui;

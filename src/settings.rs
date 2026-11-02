@@ -290,16 +290,20 @@ impl Default for Settings {
     }
 }
 
-fn file() -> Option<PathBuf> {
+pub(crate) fn file() -> Option<PathBuf> {
     crate::fs::admin::config_override().or_else(dirs::config_dir).map(|d| d.join("ski").join("settings.json"))
 }
 
 impl Settings {
     pub fn load() -> Self {
-        file()
-            .and_then(|f| std::fs::read_to_string(f).ok())
-            .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_default()
+        Self::read().and_then(Result::ok).unwrap_or_default()
+    }
+
+    /// The settings as the file has them now: `None` when there is no file to read, an error when
+    /// it is not valid JSON (say, half way through an edit by hand).
+    pub fn read() -> Option<Result<Self, serde_json::Error>> {
+        let text = std::fs::read_to_string(file()?).ok()?;
+        Some(serde_json::from_str(&text))
     }
 
     /// The tabs of the last session that can still be opened, and the position of the one that was

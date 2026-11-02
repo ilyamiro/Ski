@@ -140,6 +140,8 @@
   "Detected: {}": "Phát hiện: {}",
   "{} is now the default for {}": "{} hiện là mặc định cho {}",
   "Refreshed": "Đã làm mới",
+  "Settings reloaded": "Đã tải lại cài đặt",
+  "Settings file has an error: {}": "Lỗi trong settings.json: {}",
   "Nothing to paste": "Không có gì để dán",
   "Open a regular folder to paste into": "Hãy mở một thư mục thông thường để dán vào",
   "Can't move a folder over itself": "Không thể chuyển thư mục đè lên chính nó",
