@@ -255,6 +255,9 @@ impl Device {
     /// window produces no events for egui; nothing else that arrives asks for a frame.
     fn spawn_reader(connection: Connection) {
         std::thread::spawn(move || {
+            // Never dropped: the thread ends when winit closes the display as the process exits,
+            // and dropping the last handle then would destroy proxies of a display already freed
+            let connection = std::mem::ManuallyDrop::new(connection);
             loop {
                 let Some(guard) = connection.prepare_read() else {
                     // Another reader already took in events for this queue: hand them on
