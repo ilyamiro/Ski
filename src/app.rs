@@ -14,7 +14,7 @@ mod folder_sizes;
 mod glyph_picker;
 mod icon_gallery;
 mod settings_window;
-pub(crate) use settings_window::settings_trace;
+pub(crate) use settings_window::{settings_trace, wake_windows};
 mod theme_editor;
 mod jobs_ui;
 mod network_ui;
@@ -1349,6 +1349,17 @@ impl SkiApp {
         }
     }
 
+    /// Takes up a theme file or `settings.json` rewritten from outside. The Settings window does
+    /// this in its own frames too, as the main window gets none while on another workspace.
+    pub(super) fn poll_config_files(&mut self, ctx: &egui::Context) {
+        if self.theme_watch.as_mut().is_some_and(|w| w.changed(ctx)) {
+            self.reload_external_theme();
+        }
+        if self.settings_watch.as_ref().is_some_and(|w| w.changed()) {
+            self.reload_settings_file();
+        }
+    }
+
     /// A generator rewrote the Serpantinum colors or a theme file of the user's.
     fn reload_external_theme(&mut self) {
         self.system_theme = SerpantinumTheme::load();
@@ -1446,12 +1457,28 @@ impl SkiApp {
 
     /// Re-apply theme / font / scale to egui after a change, and write changed preferences to disk.
     fn sync_settings(&mut self, ctx: &egui::Context) {
+        self.apply_look(ctx);
+        crate::fs::file_item::set_format_options(self.settings.decimal_units, self.settings.relative_dates);
+        crate::fs::file_item::set_show_extensions(self.settings.show_extensions);
+
+        if self.settings.remember_view_per_folder && self.chooser.is_none() {
+            self.settings.folder_views.insert(self.current_path.clone(), self.view_mode);
+        }
+        self.save_changed_settings();
+    }
+
+    /// Takes the look the settings ask for (language, theme and its fade, font, scale) into egui.
+    /// The Settings window runs this in its own frames too: its context is the main window's, and
+    /// on another workspace the main window gets no frames to do it in.
+    pub(super) fn apply_look(&mut self, ctx: &egui::Context) {
         crate::i18n::set_language(crate::i18n::resolve(&self.settings.language));
         material::set_animations(self.settings.animations);
         crate::ui::icon_style::set(self.settings.icon_style);
         ctx.all_styles_mut(|s| s.animation_time = material::dur(material::ANIM));
 
-        let now = ctx.input(|i| i.time);
+        // Each window keeps its own input clock, so the fade, stepped by whichever window draws, runs on one shared clock
+        static CLOCK: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+        let now = CLOCK.get_or_init(std::time::Instant::now).elapsed().as_secs_f64();
         let dur_s = material::dur(material::ANIM);
         if self.theme_dirty {
             self.theme_dirty = false;
@@ -1492,13 +1519,9 @@ impl SkiApp {
         if (ctx.zoom_factor() - self.settings.scale).abs() > f32::EPSILON {
             ctx.set_zoom_factor(self.settings.scale);
         }
-        crate::fs::file_item::set_format_options(self.settings.decimal_units, self.settings.relative_dates);
-        crate::fs::file_item::set_show_extensions(self.settings.show_extensions);
+    }
 
-        if self.settings.remember_view_per_folder && self.chooser.is_none() {
-            self.settings.folder_views.insert(self.current_path.clone(), self.view_mode);
-        }
-
+    fn save_changed_settings(&mut self) {
         if self.chooser.is_none() {
             let (paths, active) = self.session();
             self.settings.session_tabs = paths;
@@ -2281,12 +2304,7 @@ impl eframe::App for SkiApp {
         self.poll_drives(&ctx);
         self.poll_network(&ctx);
         self.drop_zones.clear();
-        if self.theme_watch.as_mut().is_some_and(|w| w.changed(&ctx)) {
-            self.reload_external_theme();
-        }
-        if self.settings_watch.as_ref().is_some_and(|w| w.changed()) {
-            self.reload_settings_file();
-        }
+        self.poll_config_files(&ctx);
         self.sync_settings(&ctx);
         let shown_px = match self.view_mode {
             ViewMode::Grid => self.settings.grid_size.picture_size(),

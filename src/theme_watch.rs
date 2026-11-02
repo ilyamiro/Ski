@@ -25,7 +25,7 @@ impl ThemeWatch {
             let touched = matches!(event.kind, EventKind::Create(_) | EventKind::Modify(_) | EventKind::Remove(_));
             let ours = event.paths.iter().any(|p| p.extension().is_some_and(|e| e == "json"));
             if touched && ours && tx.send(()).is_ok() {
-                repaint.request_repaint();
+                crate::app::wake_windows(&repaint);
             }
         })
         .ok()?;

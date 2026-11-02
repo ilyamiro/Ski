@@ -36,6 +36,23 @@ fn settings_log(ctx: &egui::Context, width: f32, visible: bool, t: f32) {
     *last = (width, t, frames);
 }
 
+/// Whether the Settings window is up, for the file watchers' threads (see `wake_windows`).
+static SETTINGS_OPEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+fn set_settings_open(open: bool) {
+    SETTINGS_OPEN.store(open, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Wakes the windows that follow the theme and settings files: the main one, and Settings when
+/// it is up, which keeps drawing while the main window is out of sight on another workspace.
+/// A plain `request_repaint` from another thread wakes only the main window.
+pub(crate) fn wake_windows(ctx: &egui::Context) {
+    ctx.request_repaint_of(egui::ViewportId::ROOT);
+    if SETTINGS_OPEN.load(std::sync::atomic::Ordering::Relaxed) {
+        ctx.request_repaint_of(egui::ViewportId::from_hash_of("ski_settings"));
+    }
+}
+
 /// A pointer back to the app for the redraws of a window of its own.
 pub(super) struct AppPtr(*mut SkiApp);
 
@@ -61,6 +78,7 @@ impl SkiApp {
     /// inside the main window's frame would only move when that one did).
     pub(super) fn render_settings_window(&mut self, ctx: &egui::Context) {
         let id = egui::ViewportId::from_hash_of("ski_settings");
+        set_settings_open(self.settings_win.is_some());
         if self.settings_win.is_none() {
             chrome::reap_closed_viewport(ctx, id);
             if self.theme_editor {
@@ -85,10 +103,13 @@ impl SkiApp {
 
     fn settings_viewport_ui(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
+        // Before the state is taken, so a reloaded file reaches it too
+        self.poll_config_files(&ctx);
         let Some(mut state) = self.settings_win.take() else {
             chrome::close_own_viewport(&ctx);
             return;
         };
+        self.apply_look(&ctx);
         let theme = self.theme;
         let popup_theme = self.popup_theme;
         let mut close = false;
@@ -172,6 +193,7 @@ impl SkiApp {
         }
 
         if close {
+            set_settings_open(false);
             self.capturing_key = false;
             self.close_theme_editor();
             self.icon_gallery = None;
@@ -179,6 +201,10 @@ impl SkiApp {
             ctx.request_repaint_of(egui::ViewportId::ROOT);
         } else {
             self.settings_win = Some(state);
+            // A change made this frame shows from the next, without waiting for the main window
+            if self.theme_dirty || self.fonts_dirty {
+                ctx.request_repaint();
+            }
             // Declared here rather than by the main window, so it opens and keeps up while the
             // main window is out of sight
             self.render_icon_gallery(&ctx);

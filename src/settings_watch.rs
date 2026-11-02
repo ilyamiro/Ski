@@ -26,7 +26,7 @@ impl SettingsWatch {
         let mut watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
             let Ok(event) = event else { return };
             if finished_writing(&event.kind) && event.paths.iter().any(|p| p.file_name() == Some(name.as_os_str())) && tx.send(()).is_ok() {
-                repaint.request_repaint();
+                crate::app::wake_windows(&repaint);
             }
         })
         .ok()?;
