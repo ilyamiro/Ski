@@ -388,6 +388,7 @@ impl Device {
             source.offer(mime.to_owned());
         }
         self.device.set_selection(Some(&source), serial);
+        crate::clipboard::set_own_text(Some(text.clone()));
         if let Some(old) = self.state.clip.replace(Clip { source, text }) {
             old.source.destroy();
         }
@@ -765,6 +766,7 @@ impl Dispatch<WlDataSource, ()> for State {
                 wl_data_source::Event::Cancelled => {
                     source.destroy();
                     state.clip = None;
+                    crate::clipboard::set_own_text(None);
                 }
                 _ => {}
             }
