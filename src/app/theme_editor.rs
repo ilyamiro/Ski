@@ -84,10 +84,9 @@ impl SkiApp {
         self.persist_settings();
     }
 
+    /// Drawn inside the Settings window, which holds its state out of `settings_win` while it
+    /// draws; closing Settings closes the editor in `render_settings_window`.
     pub(super) fn render_theme_editor(&mut self, ctx: &egui::Context) {
-        if self.theme_editor && self.settings_win.is_none() {
-            self.close_theme_editor();
-        }
         let t = material::animate(ctx, egui::Id::unique("theme_editor_anim"), self.theme_editor);
         if !self.theme_editor && t <= 0.0 {
             self.theme_picker = None;
