@@ -6,6 +6,16 @@ use std::process::{Command, Stdio};
 
 use crate::i18n::tr;
 
+/// Copies keep their permissions where the file system has them. Windows shares (SMB through
+/// GVfs), FAT and exFAT drives and some FUSE mounts refuse to change them; the copy itself is
+/// still good, so that refusal is not an error.
+pub fn keep_mode(result: io::Result<()>) -> io::Result<()> {
+    match result {
+        Err(e) if matches!(e.raw_os_error(), Some(libc::EOPNOTSUPP | libc::ENOSYS | libc::EPERM)) => Ok(()),
+        other => other,
+    }
+}
+
 /// A name for `name` inside `dir` that does not exist yet: `a.txt`, `a (copy).txt`, `a (copy 2).txt`, ...
 pub fn unique_path(dir: &Path, name: &std::ffi::OsStr, suffix: &str) -> PathBuf {
     unique_path_where(dir, name, suffix, |_| false)
@@ -54,9 +64,13 @@ fn copy_tree(src: &Path, dst: &Path) -> io::Result<()> {
             let entry = entry?;
             copy_tree(&entry.path(), &dst.join(entry.file_name()))?;
         }
-        std::fs::set_permissions(dst, meta.permissions())
+        keep_mode(std::fs::set_permissions(dst, meta.permissions()))
     } else {
-        std::fs::copy(src, dst).map(|_| ())
+        // Not `std::fs::copy`: it fails the whole copy when the target refuses the permissions
+        let mut reader = std::fs::File::open(src)?;
+        let mut writer = std::fs::File::create(dst)?;
+        io::copy(&mut reader, &mut writer)?;
+        keep_mode(writer.set_permissions(meta.permissions()))
     }
 }
 
@@ -282,6 +296,14 @@ pub fn extract_beside(archive: &Path) -> io::Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn keep_mode_lets_copies_onto_shares_without_permissions_through() {
+        // GVfs's SMB mount answers a chmod with "Operation not supported (os error 95)"
+        assert!(keep_mode(Err(io::Error::from_raw_os_error(libc::EOPNOTSUPP))).is_ok());
+        assert!(keep_mode(Err(io::Error::from_raw_os_error(libc::EPERM))).is_ok());
+        assert!(keep_mode(Err(io::Error::from_raw_os_error(libc::ENOSPC))).is_err());
+    }
 
     #[test]
     fn roundtrip() {

@@ -552,7 +552,7 @@ fn copy_file(w: &Worker, src: &Path, dst: &Path) -> io::Result<()> {
         }
         // Tags, comments and ratings live in extended attributes; set them while the copy is still writable
         super::xattr::copy_user(src, dst);
-        writer.set_permissions(meta.permissions())?;
+        ops::keep_mode(writer.set_permissions(meta.permissions()))?;
         if let Ok(modified) = meta.modified() {
             let _ = writer.set_modified(modified);
         }
@@ -579,7 +579,7 @@ fn copy_tree(w: &Worker, src: &Path, dst: &Path) -> io::Result<()> {
             copy_tree(w, &entry.path(), &dst.join(entry.file_name()))?;
         }
         super::xattr::copy_user(src, dst);
-        std::fs::set_permissions(dst, meta.permissions())
+        ops::keep_mode(std::fs::set_permissions(dst, meta.permissions()))
     } else {
         w.shared.set_current(&name_of(src));
         copy_file(w, src, dst)?;

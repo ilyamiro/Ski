@@ -99,7 +99,7 @@ pub fn create(template: &Template, target: &Path) -> io::Result<()> {
             file.write_all(content.as_bytes())?;
             if *executable {
                 use std::os::unix::fs::PermissionsExt;
-                file.set_permissions(std::fs::Permissions::from_mode(0o755))?;
+                super::ops::keep_mode(file.set_permissions(std::fs::Permissions::from_mode(0o755)))?;
             }
             Ok(())
         }
@@ -108,7 +108,7 @@ pub fn create(template: &Template, target: &Path) -> io::Result<()> {
             let mut src = std::fs::File::open(from)?;
             let mut dst = std::fs::OpenOptions::new().write(true).create_new(true).open(target)?;
             io::copy(&mut src, &mut dst)?;
-            dst.set_permissions(src.metadata()?.permissions())
+            super::ops::keep_mode(dst.set_permissions(src.metadata()?.permissions()))
         }
     }
 }
