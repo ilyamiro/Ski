@@ -2,7 +2,7 @@
 
 Pushing a tag `vX.Y.Z` runs `.github/workflows/release.yml`, which builds Ski and publishes a GitHub release with the `.tar.gz`, `.deb`, `.rpm` and `SHA256SUMS`. The same tag also makes `docker.yml` push the container image. Nothing is built or uploaded by hand.
 
-A release has three parts: test, tag and publish, then bring the nixpkgs package up to the new version. A patch release takes about 15 minutes in total, most of it waiting for builds.
+A release has four parts: test, tag and publish, bring the nixpkgs package up to the new version, then bump the Ski version Serpantinum bundles. A patch release takes about 15 minutes in total, most of it waiting for builds.
 
 ## Before you start
 
@@ -88,6 +88,18 @@ The package is `pkgs/by-name/sk/ski/package.nix`. A release changes three lines:
    gh pr view 581531 --repo NixOS/nixpkgs --json state,title,headRefOid,commits -q '.state, .title, .headRefOid, [.commits[].messageHeadline]'
    ```
    It must be `OPEN`, the head must be your new commit, and `maintainers: add ilyamiro` must still be the first commit.
+
+## 4. Update the Ski version in Serpantinum
+
+Serpantinum's AUR packages bundle a pinned Ski release binary, so each release bumps it there too. In `~/Projects/serpantinum` (`git pull` first), both `packaging/aur/serpantinum/PKGBUILD` and `packaging/aur/serpantinum-git/PKGBUILD` have:
+
+- `_skiver=X.Y.Z`: the new version.
+- The Ski tarball's line in `sha256sums` (the second entry): the new tarball's hash, from the release's checksums:
+  ```sh
+  gh release download vX.Y.Z --repo ilyamiro/Ski -p SHA256SUMS -O - | grep x86_64-linux.tar.gz
+  ```
+
+Find any other pinned version with `grep -rn "<old version>" --exclude-dir=.git .`. Commit with `chore(aur): bundle Ski X.Y.Z` (Serpantinum's own `AGENTS.md` asks for one-line conventional commits) and push `master`.
 
 ## Things that go wrong
 

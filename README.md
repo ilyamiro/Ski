@@ -4,9 +4,9 @@
 
 <h1 align="center">Ski</h1>
 
-A file manager for Linux, written in Rust. Wayland and X11, list and grid views with thumbnails, tabs, vim keys, network shares and SSH servers, and a system file dialog.
+A fast Rust file manager. Wayland and X11, list and grid views with thumbnails, tabs, vim keys, network shares and SSH servers, and a system file dialog.
 
-![Ski showing a Pictures folder as a grid of thumbnails](docs/screenshots/hero.png)
+![Ski showing a Pictures folder with winter icons, split diagonally between a light ice-blue theme and a dark navy one](docs/screenshots/hero.png)
 
 ## Install
 
