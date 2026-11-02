@@ -1426,6 +1426,8 @@ impl SkiApp {
                 theme.mauve = a;
                 theme.blue = a;
             }
+            // As `from_settings` does at startup, so a refresh shows the same colors as a fresh launch
+            theme.ensure_readable();
         }
         // The theme being made in the editor shows live, saved or not
         if self.theme_editor && let Some(draft) = &self.theme_draft {

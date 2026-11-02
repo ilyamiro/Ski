@@ -410,7 +410,7 @@ impl SerpantinumTheme {
     /// Nudges text and accent colors that are too faint on this palette's backgrounds toward the
     /// strongest end (white on dark palettes, black on light ones). Colors that already read well
     /// are left as the palette defines them.
-    fn ensure_readable(&mut self) {
+    pub fn ensure_readable(&mut self) {
         let all = [self.base, self.mantle, self.crust, self.surface0, self.surface1, self.surface2];
         // Secondary text and accents sit on the panels and rows, not on the lightest hover fill
         let main = [self.base, self.mantle, self.surface0, self.surface1];
@@ -433,6 +433,27 @@ impl SerpantinumTheme {
         }
     }
 
+    /// Takes the colors Serpantinum wrote, keeping this palette's for any that are missing.
+    fn take_colors(&mut self, raw: SerpantinumColorsRaw) {
+        if let Some(c) = raw.base.and_then(|s| parse_hex(&s)) { self.base = c; }
+        if let Some(c) = raw.mantle.and_then(|s| parse_hex(&s)) { self.mantle = c; }
+        if let Some(c) = raw.crust.and_then(|s| parse_hex(&s)) { self.crust = c; }
+        if let Some(c) = raw.text.and_then(|s| parse_hex(&s)) { self.text = c; }
+        if let Some(c) = raw.subtext0.and_then(|s| parse_hex(&s)) { self.subtext0 = c; }
+        if let Some(c) = raw.subtext1.and_then(|s| parse_hex(&s)) { self.subtext1 = c; }
+        if let Some(c) = raw.surface0.and_then(|s| parse_hex(&s)) { self.surface0 = c; }
+        if let Some(c) = raw.surface1.and_then(|s| parse_hex(&s)) { self.surface1 = c; }
+        if let Some(c) = raw.surface2.and_then(|s| parse_hex(&s)) { self.surface2 = c; }
+        if let Some(c) = raw.blue.and_then(|s| parse_hex(&s)) { self.blue = c; }
+        if let Some(c) = raw.mauve.and_then(|s| parse_hex(&s)) { self.mauve = c; }
+        if let Some(c) = raw.peach.and_then(|s| parse_hex(&s)) { self.peach = c; }
+        if let Some(c) = raw.green.and_then(|s| parse_hex(&s)) { self.green = c; }
+        if let Some(c) = raw.red.and_then(|s| parse_hex(&s)) { self.red = c; }
+        if let Some(c) = raw.yellow.and_then(|s| parse_hex(&s)) { self.yellow = c; }
+        // The file has no mode of its own: a light palette is one whose text is darker than its background
+        self.light = luminance(self.base) > luminance(self.text);
+    }
+
     pub fn load() -> Self {
         let mut theme = Self::default();
 
@@ -445,21 +466,7 @@ impl SerpantinumTheme {
         for path in candidate_paths.into_iter().flatten() {
             if let Ok(content) = fs::read_to_string(&path)
                 && let Ok(raw) = serde_json::from_str::<SerpantinumColorsRaw>(&content) {
-                    if let Some(c) = raw.base.and_then(|s| parse_hex(&s)) { theme.base = c; }
-                    if let Some(c) = raw.mantle.and_then(|s| parse_hex(&s)) { theme.mantle = c; }
-                    if let Some(c) = raw.crust.and_then(|s| parse_hex(&s)) { theme.crust = c; }
-                    if let Some(c) = raw.text.and_then(|s| parse_hex(&s)) { theme.text = c; }
-                    if let Some(c) = raw.subtext0.and_then(|s| parse_hex(&s)) { theme.subtext0 = c; }
-                    if let Some(c) = raw.subtext1.and_then(|s| parse_hex(&s)) { theme.subtext1 = c; }
-                    if let Some(c) = raw.surface0.and_then(|s| parse_hex(&s)) { theme.surface0 = c; }
-                    if let Some(c) = raw.surface1.and_then(|s| parse_hex(&s)) { theme.surface1 = c; }
-                    if let Some(c) = raw.surface2.and_then(|s| parse_hex(&s)) { theme.surface2 = c; }
-                    if let Some(c) = raw.blue.and_then(|s| parse_hex(&s)) { theme.blue = c; }
-                    if let Some(c) = raw.mauve.and_then(|s| parse_hex(&s)) { theme.mauve = c; }
-                    if let Some(c) = raw.peach.and_then(|s| parse_hex(&s)) { theme.peach = c; }
-                    if let Some(c) = raw.green.and_then(|s| parse_hex(&s)) { theme.green = c; }
-                    if let Some(c) = raw.red.and_then(|s| parse_hex(&s)) { theme.red = c; }
-                    if let Some(c) = raw.yellow.and_then(|s| parse_hex(&s)) { theme.yellow = c; }
+                    theme.take_colors(raw);
                     break;
                 }
         }
@@ -634,6 +641,18 @@ mod tests {
             }
             assert!(contrast(t.text, t.surface2) >= 5.5, "{id} text on surface2");
         }
+    }
+
+    #[test]
+    fn a_light_serpantinum_palette_keeps_its_dark_text() {
+        let raw: SerpantinumColorsRaw = serde_json::from_str(r##"{"base":"#f4eff4","mantle":"#ebe6eb","crust":"#e5e0e5","text":"#1c1b1f","subtext0":"#49454f","subtext1":"#79747e","surface0":"#e6e0e9","surface1":"#ddd8dd","surface2":"#d3ced3"}"##).unwrap();
+        let mut t = SerpantinumTheme::default();
+        t.take_colors(raw);
+        assert!(t.light);
+        let text = t.text;
+        t.ensure_readable();
+        assert!(contrast(t.text, t.base) >= contrast(text, t.base), "text was washed out toward white");
+        assert!(contrast(t.subtext1, t.base) >= 3.5);
     }
 
     #[test]
