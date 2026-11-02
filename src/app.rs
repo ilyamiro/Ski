@@ -6513,7 +6513,9 @@ mod tests {
         std::fs::create_dir_all(&base).unwrap();
         std::fs::write(base.join("a.txt"), "x").unwrap();
         let ctx = egui::Context::default();
-        let mut app = SkiApp::new(base.clone(), SerpantinumTheme::default(), Settings::default(), &ctx);
+        let mut settings = Settings::default();
+        settings.plugins = [("quick_look", true), ("git", true), ("actions", true)].map(|(id, on)| (id.to_owned(), on)).into();
+        let mut app = SkiApp::new(base.clone(), SerpantinumTheme::default(), settings, &ctx);
         assert!(app.plugins.is_enabled("quick_look") && app.plugins.is_enabled("git"));
         app.plugins.set_enabled("git", false);
         assert!(!app.plugins.is_enabled("git"));

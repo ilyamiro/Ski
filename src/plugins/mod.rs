@@ -139,8 +139,9 @@ pub trait Plugin {
     fn name(&self) -> &'static str;
     fn description(&self) -> &'static str;
     fn icon(&self) -> &'static str;
+    /// Every bundled plugin starts switched off; the user turns on the ones they want in Settings → Plugins.
     fn default_enabled(&self) -> bool {
-        true
+        false
     }
 
     /// The listing now shows `dir` (also after a reload, so changes on disk are picked up).
@@ -515,8 +516,10 @@ mod tests {
     #[test]
     fn switches_override_defaults() {
         let mut plugins = Plugins::bundled(&BTreeMap::new());
-        assert!(plugins.is_enabled("git"));
+        assert!(plugins.catalog().iter().all(|c| !c.4), "every plugin starts off");
         assert!(!plugins.is_enabled("no-such-plugin"));
+        plugins.set_enabled("git", true);
+        assert!(plugins.is_enabled("git"));
         plugins.set_enabled("git", false);
         assert!(!plugins.is_enabled("git"));
         assert_eq!(plugins.enabled_map().get("git"), Some(&false));
