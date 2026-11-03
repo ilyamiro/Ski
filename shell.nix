@@ -9,6 +9,7 @@ let
     libxcursor
     libxi
     libxrandr
+    fontconfig
   ];
 in
 pkgs.mkShell {

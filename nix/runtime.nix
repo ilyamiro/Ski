@@ -1,5 +1,6 @@
 # What Ski needs at run time, shared by the source build (package.nix) and the release binary (bin.nix).
-# The graphics libraries are loaded with dlopen, so they go on LD_LIBRARY_PATH rather than being linked.
+# The graphics libraries and fontconfig (egui's fallback for glyphs the bundled fonts lack, such as
+# Chinese) are loaded with dlopen, so they go on LD_LIBRARY_PATH rather than being linked.
 { lib, pkgs }:
 
 let
@@ -11,6 +12,7 @@ let
     libxcursor
     libxi
     libxrandr
+    fontconfig
   ];
 
   tools = with pkgs; [

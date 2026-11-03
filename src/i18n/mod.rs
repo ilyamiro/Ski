@@ -24,10 +24,23 @@ pub enum Language {
     Spanish,
     French,
     Vietnamese,
+    Danish,
+    Ukrainian,
+    Chinese,
 }
 
 impl Language {
-    pub const ALL: [Language; 6] = [Language::English, Language::Russian, Language::German, Language::Spanish, Language::French, Language::Vietnamese];
+    pub const ALL: [Language; 9] = [
+        Language::English,
+        Language::Russian,
+        Language::German,
+        Language::Spanish,
+        Language::French,
+        Language::Vietnamese,
+        Language::Danish,
+        Language::Ukrainian,
+        Language::Chinese,
+    ];
 
     pub fn code(self) -> &'static str {
         match self {
@@ -37,6 +50,9 @@ impl Language {
             Language::Spanish => "es",
             Language::French => "fr",
             Language::Vietnamese => "vi",
+            Language::Danish => "da",
+            Language::Ukrainian => "uk",
+            Language::Chinese => "zh",
         }
     }
 
@@ -49,6 +65,9 @@ impl Language {
             Language::Spanish => "Español",
             Language::French => "Français",
             Language::Vietnamese => "Tiếng Việt",
+            Language::Danish => "Dansk",
+            Language::Ukrainian => "Українська",
+            Language::Chinese => "简体中文",
         }
     }
 
@@ -71,6 +90,9 @@ impl Language {
             Language::Spanish => include_str!("es.json"),
             Language::French => include_str!("fr.json"),
             Language::Vietnamese => include_str!("vi.json"),
+            Language::Danish => include_str!("da.json"),
+            Language::Ukrainian => include_str!("uk.json"),
+            Language::Chinese => include_str!("zh.json"),
         }
     }
 
@@ -94,10 +116,10 @@ impl Language {
     /// Index into the `|`-separated plural forms for a count of `n`.
     fn plural_form(self, n: usize) -> usize {
         match self {
-            Language::English | Language::German | Language::Spanish => usize::from(n != 1),
+            Language::English | Language::German | Language::Spanish | Language::Danish => usize::from(n != 1),
             Language::French => usize::from(n > 1),
-            Language::Vietnamese => 0,
-            Language::Russian => {
+            Language::Vietnamese | Language::Chinese => 0,
+            Language::Russian | Language::Ukrainian => {
                 if n % 10 == 1 && n % 100 != 11 {
                     0
                 } else if (2..=4).contains(&(n % 10)) && !(12..=14).contains(&(n % 100)) {
@@ -317,7 +339,7 @@ mod tests {
             for (key, plural) in &keys {
                 match table.get(key.as_str()) {
                     None => missing.push(format!("{}: {key:?}", lang.code())),
-                    Some(t) if *plural && t.split('|').count() < match lang { Language::Russian => 3, Language::Vietnamese => 1, _ => 2 } => {
+                    Some(t) if *plural && t.split('|').count() < match lang { Language::Russian | Language::Ukrainian => 3, Language::Vietnamese | Language::Chinese => 1, _ => 2 } => {
                         missing.push(format!("{}: plural forms of {key:?}", lang.code()))
                     }
                     Some(t) if !*plural && holes(t) != holes(key) => missing.push(format!("{}: holes of {key:?}", lang.code())),
@@ -351,5 +373,7 @@ mod tests {
         assert_eq!(Language::Russian.plural_form(21), 0);
         assert_eq!(Language::French.plural_form(0), 0);
         assert_eq!(Language::from_code("ru_RU.UTF-8"), Some(Language::Russian));
+        assert_eq!(Language::Ukrainian.plural_form(22), 1);
+        assert_eq!(Language::from_code("zh_CN.UTF-8"), Some(Language::Chinese));
     }
 }
