@@ -13,6 +13,9 @@ use crate::i18n::tr;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Default)]
 pub enum IconStyle {
+    /// The icon theme installed on the desktop (Adwaita, Papirus, Breeze, ...); what it lacks is
+    /// drawn as in Classic.
+    System,
     /// Flat folders and plain glyphs; office documents are drawn pages.
     #[default]
     Classic,
@@ -33,7 +36,9 @@ pub enum IconStyle {
 }
 
 impl IconStyle {
-    pub const ALL: [IconStyle; 8] = [
+    /// In the order of the enum, which `set` and `current` rely on.
+    pub const ALL: [IconStyle; 9] = [
+        IconStyle::System,
         IconStyle::Classic,
         IconStyle::Halloween,
         IconStyle::Winter,
@@ -54,6 +59,7 @@ impl IconStyle {
             IconStyle::Glossy => tr("Glossy"),
             IconStyle::Clay => tr("Clay"),
             IconStyle::Origami => tr("Origami"),
+            IconStyle::System => tr("System"),
         }
     }
 }
@@ -109,6 +115,11 @@ pub fn paint_file(style: IconStyle, painter: &egui::Painter, center: Pos2, glyph
         IconStyle::Glossy => glossy_file(painter, center, glyph, size, color),
         IconStyle::Clay => clay_file(painter, center, glyph, size, color),
         IconStyle::Origami => origami_file(painter, center, glyph, size, color),
+        IconStyle::System => {
+            if !super::system_icons::paint_glyph(painter, glyph, center, size, color.a() as f32 / 255.0) {
+                plain(painter, center, glyph, size, color);
+            }
+        }
     }
 }
 
@@ -122,6 +133,11 @@ pub fn paint_folder(style: IconStyle, painter: &egui::Painter, center: Pos2, siz
         IconStyle::Glossy => glossy_folder(painter, center, size, color),
         IconStyle::Clay => clay_folder(painter, center, size, color),
         IconStyle::Origami => origami_folder(painter, center, size, color),
+        IconStyle::System => {
+            if !super::system_icons::paint_folder(painter, center, size, color.a() as f32 / 255.0) {
+                classic_folder(painter, center, size, color);
+            }
+        }
     }
 }
 
@@ -1573,6 +1589,16 @@ fn origami_file(painter: &egui::Painter, center: Pos2, glyph: &str, size: f32, c
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_style_is_stored_at_its_place_in_the_list() {
+        for (i, style) in IconStyle::ALL.into_iter().enumerate() {
+            assert_eq!(style as usize, i, "{style:?}");
+            set(style);
+            assert_eq!(current(), style);
+        }
+        set(IconStyle::default());
+    }
 
     #[test]
     fn shading_keeps_alpha() {

@@ -505,6 +505,11 @@ pub fn paint_item_icon(painter: &egui::Painter, item: &FileItem, center: Pos2, s
 
 /// The type icon of a file as `style` draws it, whichever style is chosen.
 pub fn paint_item_icon_in(style: IconStyle, painter: &egui::Painter, item: &FileItem, center: Pos2, size: f32, (glyph, color): (&str, Color32), fade: f32) {
+    // A glyph the user picked for a folder is theirs to keep, in every style
+    let own_glyph = item.is_dir && crate::fs::places::folder_glyph(&item.path).is_some();
+    if style == IconStyle::System && !own_glyph && super::system_icons::paint_item(painter, item, center, size, fade) {
+        return;
+    }
     if item.is_dir {
         if let Some(glyph) = crate::fs::places::folder_glyph(&item.path) {
             return icon_style::paint_glyph(style, painter, center, glyph.encode_utf8(&mut [0; 4]), size, color.gamma_multiply(fade));
@@ -1788,6 +1793,96 @@ pub fn slider_row(
     painter.circle_filled(Pos2::new(x, y), handle_r - if active { 1.0 } else { 0.0 }, theme.mauve);
 
     let galley = painter.layout_no_wrap(format!("{}{suffix}", *value), egui::FontId::proportional(FONT_BODY), theme.text);
+    painter.galley(Pos2::new(rect.right() - 16.0 - galley.size().x, y - galley.size().y / 2.0), galley, theme.text);
+    changed
+}
+
+/// Setting row with a slider over a range of decimals, with named marks under the track (such as
+/// Slow, Default, Fast). The handle snaps to a mark it comes close to. With `reset`, a button before
+/// the value puts it back to that, dimmed while it is there already. Returns true when `value` changed.
+#[allow(clippy::too_many_arguments)]
+pub fn marked_slider_row(
+    ui: &mut egui::Ui,
+    id_source: impl std::hash::Hash + std::fmt::Debug,
+    icon: &str,
+    label: &str,
+    theme: &SerpantinumTheme,
+    value: &mut f32,
+    range: std::ops::RangeInclusive<f32>,
+    marks: &[(f32, &str)],
+    suffix: &str,
+    reset: Option<f32>,
+) -> bool {
+    const MARK_ROOM: f32 = 16.0;
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), SETTING_HEIGHT + MARK_ROOM), egui::Sense::hover());
+    let id = ui.make_persistent_id(id_source);
+    let (lo, hi) = (*range.start(), *range.end());
+    let y = rect.top() + SETTING_HEIGHT / 2.0;
+
+    paint_icon(ui.painter(), Pos2::new(rect.left() + INSET_ICON + 2.0, y), icon, ICON_MD, theme.subtext0);
+    let text_x = rect.left() + INSET_LABEL + 2.0;
+    paint_label(ui, text_x, y, label, FONT_BODY, theme.text, 120.0);
+
+    let value_w = 52.0;
+    let handle_r = 10.0;
+    // The button's room is kept even while it is dimmed, so the track never moves under the pointer
+    let reset_w = if reset.is_some() { CONTROL_HEIGHT + 4.0 } else { 0.0 };
+    let track_right = rect.right() - 16.0 - value_w - 8.0 - reset_w - handle_r;
+    let track_left = (text_x + 120.0 + handle_r).min(track_right - 80.0).max(text_x + 60.0);
+    let mut changed = false;
+    if let Some(default) = reset {
+        let at_default = (*value - default).abs() < 0.001;
+        let spot = Rect::from_center_size(Pos2::new(rect.right() - 16.0 - value_w - 4.0 - CONTROL_HEIGHT / 2.0, y), Vec2::splat(CONTROL_HEIGHT));
+        let clicked = ui
+            .scope_builder(egui::UiBuilder::new().max_rect(spot), |ui| icon_button(ui, id.with("reset"), icons::RESTORE, theme, !at_default, tr("Reset to default")))
+            .inner
+            .clicked();
+        if clicked && !at_default {
+            *value = default;
+            changed = true;
+        }
+    }
+    let at = |v: f32| lerp(track_left, track_right, ((v - lo) / (hi - lo).max(f32::EPSILON)).clamp(0.0, 1.0));
+    let hit = Rect::from_min_max(Pos2::new(track_left - handle_r, y - 16.0), Pos2::new(track_right + handle_r, rect.bottom()));
+    let response = ui.interact(hit, id, egui::Sense::click_and_drag());
+
+    if (response.dragged() || response.clicked() || response.drag_started())
+        && let Some(pos) = response.interact_pointer_pos() {
+            let f = ((pos.x - track_left) / (track_right - track_left)).clamp(0.0, 1.0);
+            // Steps of 0.05, and the nearest mark within a few points of the pointer
+            let mut v = ((lo + f * (hi - lo)) * 20.0).round() / 20.0;
+            if let Some((mark, _)) = marks.iter().filter(|(m, _)| (at(*m) - pos.x).abs() < 8.0).min_by(|a, b| (at(a.0) - pos.x).abs().total_cmp(&(at(b.0) - pos.x).abs())) {
+                v = *mark;
+            }
+            if (v - *value).abs() > f32::EPSILON {
+                *value = v;
+                changed = true;
+            }
+    }
+
+    let active = response.dragged();
+    let hover = animate(ui.ctx(), id.with("hover"), response.hovered() || active);
+    let x = at(*value);
+    let painter = ui.painter();
+    let bar = |l: f32, r: f32| Rect::from_min_max(Pos2::new(l, y - 2.0), Pos2::new(r, y + 2.0));
+    painter.rect_filled(bar(track_left, track_right), CornerRadius::same(2), theme.surface2);
+    painter.rect_filled(bar(track_left, x), CornerRadius::same(2), theme.mauve);
+    for (mark, name) in marks {
+        let mx = at(*mark);
+        let on = (*mark - *value).abs() < 0.01;
+        painter.circle_filled(Pos2::new(mx, y), 2.5, if mx <= x { on_color(theme, theme.mauve) } else { theme.subtext1 });
+        let color = if on { theme.text } else { theme.subtext1 };
+        let galley = painter.layout_no_wrap((*name).to_owned(), egui::FontId::proportional(FONT_CAPTION - 1.0), color);
+        painter.galley(Pos2::new(mx - galley.size().x / 2.0, y + 12.0), galley, color);
+    }
+    if hover > 0.01 {
+        painter.circle_filled(Pos2::new(x, y), handle_r + 6.0, theme.with_alpha(theme.mauve, (hover * if active { 52.0 } else { 34.0 }) as u8));
+    }
+    painter.circle_filled(Pos2::new(x, y), handle_r - if active { 1.0 } else { 0.0 }, theme.mauve);
+
+    let shown = format!("{:.2}", *value);
+    let shown = shown.trim_end_matches('0').trim_end_matches('.');
+    let galley = painter.layout_no_wrap(format!("{shown}{suffix}"), egui::FontId::proportional(FONT_BODY), theme.text);
     painter.galley(Pos2::new(rect.right() - 16.0 - galley.size().x, y - galley.size().y / 2.0), galley, theme.text);
     changed
 }

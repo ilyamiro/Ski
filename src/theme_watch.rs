@@ -1,5 +1,6 @@
 //! Watches the files a theme can come from, so a color generator that rewrites them is followed
-//! while Ski runs: the user's theme files and Serpantinum's `qs_colors.json`.
+//! while Ski runs: the user's theme files and Serpantinum's `qs_colors.json`, and the desktop's
+//! light/dark preference and accent color, which the System palette follows without Serpantinum.
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{channel, Receiver};
 use std::time::{Duration, Instant};
@@ -19,6 +20,7 @@ pub struct ThemeWatch {
 impl ThemeWatch {
     pub fn new(ctx: &egui::Context) -> Option<Self> {
         let (tx, events) = channel();
+        let (desktop_tx, desktop_repaint) = (tx.clone(), ctx.clone());
         let repaint = ctx.clone();
         let mut watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
             let Ok(event) = event else { return };
@@ -29,12 +31,18 @@ impl ThemeWatch {
             }
         })
         .ok()?;
+        crate::ui::appearance::watch(move || {
+            let alive = desktop_tx.send(()).is_ok();
+            if alive {
+                crate::app::wake_windows(&desktop_repaint);
+            }
+            alive
+        });
         // The folders, not the files: generators replace a file by renaming a new one over it
-        let mut any = false;
         for dir in folders() {
-            any |= watcher.watch(&dir, RecursiveMode::NonRecursive).is_ok();
+            let _ = watcher.watch(&dir, RecursiveMode::NonRecursive);
         }
-        any.then_some(Self { _watcher: watcher, events, due: None })
+        Some(Self { _watcher: watcher, events, due: None })
     }
 
     /// True once a watched file has changed and stopped changing; asks for another frame while waiting.

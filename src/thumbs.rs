@@ -18,7 +18,10 @@ const TIERS: [u32; 3] = [128, 256, 512];
 /// Document pages and video frames need more pixels than a small tile to stay readable, so they
 /// never render below this.
 const PAGE_MIN: u32 = 256;
-const WORKERS: usize = 2;
+/// Decoding threads: all but one core, so the window keeps one to itself, and at least two.
+fn workers() -> usize {
+    std::thread::available_parallelism().map_or(2, |n| n.get().saturating_sub(1)).clamp(2, 6)
+}
 /// Textures uploaded per frame; the rest wait for the next one so a big folder never stalls a frame.
 const UPLOADS_PER_FRAME: usize = 6;
 /// Previews kept in memory, in bytes of pixels. Past this, opening a folder lets go of the other
@@ -52,7 +55,8 @@ struct Job {
 struct Queue {
     jobs: Mutex<Waiting>,
     wake: std::sync::Condvar,
-    /// The files on screen, top to bottom.
+    /// The files on screen top to bottom, then those just past them in the way the view is likely
+    /// to scroll, so a worker with nothing on screen left to do prepares the next screenful.
     visible: Mutex<Vec<PathBuf>>,
 }
 
@@ -205,7 +209,7 @@ impl Thumbnails {
         let (result_tx, result_rx) = mpsc::channel();
         let generation = Arc::new(AtomicU64::new(0));
 
-        for _ in 0..WORKERS {
+        for _ in 0..workers() {
             let queue = queue.clone();
             let result_tx = result_tx.clone();
             let generation = generation.clone();
@@ -424,7 +428,7 @@ fn render_thumbnail(path: &Path, tier: u32) -> Option<image::DynamicImage> {
         } else {
             book_or_document_cover(path)?
         };
-        return Some(page.thumbnail(page_size, page_size));
+        return Some(fit(page, page_size));
     }
     if is_audio(path) {
         return Some(ffmpeg_picture(path, tier)?.thumbnail(tier, tier));
@@ -441,32 +445,70 @@ fn render_thumbnail(path: &Path, tier: u32) -> Option<image::DynamicImage> {
     } else if is_raw(path) {
         raw_preview(path)?
     } else {
-        scaled_jpeg(path, tier).or_else(|| image::ImageReader::open(path).ok()?.with_guessed_format().ok()?.decode().ok())?
+        image::ImageReader::open(path).ok()?.with_guessed_format().ok()?.decode().ok()?
     };
-    Some(img.thumbnail(tier, tier))
+    Some(fit(img, tier))
 }
 
-/// A JPEG decoded at 1/2, 1/4 or 1/8 of its size straight from the DCT coefficients, the way
-/// gdk-pixbuf does for Nautilus: a 4K wallpaper costs a fraction of a full decode.
-fn scaled_jpeg(path: &Path, tier: u32) -> Option<image::DynamicImage> {
-    if !matches!(extension(path).as_deref(), Some("jpg" | "jpeg" | "jpe")) {
+/// `img` scaled to fit `side` pixels. A photo many times that size is first averaged down in
+/// blocks to about twice the size: filtering every pixel of a 12-megapixel picture took longer than
+/// decoding it.
+fn fit(img: image::DynamicImage, side: u32) -> image::DynamicImage {
+    let block = img.width().max(img.height()) / side.max(1) / 2;
+    let img = if block >= 2 { box_shrink(&img, block as usize).unwrap_or(img) } else { img };
+    img.thumbnail(side, side)
+}
+
+/// Each `block`x`block` square of pixels averaged into one, from at most 4x4 evenly spaced samples
+/// of it, so the cost follows the size of the result rather than of the photo. Only 8-bit pictures.
+fn box_shrink(img: &image::DynamicImage, block: usize) -> Option<image::DynamicImage> {
+    use image::DynamicImage as D;
+    const TAPS: usize = 4;
+    let channels = match img {
+        D::ImageLuma8(_) => 1,
+        D::ImageLumaA8(_) => 2,
+        D::ImageRgb8(_) => 3,
+        D::ImageRgba8(_) => 4,
+        _ => return None,
+    };
+    let (w, h) = (img.width() as usize, img.height() as usize);
+    let (ow, oh) = (w / block, h / block);
+    if ow == 0 || oh == 0 {
         return None;
     }
-    let mut decoder = jpeg_decoder::Decoder::new(std::io::BufReader::new(std::fs::File::open(path).ok()?));
-    decoder.read_info().ok()?;
-    let side = tier.min(u16::MAX as u32) as u16;
-    decoder.scale(side, side).ok()?;
-    let pixels = decoder.decode().ok()?;
-    let info = decoder.info()?;
-    let (w, h) = (info.width as u32, info.height as u32);
-    match info.pixel_format {
-        jpeg_decoder::PixelFormat::RGB24 => image::RgbImage::from_raw(w, h, pixels).map(image::DynamicImage::ImageRgb8),
-        jpeg_decoder::PixelFormat::L8 => image::GrayImage::from_raw(w, h, pixels).map(image::DynamicImage::ImageLuma8),
-        _ => None,
+    let taps = block.min(TAPS);
+    // Sample offsets centred in each of `taps` equal parts of the block
+    let offsets: Vec<usize> = (0..taps).map(|i| (2 * i + 1) * block / (2 * taps)).collect();
+    let count = (taps * taps) as u32;
+    let src = img.as_bytes();
+    let mut out = Vec::with_capacity(ow * oh * channels);
+    for oy in 0..oh {
+        for ox in 0..ow {
+            let mut sum = [0u32; 4];
+            for &dy in &offsets {
+                let row = (oy * block + dy) * w;
+                for &dx in &offsets {
+                    let at = (row + ox * block + dx) * channels;
+                    for c in 0..channels {
+                        sum[c] += src[at + c] as u32;
+                    }
+                }
+            }
+            for c in sum.iter().take(channels) {
+                out.push(((c + count / 2) / count) as u8);
+            }
+        }
+    }
+    let (ow, oh) = (ow as u32, oh as u32);
+    match channels {
+        1 => image::GrayImage::from_raw(ow, oh, out).map(D::ImageLuma8),
+        2 => image::GrayAlphaImage::from_raw(ow, oh, out).map(D::ImageLumaA8),
+        3 => image::RgbImage::from_raw(ow, oh, out).map(D::ImageRgb8),
+        _ => image::RgbaImage::from_raw(ow, oh, out).map(D::ImageRgba8),
     }
 }
 
-fn render_svg(path: &Path, px: u32) -> Option<image::DynamicImage> {
+pub(crate) fn render_svg(path: &Path, px: u32) -> Option<image::DynamicImage> {
     let data = std::fs::read(path).ok()?;
     let tree = resvg::usvg::Tree::from_data(&data, &resvg::usvg::Options::default()).ok()?;
     let size = tree.size();
@@ -1325,3 +1367,4 @@ mod tests {
         assert!(is_red(&decode_thumbnail(&file).expect("raw preview")));
     }
 }
+

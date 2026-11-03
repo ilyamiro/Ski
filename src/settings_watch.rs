@@ -1,4 +1,5 @@
-//! Watches `settings.json`, so an edit made by hand (or by another tool) takes effect while Ski runs.
+//! Watches `settings.json` and `managed.json`, so an edit made by hand, or a home-manager switch,
+//! takes effect while Ski runs.
 //!
 //! inotify tells when a writer is finished: `IN_CLOSE_WRITE` for a file written in place and
 //! `IN_MOVED_TO` for one renamed over the old, so the file is read once, complete, with no waiting.
@@ -18,6 +19,7 @@ impl SettingsWatch {
         let file = crate::settings::file()?;
         let dir = file.parent()?.to_path_buf();
         let name = file.file_name()?.to_owned();
+        let managed = crate::settings::managed_file()?.file_name()?.to_owned();
         if !dir.is_dir() && (crate::fs::admin::is_admin() || std::fs::create_dir_all(&dir).is_err()) {
             return None;
         }
@@ -25,7 +27,10 @@ impl SettingsWatch {
         let repaint = ctx.clone();
         let mut watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
             let Ok(event) = event else { return };
-            if finished_writing(&event.kind) && event.paths.iter().any(|p| p.file_name() == Some(name.as_os_str())) && tx.send(()).is_ok() {
+            let ours = |p: &std::path::PathBuf| p.file_name() == Some(name.as_os_str()) || p.file_name() == Some(managed.as_os_str());
+            // home-manager puts a new link in place, which is a creation rather than a write
+            let linked = matches!(event.kind, EventKind::Create(_) | EventKind::Remove(_));
+            if (finished_writing(&event.kind) || linked) && event.paths.iter().any(ours) && tx.send(()).is_ok() {
                 crate::app::wake_windows(&repaint);
             }
         })

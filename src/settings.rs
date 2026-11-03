@@ -67,6 +67,8 @@ pub struct Settings {
     pub type_ahead: bool,
     /// A sideways two-finger swipe over the listing goes back or forward.
     pub swipe_navigation: bool,
+    /// How far one notch of the mouse wheel scrolls, as a multiple of `SCROLL_STEP` points.
+    pub scroll_speed: f32,
     /// Switches of the bundled plugins by id; a plugin not listed keeps its default.
     pub plugins: std::collections::BTreeMap<String, bool>,
     /// Where searches look, and whether they match case or look inside files.
@@ -263,6 +265,7 @@ impl Default for Settings {
             type_to_filter: false,
             type_ahead: true,
             swipe_navigation: false,
+            scroll_speed: SCROLL_SPEED_DEFAULT,
             plugins: Default::default(),
             search_scope: Default::default(),
             search_case: false,
@@ -290,8 +293,34 @@ impl Default for Settings {
     }
 }
 
+/// Points one wheel notch scrolls at speed 1. egui's own 40 felt slow beside other file managers.
+pub const SCROLL_STEP: f32 = 60.0;
+pub const SCROLL_SPEED_DEFAULT: f32 = 1.0;
+/// What the slider in the settings covers; `settings.json` may hold any value in `SCROLL_SPEED_RANGE`.
+pub const SCROLL_SPEED_SLIDER: std::ops::RangeInclusive<f32> = 0.25..=2.25;
+pub const SCROLL_SPEED_RANGE: std::ops::RangeInclusive<f32> = 0.1..=5.0;
+
 pub(crate) fn file() -> Option<PathBuf> {
     crate::fs::admin::config_override().or_else(dirs::config_dir).map(|d| d.join("ski").join("settings.json"))
+}
+
+/// Settings fixed from outside, next to `settings.json`: the home-manager module writes them
+/// (`programs.ski.settings`). Ski never writes this file; what it sets wins over `settings.json`
+/// on every read, so a setting it names can be changed in the window only until the next read.
+pub(crate) fn managed_file() -> Option<PathBuf> {
+    file().map(|f| f.with_file_name("managed.json"))
+}
+
+/// `over` laid onto `base`: objects merge key by key, anything else replaces what was there.
+fn merge(base: &mut serde_json::Value, over: serde_json::Value) {
+    match (base, over) {
+        (serde_json::Value::Object(base), serde_json::Value::Object(over)) => {
+            for (key, value) in over {
+                merge(base.entry(key).or_insert(serde_json::Value::Null), value);
+            }
+        }
+        (base, over) => *base = over,
+    }
 }
 
 impl Settings {
@@ -299,11 +328,27 @@ impl Settings {
         Self::read().and_then(Result::ok).unwrap_or_default()
     }
 
-    /// The settings as the file has them now: `None` when there is no file to read, an error when
-    /// it is not valid JSON (say, half way through an edit by hand).
+    /// The settings as the files have them now, `managed.json` over `settings.json`: `None` when
+    /// there is neither, an error when one is not valid JSON (say, half way through an edit by hand).
     pub fn read() -> Option<Result<Self, serde_json::Error>> {
-        let text = std::fs::read_to_string(file()?).ok()?;
-        Some(serde_json::from_str(&text))
+        let own = file().and_then(|f| std::fs::read_to_string(f).ok());
+        let managed = managed_file().and_then(|f| std::fs::read_to_string(f).ok());
+        if own.is_none() && managed.is_none() {
+            return None;
+        }
+        Some(Self::from_texts(own.as_deref(), managed.as_deref()))
+    }
+
+    /// `settings.json`'s text with `managed.json`'s laid over it.
+    fn from_texts(own: Option<&str>, managed: Option<&str>) -> Result<Self, serde_json::Error> {
+        let mut value = match own {
+            Some(text) => serde_json::from_str(text)?,
+            None => serde_json::Value::Object(Default::default()),
+        };
+        if let Some(managed) = managed {
+            merge(&mut value, serde_json::from_str(managed)?);
+        }
+        serde_json::from_value(value)
     }
 
     /// The tabs of the last session that can still be opened, and the position of the one that was
@@ -328,5 +373,32 @@ impl Settings {
         if let Ok(json) = serde_json::to_string_pretty(self) {
             let _ = std::fs::write(file, json);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn managed_settings_win_key_by_key() {
+        let own = r#"{ "theme": "nord", "show_hidden": true, "plugins": { "git": false, "tags": true } }"#;
+        let managed = r#"{ "theme": "light", "icon_style": "System", "scroll_speed": 1.5, "plugins": { "git": true } }"#;
+        let s = Settings::from_texts(Some(own), Some(managed)).unwrap();
+        assert_eq!(s.theme, "light");
+        assert!(s.show_hidden, "a key only settings.json has is kept");
+        assert_eq!(s.icon_style, IconStyle::System);
+        assert_eq!(s.scroll_speed, 1.5);
+        assert_eq!(s.plugins.get("git"), Some(&true));
+        assert_eq!(s.plugins.get("tags"), Some(&true), "maps merge instead of being replaced");
+    }
+
+    #[test]
+    fn managed_settings_alone_fill_in_the_defaults() {
+        let s = Settings::from_texts(None, Some(r#"{ "view_mode": "Grid" }"#)).unwrap();
+        assert_eq!(s.view_mode, ViewMode::Grid);
+        assert_eq!(s.scroll_speed, SCROLL_SPEED_DEFAULT);
+        assert!(Settings::from_texts(Some("{ broken"), None).is_err());
+        assert!(Settings::from_texts(None, Some("[1, 2")).is_err());
     }
 }

@@ -18,7 +18,7 @@ sudo dnf install ./ski-*.x86_64.rpm        # Fedora, openSUSE
 sudo tar -xzf ski-*-x86_64-linux.tar.gz -C /   # any other distribution
 ```
 
-Docker, Cargo, Nix and the NixOS module are covered in [Installation](https://github.com/ilyamiro/Ski/wiki/Installation).
+Docker, Cargo, Nix, the NixOS module and the home-manager module are covered in [Installation](https://github.com/ilyamiro/Ski/wiki/Installation).
 
 ## Documentation
 

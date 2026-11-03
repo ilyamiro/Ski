@@ -879,8 +879,13 @@ impl SkiApp {
             }
         });
 
-        material::section_label(ui, tr("Touchpad"), &theme);
+        material::section_label(ui, tr("Mouse and touchpad"), &theme);
         group_card(ui, &theme, |ui| {
+            use crate::settings::{SCROLL_SPEED_DEFAULT, SCROLL_SPEED_SLIDER};
+            let marks = [(0.5, tr("Slow")), (SCROLL_SPEED_DEFAULT, tr("Default")), (1.5, tr("Fast")), (2.0, tr("Faster"))];
+            if material::marked_slider_row(ui, "beh_scroll_speed", icons::MOUSE, tr("Wheel scroll speed"), &theme, &mut self.settings.scroll_speed, SCROLL_SPEED_SLIDER, &marks, "×", Some(SCROLL_SPEED_DEFAULT)) {
+                self.persist_settings();
+            }
             let desc = Some(tr("Swipe sideways with two fingers over the files to go back or forward"));
             if switch_row_with(ui, "beh_swipe_navigation", icons::ARROW_BACK, tr("Swipe to go back and forward"), desc, &theme, self.settings.swipe_navigation).clicked() {
                 self.settings.swipe_navigation = !self.settings.swipe_navigation;

@@ -916,6 +916,17 @@ impl SkiApp {
         }
     }
 
+    /// Previews are made for the rows on screen first, then for the next two screenfuls below and
+    /// the one above, so scrolling finds them ready; the rest of the folder follows.
+    fn prioritize_previews(&self) {
+        let shown = self.visible_rows.clone();
+        let page = shown.len().max(1);
+        let below = shown.end..shown.end.saturating_add(2 * page);
+        let above = shown.start.saturating_sub(page)..shown.start;
+        let order = shown.chain(below).chain(above.rev());
+        self.thumbs.set_visible(order.filter_map(|i| self.items.get(i)).map(|i| i.path.as_path()));
+    }
+
     fn show_listing(&mut self, listing: std::io::Result<Vec<FileItem>>) {
         self.loading = false;
         match listing {
@@ -1475,6 +1486,10 @@ impl SkiApp {
         material::set_animations(self.settings.animations);
         crate::ui::icon_style::set(self.settings.icon_style);
         ctx.all_styles_mut(|s| s.animation_time = material::dur(material::ANIM));
+        // Ski's step for a wheel notch, times the setting
+        let speed = self.settings.scroll_speed;
+        let speed = if speed.is_finite() { speed.clamp(*crate::settings::SCROLL_SPEED_RANGE.start(), *crate::settings::SCROLL_SPEED_RANGE.end()) } else { crate::settings::SCROLL_SPEED_DEFAULT };
+        ctx.options_mut(|o| o.input_options.line_scroll_speed = crate::settings::SCROLL_STEP * speed);
 
         // Each window keeps its own input clock, so the fade, stepped by whichever window draws, runs on one shared clock
         static CLOCK: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
@@ -3408,7 +3423,7 @@ impl SkiApp {
         });
 
         self.visible_rows = folder_sizes::visible_rows(&item_rects, scroll_out.inner_rect);
-        self.thumbs.set_visible(self.items.get(self.visible_rows.clone()).unwrap_or_default().iter().map(|i| i.path.as_path()));
+        self.prioritize_previews();
         let drag_consumed = self.handle_drag_select(ui, scroll_out.inner_rect, scroll_out.state.clamped_offset().y, scroll_delta, &item_rects);
         self.last_item_rects = item_rects;
 
@@ -3512,7 +3527,7 @@ impl SkiApp {
         });
 
         self.visible_rows = folder_sizes::visible_rows(&item_rects, scroll_out.inner_rect);
-        self.thumbs.set_visible(self.items.get(self.visible_rows.clone()).unwrap_or_default().iter().map(|i| i.path.as_path()));
+        self.prioritize_previews();
         let drag_consumed = self.handle_drag_select(ui, scroll_out.inner_rect, scroll_out.state.clamped_offset().y, scroll_delta, &item_rects);
         self.last_item_rects = item_rects;
 

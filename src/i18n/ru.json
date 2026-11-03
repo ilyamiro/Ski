@@ -647,7 +647,6 @@
   "Restore last tabs": "Восстановить прошлые вкладки",
   "Reopen closed tab": "Открыть закрытую вкладку",
   "Only items deleted directly can be restored. Restore the folder this is in instead.": "Восстановить можно только напрямую удалённые элементы. Восстановите вместо этого папку, в которой он лежит.",
-  "Touchpad": "Тачпад",
   "Swipe sideways with two fingers over the files to go back or forward": "Проведите двумя пальцами вбок по файлам, чтобы перейти назад или вперёд",
   "Swipe to go back and forward": "Смахивание назад и вперёд",
   "Comparing the start and end of files": "Сравнение начала и конца файлов",
@@ -794,5 +793,10 @@
   "Preview": "Предпросмотр",
   "Pick a theme to start with": "Выберите тему для начала",
   "New theme": "Новая тема",
-  "Theme name": "Название темы"
+  "Theme name": "Название темы",
+  "Mouse and touchpad": "Мышь и тачпад",
+  "Wheel scroll speed": "Скорость прокрутки колесом",
+  "Slow": "Медленно",
+  "Fast": "Быстро",
+  "Faster": "Быстрее"
 }

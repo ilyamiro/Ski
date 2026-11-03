@@ -463,12 +463,27 @@ impl SerpantinumTheme {
             dirs::home_dir().map(|h| h.join(".config/serpantinum/qs_colors.json")),
         ];
 
+        let mut serpantinum = false;
         for path in candidate_paths.into_iter().flatten() {
             if let Ok(content) = fs::read_to_string(&path)
                 && let Ok(raw) = serde_json::from_str::<SerpantinumColorsRaw>(&content) {
                     theme.take_colors(raw);
+                    serpantinum = true;
                     break;
                 }
+        }
+
+        // Without Serpantinum, the desktop's own light/dark preference and accent (GNOME, KDE, ...)
+        if !serpantinum {
+            let desktop = super::appearance::current();
+            if desktop.light == Some(true)
+                && let Some(light) = preset("light") {
+                    theme = light.colors.to_theme();
+                }
+            if let Some(accent) = desktop.accent {
+                theme.mauve = accent;
+                theme.blue = accent;
+            }
         }
 
         // 2. Try to read borderRadius from ~/.config/serpantinum/settings.json

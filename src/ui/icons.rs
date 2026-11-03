@@ -27,6 +27,7 @@ pub const ARCHIVE: &str = "\u{f07b9}";
 pub const EXECUTABLE: &str = "\u{f018d}";
 pub const SYMLINK: &str = "\u{f0339}";
 
+pub const MOUSE: &str = "\u{f037d}";
 pub const HOME: &str = "\u{f06a1}";
 pub const DESKTOP: &str = "\u{f07c0}";
 pub const DOWNLOAD: &str = "\u{f0b8f}";

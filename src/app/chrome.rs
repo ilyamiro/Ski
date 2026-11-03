@@ -125,9 +125,81 @@ fn backdrop<R>(ui: &mut egui::Ui, fill: egui::Color32, show: impl FnOnce(&mut eg
 }
 
 fn flat_rect(ui: &egui::Ui, rect: egui::Rect, fill: egui::Color32) -> egui::Shape {
+    let painter = ui.painter();
+    let rect = crate::ui::material::snap(painter, rect);
     let mut mesh = egui::Mesh::default();
-    mesh.add_colored_rect(crate::ui::material::snap(ui.painter(), rect), fill);
+    let radius = window_corner_radius(ui.ctx());
+    if radius <= 0.0 {
+        mesh.add_colored_rect(rect, fill);
+        return egui::Shape::mesh(mesh);
+    }
+    // The corners this backdrop shares with the window are rounded; the inner edges stay flat
+    let window = crate::ui::material::snap(painter, ui.ctx().content_rect());
+    let near = |a: f32, b: f32| (a - b).abs() < 0.5;
+    let round = |x: f32, y: f32| near(x, if x < rect.center().x { window.left() } else { window.right() }) && near(y, if y < rect.center().y { window.top() } else { window.bottom() });
+    let r = radius.min(rect.width() / 2.0).min(rect.height() / 2.0);
+    let corners = [
+        (rect.left_top(), egui::vec2(1.0, 1.0)),
+        (rect.right_top(), egui::vec2(-1.0, 1.0)),
+        (rect.right_bottom(), egui::vec2(-1.0, -1.0)),
+        (rect.left_bottom(), egui::vec2(1.0, -1.0)),
+    ];
+    // Outline clockwise from the top left; an arc where the corner is the window's
+    let mut outline: Vec<(egui::Pos2, egui::Vec2, Option<usize>)> = Vec::new();
+    for (i, (corner, inward)) in corners.into_iter().enumerate() {
+        if !round(corner.x, corner.y) {
+            outline.push((corner, egui::Vec2::ZERO, None));
+            continue;
+        }
+        let centre = corner + inward * r;
+        const STEPS: usize = 12;
+        let start = std::f32::consts::PI + i as f32 * std::f32::consts::FRAC_PI_2;
+        for step in 0..=STEPS {
+            let angle = start + step as f32 / STEPS as f32 * std::f32::consts::FRAC_PI_2;
+            let dir = egui::vec2(angle.cos(), angle.sin());
+            outline.push((centre + dir * r, dir, Some(i)));
+        }
+    }
+    // A fan from the middle fills the shape without anti-aliasing, so panels still meet edge to edge
+    let middle = mesh.vertices.len() as u32;
+    mesh.colored_vertex(rect.center(), fill);
+    for (pos, ..) in &outline {
+        mesh.colored_vertex(*pos, fill);
+    }
+    let n = outline.len() as u32;
+    for i in 0..n {
+        mesh.add_triangle(middle, middle + 1 + i, middle + 1 + (i + 1) % n);
+    }
+    // Only the arcs get a soft one-pixel edge, which keeps them smooth
+    let feather = 1.0 / ui.ctx().pixels_per_point();
+    let clear = egui::Color32::TRANSPARENT;
+    for i in 0..n as usize {
+        let (a, da, arc) = outline[i];
+        let (b, db, next) = outline[(i + 1) % n as usize];
+        if arc.is_none() || arc != next {
+            continue;
+        }
+        let base = mesh.vertices.len() as u32;
+        mesh.colored_vertex(a, fill);
+        mesh.colored_vertex(b, fill);
+        mesh.colored_vertex(a + da * feather, clear);
+        mesh.colored_vertex(b + db * feather, clear);
+        mesh.add_triangle(base, base + 1, base + 2);
+        mesh.add_triangle(base + 1, base + 3, base + 2);
+    }
     egui::Shape::mesh(mesh)
+}
+
+/// How round the window's own corners are drawn. Ski's window has no frame, so on desktops that do
+/// not round windows themselves (GNOME, KDE, most others) its backgrounds are cut round; Hyprland
+/// rounds every window already, and a maximized or fullscreen window has square corners.
+pub(super) fn window_corner_radius(ctx: &egui::Context) -> f32 {
+    static COMPOSITOR_ROUNDS: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    if *COMPOSITOR_ROUNDS.get_or_init(|| std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE").is_some()) {
+        return 0.0;
+    }
+    let edge_to_edge = ctx.input(|i| i.viewport().maximized == Some(true) || i.viewport().fullscreen == Some(true));
+    if edge_to_edge { 0.0 } else { crate::ui::material::radius_window() as f32 }
 }
 
 /// Makes the empty part of a header around `rect` move the window, as a title bar would.

@@ -647,7 +647,6 @@
   "Restore last tabs": "Khôi phục các thẻ lần trước",
   "Reopen closed tab": "Mở lại thẻ đã đóng",
   "Only items deleted directly can be restored. Restore the folder this is in instead.": "Chỉ khôi phục được các mục bị xóa trực tiếp. Hãy khôi phục thư mục chứa mục này.",
-  "Touchpad": "Bàn di chuột",
   "Swipe sideways with two fingers over the files to go back or forward": "Vuốt ngang bằng hai ngón tay trên các tệp để quay lại hoặc tiến tới",
   "Swipe to go back and forward": "Vuốt để quay lại và tiến tới",
   "Comparing the start and end of files": "Đang so sánh phần đầu và phần cuối của các tệp",
@@ -794,5 +793,10 @@
   "Preview": "Xem trước",
   "Pick a theme to start with": "Chọn một chủ đề để bắt đầu",
   "New theme": "Chủ đề mới",
-  "Theme name": "Tên chủ đề"
+  "Theme name": "Tên chủ đề",
+  "Mouse and touchpad": "Chuột và bàn di chuột",
+  "Wheel scroll speed": "Tốc độ cuộn bánh xe",
+  "Slow": "Chậm",
+  "Fast": "Nhanh",
+  "Faster": "Nhanh hơn"
 }
