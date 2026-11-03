@@ -1799,22 +1799,16 @@ impl SkiApp {
         self.handle_drops(ctx);
 
         if ctx.egui_wants_keyboard_input() {
-            // In the search field the arrows walk through the results, and Enter opens the one reached
+            // Down leaves the search field for the results, where every arrow walks them as in a folder;
+            // Enter opens the result reached
             if self.show_search && !self.is_editing_path && !self.search_query.trim().is_empty() && self.dialog.is_none() {
-                let arrow = ctx.input_mut(|i| {
-                    let mut step = 0;
-                    for mods in [egui::Modifiers::NONE, egui::Modifiers::SHIFT] {
-                        if i.consume_key(mods, egui::Key::ArrowDown) {
-                            step = 1;
-                        } else if i.consume_key(mods, egui::Key::ArrowUp) {
-                            step = -1;
-                        }
+                if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown)) {
+                    if let Some(id) = ctx.memory(|m| m.focused()) {
+                        ctx.memory_mut(|m| m.surrender_focus(id));
                     }
-                    step
-                });
-                if arrow != 0 {
-                    let shift = ctx.input(|i| i.modifiers.shift);
-                    self.move_selection(arrow, shift);
+                    if self.selected_index.is_none() && !self.items.is_empty() {
+                        self.move_selection(1, false);
+                    }
                 } else if self.selected_index.is_some() && ctx.input(|i| i.key_pressed(egui::Key::Enter)) {
                     self.open_selected();
                 }
