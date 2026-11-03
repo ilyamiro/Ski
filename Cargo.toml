@@ -1,6 +1,6 @@
 [package]
 name = "ski"
-version = "0.4.8"
+version = "0.5.0"
 edition = "2024"
 description = "A small, fast, keyboard-friendly file manager"
 license = "MIT"
