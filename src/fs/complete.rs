@@ -9,8 +9,8 @@ const MAX_SUGGESTIONS: usize = 50;
 pub fn dir_completions(input: &str) -> Vec<String> {
     let Some(slash) = input.rfind('/') else { return Vec::new() };
     let (head, prefix) = input.split_at(slash + 1);
-    let dir = if head == "/" { Path::new("/") } else { Path::new(&head[..slash]) };
-    let Ok(entries) = std::fs::read_dir(dir) else { return Vec::new() };
+    let dir = if head == "/" { "/".to_owned() } else { expand_tilde(&head[..slash]) };
+    let Ok(entries) = std::fs::read_dir(Path::new(&dir)) else { return Vec::new() };
     let prefix_lower = prefix.to_lowercase();
     let show_hidden = prefix.starts_with('.');
 
@@ -32,6 +32,18 @@ pub fn dir_completions(input: &str) -> Vec<String> {
     names.sort_by_key(|n| n.to_lowercase());
     names.truncate(MAX_SUGGESTIONS);
     names.into_iter().map(|n| format!("{head}{n}")).collect()
+}
+
+/// `~` at the start of a typed path stands for the home folder.
+pub fn expand_tilde(input: &str) -> String {
+    let rest = match input.strip_prefix('~') {
+        Some(rest) if rest.is_empty() || rest.starts_with('/') => rest,
+        _ => return input.to_owned(),
+    };
+    match dirs::home_dir() {
+        Some(home) => format!("{}{rest}", home.to_string_lossy()),
+        None => input.to_owned(),
+    }
 }
 
 /// What Tab turns the input into: the longest start shared by all suggestions, and a trailing

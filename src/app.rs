@@ -2765,16 +2765,15 @@ impl SkiApp {
                 };
             }
         }
-        let resp = material::put_over(
-            ui,
-            edit_rect,
-            egui::TextEdit::singleline(&mut self.path_input)
-                .frame(egui::Frame::NONE)
-                .align(egui::Align2::LEFT_CENTER)
-                .font(egui::FontId::proportional(material::FONT_BODY))
-                .hint_text(tr("Type a path and press Enter")),
-        );
-        if let Some(clicked) = self.path_suggestion_popup(ui.ctx(), edit_rect) {
+        let builder = egui::UiBuilder::new().max_rect(edit_rect).layout(egui::Layout::centered_and_justified(egui::Direction::TopDown));
+        let output = egui::TextEdit::singleline(&mut self.path_input)
+            .frame(egui::Frame::NONE)
+            .align(egui::Align2::LEFT_CENTER)
+            .font(egui::FontId::proportional(material::FONT_BODY))
+            .hint_text(tr("Type a path and press Enter"))
+            .show(&mut ui.new_child(builder));
+        let resp = output.response.clone();
+        if let Some(clicked) = self.path_suggestion_popup(ui.ctx(), rect) {
             accepted = Some(format!("{clicked}/"));
         }
         if let Some(text) = accepted {
@@ -2796,6 +2795,25 @@ impl SkiApp {
             }
             self.path_suggestion_sel = None;
         }
+        // What Tab would fill in, shown faintly after the cursor
+        let at_end = output.cursor_range.is_some_and(|c| c.is_empty() && c.primary.index.0 == self.path_input.chars().count());
+        let completion = match self.path_suggestion_sel {
+            Some(i) => self.path_suggestions.get(i).map(|s| format!("{s}/")),
+            None => crate::fs::complete::extend(&self.path_input, &self.path_suggestions),
+        };
+        if let Some(rest) = completion.filter(|_| at_end && resp.has_focus()).and_then(|c| {
+            let rest: String = c.chars().skip(self.path_input.chars().count()).collect();
+            (c.to_lowercase().starts_with(&self.path_input.to_lowercase()) && !rest.is_empty()).then_some(rest)
+        }) {
+            let pos = output.galley_pos + egui::vec2(output.galley.rect.right(), 0.0);
+            ui.painter().with_clip_rect(edit_rect).text(
+                pos,
+                egui::Align2::LEFT_TOP,
+                rest,
+                egui::FontId::proportional(material::FONT_BODY),
+                self.theme.surface2,
+            );
+        }
         if !resp.has_focus() && !resp.lost_focus() {
             resp.request_focus();
         }
@@ -2812,8 +2830,8 @@ impl SkiApp {
             let on_popup = self.path_popup_rect.zip(ui.input(|i| i.pointer.interact_pos())).is_some_and(|(r, p)| r.contains(p));
             if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                 let target = match self.path_suggestion_sel {
-                    Some(i) => PathBuf::from(&self.path_suggestions[i]),
-                    None => PathBuf::from(&self.path_input),
+                    Some(i) => PathBuf::from(crate::fs::complete::expand_tilde(&self.path_suggestions[i])),
+                    None => PathBuf::from(crate::fs::complete::expand_tilde(&self.path_input)),
                 };
                 self.is_editing_path = false;
                 self.navigate_to(target);
@@ -2839,7 +2857,7 @@ impl SkiApp {
         let mut clicked = None;
         let area = egui::Area::new(egui::Id::unique("path_suggestions"))
             .order(egui::Order::Foreground)
-            .fixed_pos(egui::pos2(field.left() - 8.0, field.bottom() + 8.0))
+            .fixed_pos(egui::pos2(field.left(), field.bottom() + 8.0))
             .show(ctx, |ui| {
                 egui::Frame::new()
                     .fill(theme.surface1)
@@ -2847,7 +2865,7 @@ impl SkiApp {
                     .shadow(ctx.global_style().visuals.popup_shadow)
                     .inner_margin(egui::Margin::symmetric(6, 6))
                     .show(ui, |ui| {
-                        ui.set_width((field.width() - 16.0).max(200.0));
+                        ui.set_width(field.width() - 12.0);
                         egui::ScrollArea::vertical().max_height(260.0).show(ui, |ui| {
                             for (i, full) in self.path_suggestions.iter().enumerate() {
                                 let name = full.rsplit('/').next().unwrap_or(full);
