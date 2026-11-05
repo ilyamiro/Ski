@@ -668,6 +668,8 @@ pub struct SkiApp {
     theme_anim_start: Option<f64>,
     pub(crate) theme_dirty: bool,
     pub(crate) fonts_dirty: bool,
+    /// The main window was asked to close while a side window was up; it closes once they are gone
+    quit_pending: Option<std::time::Instant>,
     pins: Vec<PathBuf>,
     bookmarks: Vec<PathBuf>,
     /// The submenu entry (group, index) whose flyout is open, and where the flyout was drawn.
@@ -842,6 +844,7 @@ impl SkiApp {
             theme_anim_start: None,
             theme_dirty: false,
             fonts_dirty: false,
+            quit_pending: None,
             pins: Place::load_pins(),
             bookmarks: Place::load_bookmarks(),
             menu_sub: None,
@@ -1769,6 +1772,35 @@ impl SkiApp {
         }
     }
 
+    /// Closing the main window while Settings (or another window of its own) is up: those windows
+    /// are let go first. One on another workspace gets no frame callbacks, so it cannot finish
+    /// closing along with the main window, which then hangs. The close is held back until the main
+    /// window's own passes have dropped them.
+    fn close_with_side_windows(&mut self, ctx: &egui::Context) {
+        let asked = ctx.input(|i| i.viewport().close_requested());
+        let side_windows = ctx.input(|i| i.raw.viewports.len() > 1);
+        let patient = self.quit_pending.is_none_or(|since| since.elapsed() < std::time::Duration::from_secs(1));
+        if asked && patient && (side_windows || self.settings_win.is_some() || self.icon_gallery.is_some() || self.picker.is_some()) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            self.quit_pending.get_or_insert_with(std::time::Instant::now);
+            self.settings_win = None;
+            self.capturing_key = false;
+            self.icon_gallery = None;
+            self.picker = None;
+            if self.theme_editor {
+                self.close_theme_editor();
+            }
+        }
+        if let Some(since) = self.quit_pending {
+            // Not held back for long, whatever a window does
+            if side_windows && since.elapsed() < std::time::Duration::from_secs(1) {
+                ctx.request_repaint();
+            } else {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            }
+        }
+    }
+
     fn save_changed_settings(&mut self) {
         if self.chooser.is_none() {
             let (paths, active) = self.session();
@@ -2551,6 +2583,7 @@ impl eframe::App for SkiApp {
         self.poll_network(&ctx);
         self.drop_zones.clear();
         self.poll_config_files(&ctx);
+        self.close_with_side_windows(&ctx);
         self.sync_settings(&ctx);
         let shown_px = match self.view_mode {
             ViewMode::Grid => self.settings.grid_size.picture_size(),
