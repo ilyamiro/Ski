@@ -14,7 +14,8 @@ pub fn matches(patterns: &str, name: &str, case_sensitive: bool) -> bool {
         })
 }
 
-fn wildcard(pattern: &str, text: &str) -> bool {
+/// Whether all of `text` matches the one `pattern` (`*`, `?` and `[...]` classes), case as given.
+pub fn wildcard(pattern: &str, text: &str) -> bool {
     let (p, t): (Vec<char>, Vec<char>) = (pattern.chars().collect(), text.chars().collect());
     let (mut pi, mut ti) = (0, 0);
     let (mut star, mut mark) = (None, 0);

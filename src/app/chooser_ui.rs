@@ -306,7 +306,7 @@ mod tests {
         let app = app_in(&work, &["--chooser", "--mode", "open", "--filter", "All Supported Types\tm:image/png\tm:image/jpeg"]);
         let names: Vec<&str> = app.items.iter().map(|i| i.name.as_str()).collect();
         // Without a shared-mime-info database every file is shown, by design
-        if crate::fs::apps::mime_of_name("a.png").is_some() {
+        if !crate::fs::apps::mime_candidates_of_name("a.png").is_empty() {
             assert_eq!(names, ["Screenshot_2026-10-22-22403.png"]);
         }
         let _ = std::fs::remove_dir_all(&work);

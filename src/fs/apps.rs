@@ -470,45 +470,212 @@ fn mime_globs() -> &'static MimeGlobs {
     })
 }
 
-/// MIME type of a file from its name alone, the way the shared-mime-info database assigns it
-/// (longest matching extension first, then the heaviest pattern); `None` when no pattern matches.
-pub fn mime_of_name(name: &str) -> Option<String> {
+/// The types a file named `name` may be, the way the shared-mime-info database assigns them: the
+/// matches of the heaviest weight and then the longest pattern. Several when patterns tie (`.ogg` is
+/// audio or video, `.ts` video or a translation), none when no pattern matches.
+pub fn mime_candidates_of_name(name: &str) -> Vec<String> {
     let globs = mime_globs();
     let lower = name.to_lowercase();
-    let mut best: Option<(u32, usize, &str)> = None;
+    // (weight, pattern length, type)
+    let mut found: Vec<(u32, usize, &str)> = Vec::new();
     for (weight, mime, glob) in &globs.other {
-        if super::glob::matches(glob, &lower, true) && best.is_none_or(|(w, l, _)| (*weight, glob.len()) > (w, l)) {
-            best = Some((*weight, glob.len(), mime));
+        // One pattern each, matching whole names: `*,v` is not a list, and `core` claims no `scorecard.png`
+        let hit = if glob.contains(['*', '?', '[']) { super::glob::wildcard(glob, &lower) } else { *glob == lower };
+        if hit {
+            found.push((*weight, glob.len(), mime));
         }
     }
     // `a.tar.gz` is tried as `tar.gz` before `gz`
     for (i, _) in lower.match_indices('.') {
-        if let Some(found) = globs.by_extension.get(&lower[i + 1..]) {
-            let (weight, mime) = found.iter().max_by_key(|(w, _)| *w)?;
-            let len = lower.len() - i;
-            if best.is_none_or(|(w, l, _)| (*weight, len) > (w, l)) {
-                best = Some((*weight, len, mime));
-            }
+        if let Some(types) = globs.by_extension.get(&lower[i + 1..]) {
+            // Measured as the pattern `*.ext` is, to compare with the other patterns
+            let len = lower.len() - i + 1;
+            found.extend(types.iter().map(|(weight, mime)| (*weight, len, mime.as_str())));
             break;
         }
     }
-    best.map(|(_, _, mime)| mime.to_owned())
+    let Some(best) = found.iter().map(|(w, l, _)| (*w, *l)).max() else { return Vec::new() };
+    let mut out: Vec<String> = Vec::new();
+    for (_, _, mime) in found.into_iter().filter(|(w, l, _)| (*w, *l) == best) {
+        if !out.iter().any(|m| m == mime) {
+            out.push(mime.to_owned());
+        }
+    }
+    out
 }
 
-/// Whether a file named `name` is of the type `pattern` (`image/png`, or `image/*` for a family),
+/// One test of a `magic` section: `value` (under `mask`) found at `offset`, or at any of the
+/// `range` places from there.
+struct MagicRule {
+    indent: usize,
+    offset: usize,
+    range: usize,
+    value: Vec<u8>,
+    mask: Option<Vec<u8>>,
+}
+
+impl MagicRule {
+    fn test(&self, data: &[u8]) -> bool {
+        (self.offset..self.offset + self.range).any(|at| {
+            let Some(window) = data.get(at..at + self.value.len()) else { return false };
+            window.iter().zip(&self.value).enumerate().all(|(k, (byte, want))| {
+                let mask = self.mask.as_ref().map_or(0xff, |m| m[k]);
+                byte & mask == want & mask
+            })
+        })
+    }
+}
+
+/// Whether one of `rules` (the first one's indent being the level) passes along with, when it
+/// has any, one of the rules nested under it.
+fn magic_rules_match(rules: &[MagicRule], data: &[u8]) -> bool {
+    let mut i = 0;
+    while i < rules.len() {
+        let indent = rules[i].indent;
+        let end = rules[i + 1..].iter().position(|r| r.indent <= indent).map_or(rules.len(), |p| i + 1 + p);
+        let nested = &rules[i + 1..end];
+        if rules[i].test(data) && (nested.is_empty() || magic_rules_match(nested, data)) {
+            return true;
+        }
+        i = end;
+    }
+    false
+}
+
+/// One rule line of a `magic` file: `[indent]>offset=<u16 length><value>[&<mask>][~word][+range]\n`.
+fn parse_magic_rule(s: &[u8]) -> Option<(MagicRule, &[u8])> {
+    fn number(s: &[u8]) -> (usize, &[u8]) {
+        let digits = s.iter().take_while(|b| b.is_ascii_digit()).count();
+        let n = std::str::from_utf8(&s[..digits]).ok().and_then(|d| d.parse().ok()).unwrap_or(0);
+        (n, &s[digits..])
+    }
+    let (indent, s) = number(s);
+    let (offset, s) = number(s.strip_prefix(b">")?);
+    let s = s.strip_prefix(b"=")?;
+    let len = u16::from_be_bytes([*s.first()?, *s.get(1)?]) as usize;
+    let mut value = s.get(2..2 + len)?.to_vec();
+    let mut s = &s[2 + len..];
+    let mut mask = None;
+    if let Some(rest) = s.strip_prefix(b"&") {
+        mask = Some(rest.get(..len)?.to_vec());
+        s = &rest[len..];
+    }
+    let mut word = 1;
+    if let Some(rest) = s.strip_prefix(b"~") {
+        (word, s) = number(rest);
+    }
+    let mut range = 1;
+    if let Some(rest) = s.strip_prefix(b"+") {
+        (range, s) = number(rest);
+    }
+    // Values written as 16- or 32-bit host-order words are stored big-endian
+    if cfg!(target_endian = "little") && word > 1 {
+        for bytes in std::iter::once(&mut value).chain(mask.as_mut()) {
+            bytes.chunks_mut(word).for_each(<[u8]>::reverse);
+        }
+    }
+    // Anything a later version of the format adds is skipped up to the end of the line
+    let end = s.iter().position(|&b| b == b'\n')?;
+    Some((MagicRule { indent, offset, range: range.max(1), value, mask }, &s[end + 1..]))
+}
+
+/// The content tests of the shared-mime-info database (`magic`): (priority, type, rules), highest
+/// priority first.
+fn mime_magic() -> &'static [(u32, String, Vec<MagicRule>)] {
+    static MAGIC: OnceLock<Vec<(u32, String, Vec<MagicRule>)>> = OnceLock::new();
+    MAGIC.get_or_init(|| {
+        let mut sections = Vec::new();
+        for dir in application_dirs() {
+            let Some(share) = dir.parent() else { continue };
+            let Ok(bytes) = std::fs::read(share.join("mime").join("magic")) else { continue };
+            let Some(mut rest) = bytes.strip_prefix(b"MIME-Magic\0\n") else { continue };
+            while let Some(header) = rest.strip_prefix(b"[") {
+                let Some(close) = header.iter().position(|&b| b == b']') else { break };
+                let head = String::from_utf8_lossy(&header[..close]).into_owned();
+                rest = header[close + 1..].strip_prefix(b"\n").unwrap_or(&header[close + 1..]);
+                let mut rules = Vec::new();
+                while !rest.is_empty() && rest[0] != b'[' {
+                    let Some((rule, after)) = parse_magic_rule(rest) else { break };
+                    rules.push(rule);
+                    rest = after;
+                }
+                if let Some((priority, mime)) = head.split_once(':').and_then(|(p, m)| Some((p.parse().ok()?, m.to_owned()))) {
+                    sections.push((priority, mime, rules));
+                }
+                if !rest.is_empty() && rest[0] != b'[' {
+                    break;
+                }
+            }
+        }
+        sections.sort_by_key(|(priority, _, _)| std::cmp::Reverse(*priority));
+        sections
+    })
+}
+
+/// The type the content of a file shows, with the priority of the test that told it.
+fn sniff_mime(data: &[u8]) -> Option<(u32, &'static str)> {
+    mime_magic().iter().find(|(_, _, rules)| magic_rules_match(rules, data)).map(|(p, m, _)| (*p, m.as_str()))
+}
+
+/// Whether the start of a file reads as text: UTF-8 without control characters other than spacing.
+fn looks_like_text(data: &[u8]) -> bool {
+    let valid = match std::str::from_utf8(data) {
+        Ok(_) => data.len(),
+        // A character cut off at the end of the sample still counts
+        Err(e) if e.error_len().is_none() => e.valid_up_to(),
+        Err(_) => return false,
+    };
+    !data[..valid].iter().any(|&b| b < 0x20 && !b"\t\n\r\x0c\x08\x1b".contains(&b) || b == 0x7f)
+}
+
+/// The types a file may be, as GLib (and so GTK and Nautilus) decides: by name, and where the name
+/// says nothing or is ambiguous, by the first 16 KiB of its content.
+pub fn mime_candidates_of_path(path: &Path) -> Vec<String> {
+    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let by_name = mime_candidates_of_name(&name);
+    if by_name.len() == 1 {
+        return by_name;
+    }
+    // Only regular files are read: a named pipe would never answer
+    let mut data = Vec::new();
+    if std::fs::metadata(path).is_ok_and(|m| m.is_file() && m.len() > 0)
+        && let Ok(file) = std::fs::File::open(path)
+    {
+        use std::io::Read;
+        let _ = file.take(16 * 1024).read_to_end(&mut data);
+    }
+    let sniffed = sniff_mime(&data).or_else(|| (!data.is_empty() && looks_like_text(&data)).then_some((0, "text/plain")));
+    match sniffed {
+        None if by_name.is_empty() => vec!["application/octet-stream".to_owned()],
+        // Conflicting names the content cannot settle: any of them may be right, so all are kept
+        None => by_name,
+        Some((_, mime)) if by_name.is_empty() => vec![mime.to_owned()],
+        Some((priority, mime)) if priority >= 80 => vec![mime.to_owned()],
+        // A weaker content match breaks the tie between the names it agrees with
+        Some((_, mime)) => match by_name.iter().find(|n| mime_chain(n).iter().any(|c| c == mime)) {
+            Some(n) => vec![n.clone()],
+            None => by_name,
+        },
+    }
+}
+
+/// Whether the file at `path` is of the type `pattern` (`image/png`, or `image/*` for a family),
 /// counting the types it derives from: a `.docx` is an `application/zip`.
-pub fn name_is_mime(name: &str, pattern: &str) -> bool {
+pub fn path_is_mime(path: &Path, pattern: &str) -> bool {
     // Without a database nothing can be told apart, and hiding every file is worse than showing all
     if mime_globs().by_extension.is_empty() {
         return true;
     }
-    let mime = mime_of_name(name).unwrap_or_else(|| "application/octet-stream".to_owned());
-    let chain = mime_chain(&mime);
-    match pattern.strip_suffix("/*") {
-        Some(family) => chain.iter().any(|m| m.split_once('/').is_some_and(|(f, _)| f == family)),
-        None => {
-            let wanted = mime_chain(pattern).into_iter().next().unwrap_or_else(|| pattern.to_owned());
-            chain.contains(&wanted)
-        }
+    let wanted = mime_chain(pattern).into_iter().next().unwrap_or_else(|| pattern.to_owned());
+    // Every file is a kind of `application/octet-stream`
+    if wanted == "application/octet-stream" {
+        return true;
     }
+    mime_candidates_of_path(path).iter().any(|mime| {
+        let chain = mime_chain(mime);
+        match wanted.strip_suffix("/*") {
+            Some(family) => chain.iter().any(|m| m.split_once('/').is_some_and(|(f, _)| f == family)),
+            None => chain.contains(&wanted),
+        }
+    })
 }

@@ -36,7 +36,7 @@ impl Filter {
         let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
         self.patterns.iter().any(|p| match p {
             Pattern::Glob(g) => crate::fs::glob::matches(g, &name, false),
-            Pattern::Mime(m) => crate::fs::apps::name_is_mime(&name, m),
+            Pattern::Mime(m) => crate::fs::apps::path_is_mime(path, m),
         })
     }
 }
@@ -338,7 +338,7 @@ mod tests {
         let f = Filter { label: "Images".into(), patterns: vec![Pattern::Mime("image/*".into()), Pattern::Glob("*.xyz".into())] };
         assert!(f.accepts(Path::new("/x/a.xyz")));
         // Without a shared-mime-info database (a build sandbox) MIME patterns show everything
-        if crate::fs::apps::mime_of_name("a.png").is_some() {
+        if !crate::fs::apps::mime_candidates_of_name("a.png").is_empty() {
             assert!(f.accepts(Path::new("/x/a.PNG")));
             assert!(!f.accepts(Path::new("/x/a.txt")));
         }
@@ -348,13 +348,45 @@ mod tests {
     fn mime_filters_follow_the_shared_database() {
         let mime = |m: &str| Filter { label: String::new(), patterns: vec![Pattern::Mime(m.into())] };
         // Skipped where no shared-mime-info is installed, which then shows everything by design
-        if crate::fs::apps::mime_of_name("a.png").is_none() {
+        if crate::fs::apps::mime_candidates_of_name("a.png").is_empty() {
             return;
         }
         assert!(mime("application/zip").accepts(Path::new("/x/report.docx")));
         assert!(mime("text/*").accepts(Path::new("/x/main.rs")));
         assert!(!mime("image/*").accepts(Path::new("/x/a.tar.gz")));
         assert!(!mime("application/x-foo").accepts(Path::new("/x/a.png")));
+        // Whole-name patterns (`core`, `install`, `makefile`) do not claim names that merely contain them
+        for name in ["scorecard.png", "hardcore.jpg", "install_guide.png", "credits.webp"] {
+            assert!(mime("image/*").accepts(&Path::new("/x").join(name)), "{name}");
+        }
+        assert!(mime("text/x-makefile").accepts(Path::new("/x/Makefile")));
+        // The RCS pattern `*,v` is one pattern, not `*` and `v`: a `.gz` stays gzip, not text
+        assert!(mime("application/gzip").accepts(Path::new("/x/logs.gz")));
+        assert!(!mime("text/*").accepts(Path::new("/x/logs.gz")));
+        // Every file is a kind of octet-stream
+        assert!(mime("application/octet-stream").accepts(Path::new("/x/a.png")));
+        // A name of several possible types, with no content to settle it, may be any of them
+        assert!(mime("video/*").accepts(Path::new("/x/clip.ts")));
+        assert!(mime("text/*").accepts(Path::new("/x/clip.ts")));
+    }
+
+    #[test]
+    fn mime_filters_read_the_content_of_unnamed_files() {
+        let mime = |m: &str| Filter { label: String::new(), patterns: vec![Pattern::Mime(m.into())] };
+        if crate::fs::apps::mime_candidates_of_name("a.png").is_empty() {
+            return;
+        }
+        let work = std::env::temp_dir().join(format!("ski_chooser_sniff_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&work);
+        std::fs::create_dir_all(&work).unwrap();
+        std::fs::write(work.join("photo"), b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR\0\0\0\x01\0\0\0\x01\x08\x06\0\0\0").unwrap();
+        std::fs::write(work.join("notes"), "plain words\n").unwrap();
+        assert!(mime("image/png").accepts(&work.join("photo")));
+        assert!(mime("image/*").accepts(&work.join("photo")));
+        assert!(!mime("text/*").accepts(&work.join("photo")));
+        assert!(mime("text/plain").accepts(&work.join("notes")));
+        assert!(!mime("image/*").accepts(&work.join("notes")));
+        let _ = std::fs::remove_dir_all(&work);
     }
 
     #[test]
