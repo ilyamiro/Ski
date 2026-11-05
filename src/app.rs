@@ -1060,6 +1060,18 @@ impl SkiApp {
                 }
             }
         }
+        if is_runnable_appimage(path) {
+            let started = std::process::Command::new(path)
+                .current_dir(path.parent().unwrap_or(Path::new("/")))
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn();
+            if let Err(err) = started {
+                self.set_toast(trf("Failed to open file: {}", &[&err]));
+            }
+            return;
+        }
         if let Err(err) = open::that_detached(path) {
             self.set_toast(trf("Failed to open file: {}", &[&err]));
         }
@@ -6941,4 +6953,11 @@ mod tests {
         std::fs::remove_dir_all(&base).unwrap();
     }
 
+}
+
+/// An `.AppImage` that has the executable bit: opening it runs it, like a double click elsewhere.
+fn is_runnable_appimage(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    path.extension().is_some_and(|e| e.eq_ignore_ascii_case("appimage"))
+        && std::fs::metadata(path).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
 }
