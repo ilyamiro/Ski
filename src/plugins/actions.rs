@@ -46,6 +46,9 @@ pub struct Definition {
 }
 
 struct Entry {
+    /// The file's name: what tells the action apart, whatever it is called or in whatever order
+    /// the folder lists it.
+    file: String,
     def: Definition,
     /// Menu labels are `&'static str`; `intern` leaks each distinct text once, so reloading is free.
     label: &'static str,
@@ -187,7 +190,8 @@ fn read_entry(path: &Path) -> Result<Option<Entry>, String> {
         return Ok(None);
     };
     let name = if def.name.trim().is_empty() { stem } else { def.name.clone() };
-    Ok(Some(Entry { label: intern(&name), def, script }))
+    let file = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    Ok(Some(Entry { file, label: intern(&name), def, script }))
 }
 
 impl Definition {
@@ -287,20 +291,19 @@ impl Plugin for Actions {
     }
 
     fn item_catalog(&self) -> Vec<MenuItem> {
-        self.entries.iter().enumerate().map(|(i, e)| MenuItem::new(i.to_string(), e.label, icons::TERMINAL).group(tr("Actions"))).collect()
+        self.entries.iter().map(|e| MenuItem::new(e.file.clone(), e.label, icons::TERMINAL).group(tr("Actions"))).collect()
     }
 
     fn menu_items(&self, selection: &[FileItem]) -> Vec<MenuItem> {
         self.entries
             .iter()
-            .enumerate()
-            .filter(|(_, e)| e.def.applies(selection))
-            .map(|(i, e)| MenuItem::new(i.to_string(), e.label, icons::TERMINAL).group(tr("Actions")))
+            .filter(|e| e.def.applies(selection))
+            .map(|e| MenuItem::new(e.file.clone(), e.label, icons::TERMINAL).group(tr("Actions")))
             .collect()
     }
 
     fn run(&mut self, id: &str, paths: &[PathBuf], dir: &Path) -> Reaction {
-        let Some(entry) = id.parse::<usize>().ok().and_then(|i| self.entries.get(i)) else { return Reaction::None };
+        let Some(entry) = self.entries.iter().find(|e| e.file == id) else { return Reaction::None };
         let mut command = match &entry.script {
             Some(script) => {
                 let mut c = Command::new(script);
@@ -396,7 +399,9 @@ mod tests {
         let mut actions = Actions::in_dir(Some(dir.clone()));
         assert_eq!(actions.entries.len(), 2);
         assert!(!actions.busy());
-        actions.run("0", &[PathBuf::from("one"), PathBuf::from("two words")], &dir);
+        // An action goes by its file, not by its name or its place in the folder
+        assert_eq!(actions.item_catalog().iter().map(|i| i.id.as_str()).collect::<Vec<_>>(), ["a.json", "tool.sh"]);
+        actions.run("a.json", &[PathBuf::from("one"), PathBuf::from("two words")], &dir);
         let message = actions.done_rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
         assert!(message.contains("List"), "{message}");
         let out = std::fs::read_to_string(dir.join("out.txt")).unwrap();

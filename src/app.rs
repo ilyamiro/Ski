@@ -178,13 +178,13 @@ enum MenuAction {
 /// The key Settings knows an entry of a menu by: a built-in one's, or the plugin's entry.
 fn entry_key(entry: &MenuEntry) -> Option<MenuKey> {
     match &entry.2 {
-        MenuAction::Plugin(plugin, id, ..) => Some(crate::settings::plugin_menu_key(plugin, id, entry.1)),
+        MenuAction::Plugin(plugin, id, ..) => Some(crate::settings::plugin_menu_key(plugin, id)),
         action => action.menu_key(),
     }
 }
 
 /// An entry of the menu taken apart: its key and, for a plugin's entry that sat in the submenu
-/// the plugin folds its entries into, that submenu's name.
+/// the plugin folds its entries into, that plugin's id.
 type PoolEntry = (MenuKey, Option<&'static str>, MenuEntry);
 
 fn take_key(pool: &mut Vec<PoolEntry>, key: MenuKey, in_submenu: bool) -> Vec<MenuEntry> {
@@ -235,6 +235,10 @@ fn customize_menu(groups: &mut Vec<Vec<MenuEntry>>, config: &crate::settings::Me
                 && sub.len() == 1
             {
                 *entry = sub.remove(0);
+                // Out of "Open in", the entry needs its whole name again
+                if let Some(key) = entry_key(entry).filter(|k| k.renamed_by_place()) {
+                    entry.1 = key.label(false);
+                }
             }
         }
     }
@@ -263,8 +267,11 @@ fn customize_menu(groups: &mut Vec<Vec<MenuEntry>>, config: &crate::settings::Me
         for entry in group {
             let (folded, singles) = match entry.2 {
                 MenuAction::Submenu(sub) => {
-                    let plugin = sub.first().is_some_and(|e| matches!(e.2, MenuAction::Plugin(..)));
-                    (plugin.then_some(entry.1), sub)
+                    let plugin = match sub.first() {
+                        Some((_, _, MenuAction::Plugin(plugin, ..))) => Some(*plugin),
+                        _ => None,
+                    };
+                    (plugin, sub)
                 }
                 _ => (None, vec![entry]),
             };
@@ -285,8 +292,8 @@ fn customize_menu(groups: &mut Vec<Vec<MenuEntry>>, config: &crate::settings::Me
                 MenuNode::Submenu(id, keys) => {
                     let mut inside: Vec<MenuEntry> = keys.iter().flat_map(|key| take_key(&mut pool, *key, true)).collect();
                     // What a plugin adds to its submenu later (a new tag) joins it
-                    if let SubmenuId::Group(name) = id {
-                        inside.extend(take_folded(&mut pool, name.0));
+                    if let SubmenuId::Group(plugin) = id {
+                        inside.extend(take_folded(&mut pool, plugin.0));
                     }
                     let made = matches!(id, SubmenuId::Custom(_));
                     match inside.len() {
@@ -321,7 +328,7 @@ fn customize_menu(groups: &mut Vec<Vec<MenuEntry>>, config: &crate::settings::Me
         if entries.len() == 1 {
             left.push(entries.remove(0));
         } else {
-            left.push((entries[0].0, name, MenuAction::Submenu(entries)));
+            left.push((entries[0].0, crate::settings::plugin_group_name(name), MenuAction::Submenu(entries)));
         }
     }
     left.extend(pool.into_iter().map(|(_, _, entry)| entry));
@@ -6619,12 +6626,12 @@ mod tests {
         let build = || {
             vec![
                 vec![(icons::COPY, "Copy", MenuAction::Copy(vec![]))],
-                vec![(icons::ADD, "Git", MenuAction::Submenu(vec![plugin("stage", "Stage"), plugin("diff", "Diff"), plugin("new", "Fresh")]))],
+                vec![(icons::ADD, "Versionskontrolle", MenuAction::Submenu(vec![plugin("stage", "Stage"), plugin("diff", "Diff"), plugin("new", "Fresh")]))],
             ]
         };
-        let stage = plugin_menu_key("git", "stage", "Stage");
-        let diff = plugin_menu_key("git", "diff", "Diff");
-        let git = SubmenuId::Group(crate::settings::PluginKey("Git"));
+        let stage = plugin_menu_key("git", "stage");
+        let diff = plugin_menu_key("git", "diff");
+        let git = SubmenuId::Group(crate::settings::PluginKey("git"));
         let mut groups = build();
         let config = MenuConfig {
             hidden: vec![diff],
@@ -6691,6 +6698,18 @@ mod tests {
         for kept in ["Copy", "Cut", "Duplicate", "Link", "Compress", "Properties", "Plugin"] {
             assert!(all.iter().any(|l| l.contains(kept)), "{kept} lost: {all:?}");
         }
+    }
+
+    #[test]
+    fn a_submenu_left_with_one_entry_gives_it_back_its_full_name() {
+        use crate::settings::{MenuConfig, MenuKey as K};
+        let mut groups = vec![vec![(icons::NEW_TAB, "Open in", MenuAction::Submenu(vec![
+            (icons::NEW_TAB, "New tab", MenuAction::OpenInNewTab(PathBuf::from("/x"))),
+            (icons::NEW_WINDOW, "New window", MenuAction::OpenInNewWindow(PathBuf::from("/x"))),
+        ]))]];
+        let config = MenuConfig { hidden: vec![K::OpenInNewWindow], ..Default::default() };
+        customize_menu(&mut groups, &config, MenuKind::Folder);
+        assert_eq!(labels(&groups), vec![vec!["Open in new tab"]]);
     }
 
     /// "Always" measures the folders of the listing, the selection's status line adds them up, and

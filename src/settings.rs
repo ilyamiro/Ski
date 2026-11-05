@@ -171,7 +171,8 @@ pub enum SubmenuId {
     MoreActions,
     /// One the user made, which `MenuConfig::custom_groups` names.
     Custom(u32),
-    /// The submenu a plugin folds its entries into (Git, Tags, Actions), by its name.
+    /// The submenu a plugin folds its entries into (Git, Tags, Actions), by the plugin's id, which
+    /// no language changes.
     Group(PluginKey),
 }
 
@@ -207,11 +208,9 @@ impl<'de> Deserialize<'de> for PluginKey {
     }
 }
 
-/// The key of a plugin's entry. Custom actions are told apart by name, since their ids are only
-/// their places in the folder.
-pub fn plugin_menu_key(plugin: &str, id: &str, label: &str) -> MenuKey {
-    let entry = if plugin == "actions" { label } else { id };
-    MenuKey::Plugin(PluginKey(crate::plugins::intern(&format!("{plugin}:{entry}"))))
+/// The key of a plugin's entry: the plugin and the entry's id, never its name.
+pub fn plugin_menu_key(plugin: &str, id: &str) -> MenuKey {
+    MenuKey::Plugin(PluginKey(crate::plugins::intern(&format!("{plugin}:{id}"))))
 }
 
 impl SubmenuId {
@@ -231,8 +230,18 @@ impl SubmenuId {
             SubmenuId::Select => tr("Select"),
             SubmenuId::MoreActions => tr("More actions"),
             SubmenuId::Custom(_) => "",
-            SubmenuId::Group(name) => name.0,
+            SubmenuId::Group(plugin) => plugin_group_name(plugin.0),
         }
+    }
+}
+
+/// The name of the submenu a plugin folds its entries into, in the language in use.
+pub fn plugin_group_name(plugin: &'static str) -> &'static str {
+    match plugin {
+        "git" => tr("Git"),
+        "tags" => tr("Tags"),
+        "actions" => tr("Actions"),
+        other => other,
     }
 }
 
@@ -703,6 +712,22 @@ impl Settings {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_customised_context_menu_survives_saving_and_old_files_still_load() {
+        let mut settings = Settings::default();
+        let key = plugin_menu_key("git", "stage");
+        settings.context_menus.file = MenuConfig {
+            hidden: vec![MenuKey::Copy, key],
+            layout: vec![vec![MenuNode::Entry(key), MenuNode::Submenu(SubmenuId::Custom(3), vec![MenuKey::Cut])]],
+            custom_groups: vec![CustomGroup { id: 3, name: "Mine".into(), icon: icons::MORE.into() }],
+        };
+        let text = serde_json::to_string(&settings).unwrap();
+        let back: Settings = serde_json::from_str(&text).unwrap();
+        assert_eq!(back.context_menus, settings.context_menus);
+        let without: Settings = serde_json::from_str("{}").unwrap();
+        assert_eq!(without.context_menus, ContextMenus::default());
+    }
+
     use super::*;
 
     #[test]

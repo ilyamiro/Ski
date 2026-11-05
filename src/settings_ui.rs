@@ -294,7 +294,9 @@ fn edit_row(ui: &mut egui::Ui, theme: &SerpantinumTheme, id: impl std::hash::Has
     let (full, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), material::ENTRY_HEIGHT), egui::Sense::hover());
     let rect = egui::Rect::from_min_max(egui::pos2(full.left() + indent, full.top()), full.right_bottom());
     let id = ui.make_persistent_id(id);
-    let grip = ui.interact(rect, id, egui::Sense::drag());
+    // The eye and the pencil are buttons: pressing them must not start a drag of the row
+    let grip_end = rect.right() - if pencil { 72.0 } else if eye { 38.0 } else { 0.0 };
+    let grip = ui.interact(egui::Rect::from_min_max(rect.min, egui::pos2(grip_end.max(rect.left()), rect.bottom())), id, egui::Sense::drag());
     let eye_rect = egui::Rect::from_center_size(egui::pos2(rect.right() - 22.0, rect.center().y), egui::vec2(30.0, 30.0));
     let eye_resp = eye.then(|| ui.interact(eye_rect, id.with("eye"), egui::Sense::click()));
     let pencil_rect = egui::Rect::from_center_size(egui::pos2(rect.right() - 56.0, rect.center().y), egui::vec2(30.0, 30.0));
@@ -990,7 +992,7 @@ impl SkiApp {
             .plugins
             .menu_catalog(kind == MenuKind::Background)
             .into_iter()
-            .map(|(plugin, item)| (crate::settings::plugin_menu_key(plugin, &item.id, item.label), item.group, item.icon, item.label))
+            .map(|(plugin, item)| (crate::settings::plugin_menu_key(plugin, &item.id), item.group.map(|_| plugin), item.icon, item.label))
             .collect();
         let plugin_keys: Vec<(MenuKey, Option<&'static str>)> = plugin_entries.iter().map(|e| (e.0, e.1)).collect();
         // The icon and name of an entry; a plugin's come from the plugin
@@ -1019,11 +1021,16 @@ impl SkiApp {
         let dragging_sub = drag.is_some_and(|d| matches!(d.item, DragItem::Sub(_)));
 
         material::section_label(ui, tr("Drag entries to rearrange the menu, and use the eye to hide one"), &theme);
-        if form.is_none()
-            && material::button(ui, "cm_new_group", Some(icons::ADD), tr("New group…"), &theme, material::ButtonKind::Tonal, true).clicked()
-        {
-            *form = Some(MenuForm { editing: None, name: String::new(), icon: 0, picks: Vec::new() });
-        }
+        let mut reset = false;
+        ui.horizontal(|ui| {
+            if form.is_none()
+                && material::button(ui, "cm_new_group", Some(icons::ADD), tr("New group…"), &theme, material::ButtonKind::Tonal, true).clicked()
+            {
+                *form = Some(MenuForm { editing: None, name: String::new(), icon: 0, picks: Vec::new() });
+            }
+            reset = config != MenuConfig::default()
+                && material::button(ui, "cm_reset", Some(icons::RESTORE), tr("Reset this menu"), &theme, material::ButtonKind::Tonal, true).clicked();
+        });
         if let Some(f) = form.as_mut() {
             #[derive(Clone, Copy)]
             enum Done {
@@ -1318,9 +1325,7 @@ impl SkiApp {
             self.persist_settings();
         }
         ui.label(egui::RichText::new(tr("The Trash menu is not affected")).size(material::FONT_CAPTION).color(theme.subtext1));
-        if *self.settings.context_menus.get(kind) != MenuConfig::default()
-            && material::button(ui, "cm_reset", Some(icons::RESTORE), tr("Reset this menu"), &theme, material::ButtonKind::Tonal, true).clicked()
-        {
+        if reset {
             *self.settings.context_menus.get_mut(kind) = MenuConfig::default();
             self.persist_settings();
         }
