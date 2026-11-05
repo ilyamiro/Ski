@@ -798,5 +798,13 @@
   "Wheel scroll speed": "Vitesse de défilement de la molette",
   "Slow": "Lente",
   "Fast": "Rapide",
-  "Faster": "Plus rapide"
+  "Faster": "Plus rapide",
+  "Context menu": "Menu contextuel",
+  "The Trash menu is not affected": "Le menu de la corbeille n'est pas concerné",
+  "Empty space": "Espace vide",
+  "Reset this menu": "Réinitialiser ce menu",
+  "Drag entries to rearrange the menu, and use the eye to hide one": "Faites glisser les entrées pour réorganiser le menu, et utilisez l'œil pour en masquer une",
+  "New group…": "Nouveau groupe…",
+  "Group name": "Nom du groupe",
+  "Entries to put in it": "Entrées à y mettre"
 }

@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::app::ViewMode;
 use crate::i18n::tr;
+use crate::ui::icons;
 use crate::fs::places::SidebarPlace;
 use crate::fs::scanner::{SortBy, SortOrder};
 use crate::ui::icon_style::IconStyle;
@@ -87,6 +88,8 @@ pub struct Settings {
     pub hidden_places: Vec<SidebarPlace>,
     /// Places off by default (`SidebarPlace::opt_in`) that the user turned on.
     pub shown_places: Vec<SidebarPlace>,
+    /// How the user customised the right-click menus in Settings → Context menu.
+    pub context_menus: ContextMenus,
     pub show_status_bar: bool,
     pub show_thumbnails: bool,
     /// Previews and folder item counts also for files on servers, which reads them over the network.
@@ -102,6 +105,327 @@ pub struct Settings {
     pub folder_views: std::collections::HashMap<PathBuf, ViewMode>,
     // Keybindings: overrides only; missing actions use `Action::default_binding`.
     pub keybinds: std::collections::BTreeMap<String, Vec<String>>,
+}
+
+/// An entry of the right-click menu of files and folders that Settings can hide. Entries that go
+/// by two names (Pin and Unpin) share one key, and a submenu has no key of its own: it shows while
+/// any of its entries does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum MenuKey {
+    Open,
+    OpenInNewTab,
+    OpenInNewWindow,
+    OpenTerminal,
+    OpenAsAdmin,
+    OpenWith,
+    ShowInFolder,
+    Bookmark,
+    Pin,
+    CustomIconImage,
+    CustomIconGlyph,
+    UseAsFolderIcon,
+    Copy,
+    Cut,
+    Paste,
+    SelectAll,
+    InvertSelection,
+    SelectMatching,
+    Rename,
+    Trash,
+    DeleteForever,
+    CopyTo,
+    MoveTo,
+    Duplicate,
+    CreateLink,
+    Compress,
+    ExtractHere,
+    ExtractTo,
+    NewFile,
+    NewFolder,
+    UndoRedo,
+    Refresh,
+    CalculateSize,
+    CopyPath,
+    Properties,
+    /// An entry a plugin adds; its icon and name come from the plugin.
+    Plugin(PluginKey),
+}
+
+/// The right-click menus Settings can customise.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum MenuKind {
+    /// A file.
+    File,
+    /// A folder.
+    Folder,
+    /// The empty part of a folder.
+    Background,
+}
+
+/// A submenu of the right-click menus. They are fixed; Settings moves entries in and out of them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum SubmenuId {
+    OpenIn,
+    CustomIcon,
+    Select,
+    MoreActions,
+    /// One the user made, which `MenuConfig::custom_groups` names.
+    Custom(u32),
+    /// The submenu a plugin folds its entries into (Git, Tags, Actions), by its name.
+    Group(PluginKey),
+}
+
+/// A submenu the user made in Settings → Context menu.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CustomGroup {
+    pub id: u32,
+    pub name: String,
+    /// One of `GROUP_ICONS`.
+    pub icon: String,
+}
+
+/// The icons a made submenu can have.
+pub const GROUP_ICONS: [&str; 14] = [
+    icons::MORE, icons::FOLDER, icons::APPS, icons::TUNE, icons::TAG, icons::BOOKMARK, icons::ARCHIVE,
+    icons::CODE, icons::STORAGE, icons::TERMINAL, icons::SHIELD, icons::COG, icons::HEART, icons::FILTER,
+];
+
+/// An entry a plugin adds to a menu: its plugin and entry, as `plugin:entry`. The text is kept
+/// for good once, so the key stays `Copy`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct PluginKey(pub &'static str);
+
+impl Serialize for PluginKey {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.0)
+    }
+}
+
+impl<'de> Deserialize<'de> for PluginKey {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        Ok(PluginKey(crate::plugins::intern(&String::deserialize(deserializer)?)))
+    }
+}
+
+/// The key of a plugin's entry. Custom actions are told apart by name, since their ids are only
+/// their places in the folder.
+pub fn plugin_menu_key(plugin: &str, id: &str, label: &str) -> MenuKey {
+    let entry = if plugin == "actions" { label } else { id };
+    MenuKey::Plugin(PluginKey(crate::plugins::intern(&format!("{plugin}:{entry}"))))
+}
+
+impl SubmenuId {
+    pub fn icon(self) -> &'static str {
+        match self {
+            SubmenuId::OpenIn => icons::NEW_TAB,
+            SubmenuId::CustomIcon => icons::IMAGE,
+            SubmenuId::Select => icons::SELECT_ALL,
+            SubmenuId::MoreActions | SubmenuId::Custom(_) | SubmenuId::Group(_) => icons::MORE,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            SubmenuId::OpenIn => tr("Open in"),
+            SubmenuId::CustomIcon => tr("Custom icon"),
+            SubmenuId::Select => tr("Select"),
+            SubmenuId::MoreActions => tr("More actions"),
+            SubmenuId::Custom(_) => "",
+            SubmenuId::Group(name) => name.0,
+        }
+    }
+}
+
+/// An entry or a submenu, as a group of a right-click menu lists them.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum MenuNode {
+    Entry(MenuKey),
+    Submenu(SubmenuId, Vec<MenuKey>),
+}
+
+impl MenuKey {
+    pub fn icon(self) -> &'static str {
+        use MenuKey as K;
+        match self {
+            K::Open => icons::OPEN,
+            K::OpenInNewTab => icons::NEW_TAB,
+            K::OpenInNewWindow => icons::NEW_WINDOW,
+            K::OpenTerminal => icons::TERMINAL,
+            K::OpenAsAdmin => icons::SHIELD,
+            K::OpenWith => icons::APPS,
+            K::ShowInFolder => icons::FOLDER,
+            K::Bookmark => icons::HEART,
+            K::Pin => icons::PIN,
+            K::CustomIconImage | K::UseAsFolderIcon => icons::IMAGE,
+            K::CustomIconGlyph => icons::PALETTE,
+            K::Copy | K::CopyPath => icons::COPY,
+            K::Cut => icons::CUT,
+            K::Paste => icons::PASTE,
+            K::SelectAll => icons::SELECT_ALL,
+            K::InvertSelection => icons::SELECT_INVERSE,
+            K::SelectMatching => icons::SELECT_PATTERN,
+            K::Rename => icons::RENAME,
+            K::Trash => icons::TRASH,
+            K::DeleteForever => icons::DELETE_FOREVER,
+            K::CopyTo => icons::FOLDER_COPY,
+            K::MoveTo => icons::FOLDER_MOVE,
+            K::Duplicate => icons::DUPLICATE,
+            K::CreateLink => icons::LINK,
+            K::Compress => icons::COMPRESS,
+            K::ExtractHere | K::ExtractTo => icons::EXTRACT,
+            K::NewFile => icons::FILE_PLUS,
+            K::NewFolder => icons::FOLDER_PLUS,
+            K::UndoRedo => icons::UNDO,
+            K::Refresh => icons::REFRESH,
+            K::CalculateSize => icons::STORAGE,
+            K::Properties => icons::INFO,
+            K::Plugin(_) => icons::MORE,
+        }
+    }
+
+    /// The entry's name; `in_submenu` is for where the submenu's name already says "Open in".
+    pub fn label(self, in_submenu: bool) -> &'static str {
+        use MenuKey as K;
+        match self {
+            K::Open => tr("Open"),
+            K::OpenInNewTab => if in_submenu { tr("New tab") } else { tr("Open in new tab") },
+            K::OpenInNewWindow => if in_submenu { tr("New window") } else { tr("Open in new window") },
+            K::OpenTerminal => if in_submenu { tr("Terminal") } else { tr("Open in terminal") },
+            K::OpenAsAdmin => tr("Open as administrator"),
+            K::OpenWith => tr("Open with…"),
+            K::ShowInFolder => tr("Show in folder"),
+            K::Bookmark => tr("Add to bookmarks"),
+            K::Pin => tr("Pin to sidebar"),
+            K::CustomIconImage => tr("Image…"),
+            K::CustomIconGlyph => tr("Glyph…"),
+            K::UseAsFolderIcon => tr("Use as folder icon"),
+            K::Copy => tr("Copy"),
+            K::Cut => tr("Cut"),
+            K::Paste => tr("Paste"),
+            K::SelectAll => tr("Select all"),
+            K::InvertSelection => tr("Invert selection"),
+            K::SelectMatching => tr("Select matching…"),
+            K::Rename => tr("Rename"),
+            K::Trash => tr("Move to trash"),
+            K::DeleteForever => tr("Delete permanently"),
+            K::CopyTo => tr("Copy to…"),
+            K::MoveTo => tr("Move to…"),
+            K::Duplicate => tr("Duplicate"),
+            K::CreateLink => tr("Create link"),
+            K::Compress => tr("Compress…"),
+            K::ExtractHere => tr("Extract here"),
+            K::ExtractTo => tr("Extract to…"),
+            K::NewFile => tr("New file"),
+            K::NewFolder => tr("New folder"),
+            K::UndoRedo => tr("Undo"),
+            K::Refresh => tr("Refresh"),
+            K::CalculateSize => tr("Calculate size"),
+            K::CopyPath => tr("Copy path"),
+            K::Properties => tr("Properties"),
+            K::Plugin(_) => "",
+        }
+    }
+
+    /// The entries whose name depends on where they sit; the others keep theirs everywhere.
+    pub fn renamed_by_place(self) -> bool {
+        matches!(self, MenuKey::OpenInNewTab | MenuKey::OpenInNewWindow | MenuKey::OpenTerminal)
+    }
+}
+
+/// The groups of a menu as the app builds them, which Settings starts from. Entries can be moved
+/// to any place from here, so a menu lists every entry it may ever show.
+pub fn default_menu_layout(kind: MenuKind) -> Vec<Vec<MenuNode>> {
+    use MenuKey as K;
+    use MenuNode::{Entry, Submenu};
+    let more = |extract: bool| {
+        let mut keys = vec![K::Duplicate, K::CreateLink, K::Compress];
+        if extract {
+            keys.extend([K::ExtractHere, K::ExtractTo]);
+        }
+        Submenu(SubmenuId::MoreActions, keys)
+    };
+    let manage = || {
+        vec![Entry(K::Rename), Entry(K::Trash), Entry(K::DeleteForever), Entry(K::CopyTo), Entry(K::MoveTo), more(true)]
+    };
+    let custom_icon = || Submenu(SubmenuId::CustomIcon, vec![K::CustomIconImage, K::CustomIconGlyph]);
+    let info = || vec![Entry(K::CalculateSize), Entry(K::CopyPath), Entry(K::Properties)];
+    match kind {
+        MenuKind::File => vec![
+            vec![Entry(K::Open), Entry(K::OpenWith), Entry(K::ShowInFolder)],
+            vec![Entry(K::Bookmark), Entry(K::Pin), Entry(K::UseAsFolderIcon)],
+            vec![Entry(K::Copy), Entry(K::Cut)],
+            manage(),
+            info(),
+        ],
+        MenuKind::Folder => vec![
+            vec![
+                Entry(K::Open),
+                Submenu(SubmenuId::OpenIn, vec![K::OpenInNewTab, K::OpenInNewWindow, K::OpenTerminal, K::OpenAsAdmin]),
+                Entry(K::ShowInFolder),
+            ],
+            vec![Entry(K::Bookmark), Entry(K::Pin), custom_icon()],
+            vec![Entry(K::Copy), Entry(K::Cut)],
+            manage(),
+            info(),
+        ],
+        MenuKind::Background => vec![
+            vec![Entry(K::NewFile), Entry(K::NewFolder)],
+            vec![Entry(K::UndoRedo)],
+            vec![Entry(K::Paste), Submenu(SubmenuId::Select, vec![K::SelectAll, K::InvertSelection, K::SelectMatching])],
+            vec![Entry(K::Bookmark), Entry(K::Pin), custom_icon(), Entry(K::OpenTerminal), Entry(K::OpenAsAdmin)],
+            vec![Entry(K::Refresh)],
+            vec![Entry(K::CopyPath), Entry(K::Properties)],
+        ],
+    }
+}
+
+/// What the user changed in one right-click menu.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MenuConfig {
+    pub hidden: Vec<MenuKey>,
+    /// The menu's groups as arranged; empty keeps the app's own arrangement.
+    pub layout: Vec<Vec<MenuNode>>,
+    /// The submenus made here; each is a `MenuNode::Submenu(SubmenuId::Custom(id), ..)` of the layout.
+    pub custom_groups: Vec<CustomGroup>,
+}
+
+impl MenuConfig {
+    /// The icon and name a submenu goes by.
+    pub fn submenu_look(&self, id: SubmenuId) -> (&'static str, &'static str) {
+        match id {
+            SubmenuId::Custom(n) => self.custom_groups.iter().find(|g| g.id == n).map_or((icons::MORE, ""), |g| {
+                (GROUP_ICONS.iter().copied().find(|i| *i == g.icon).unwrap_or(icons::MORE), crate::plugins::intern(&g.name))
+            }),
+            id => (id.icon(), id.label()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ContextMenus {
+    pub file: MenuConfig,
+    pub folder: MenuConfig,
+    pub background: MenuConfig,
+}
+
+impl ContextMenus {
+    pub fn get(&self, kind: MenuKind) -> &MenuConfig {
+        match kind {
+            MenuKind::File => &self.file,
+            MenuKind::Folder => &self.folder,
+            MenuKind::Background => &self.background,
+        }
+    }
+
+    pub fn get_mut(&mut self, kind: MenuKind) -> &mut MenuConfig {
+        match kind {
+            MenuKind::File => &mut self.file,
+            MenuKind::Folder => &mut self.folder,
+            MenuKind::Background => &mut self.background,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -277,6 +601,7 @@ impl Default for Settings {
             show_all_partitions: true,
             hidden_places: Vec::new(),
             shown_places: Vec::new(),
+            context_menus: ContextMenus::default(),
             show_status_bar: true,
             show_thumbnails: true,
             remote_previews: false,

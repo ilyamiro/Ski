@@ -475,6 +475,12 @@ impl Plugin for Tags {
         }
     }
 
+    /// The tags themselves come and go, so only the entries that are always there.
+    fn item_catalog(&self) -> Vec<MenuItem> {
+        let group = tr("Tags");
+        vec![MenuItem::new("new", tr("New tag…"), icons::ADD).group(group), MenuItem::new("clear", tr("Remove all tags"), icons::CLOSE).group(group)]
+    }
+
     fn menu_items(&self, selection: &[FileItem]) -> Vec<MenuItem> {
         // Links cannot carry attributes
         if selection.is_empty() || selection.iter().any(|i| i.is_symlink) {

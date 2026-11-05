@@ -798,5 +798,13 @@
   "Wheel scroll speed": "Швидкість прокручування коліщатком",
   "Slow": "Повільно",
   "Fast": "Швидко",
-  "Faster": "Швидше"
+  "Faster": "Швидше",
+  "Context menu": "Контекстне меню",
+  "The Trash menu is not affected": "Меню кошика не зачіпається",
+  "Empty space": "Порожнє місце",
+  "Reset this menu": "Скинути це меню",
+  "Drag entries to rearrange the menu, and use the eye to hide one": "Перетягуйте пункти, щоб змінити порядок меню, а оком ховайте зайві",
+  "New group…": "Нова група…",
+  "Group name": "Назва групи",
+  "Entries to put in it": "Пункти для групи"
 }

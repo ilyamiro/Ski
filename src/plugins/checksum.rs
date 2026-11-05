@@ -719,6 +719,10 @@ impl Plugin for Checksum {
         found
     }
 
+    fn item_catalog(&self) -> Vec<MenuItem> {
+        vec![MenuItem::new("verify", tr("Verify files listed"), icons::SHIELD)]
+    }
+
     fn menu_items(&self, selection: &[FileItem]) -> Vec<MenuItem> {
         match selection {
             [one] if !one.is_dir && is_checksum_file(&one.name) => vec![MenuItem::new("verify", tr("Verify files listed"), icons::SHIELD)],

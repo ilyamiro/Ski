@@ -48,7 +48,7 @@ use crate::fs::templates::{self, Template};
 use crate::fs::ops::{self, ArchiveFormat};
 use crate::fs::scanner::{SortBy, SortOrder};
 use crate::plugins::{Badge, Plugins, Tone};
-use crate::settings::{Density, Settings};
+use crate::settings::{Density, MenuKey, MenuKind, Settings};
 use crate::thumbs::Thumbnails;
 use crate::ui::{
     icons,
@@ -173,6 +173,211 @@ enum MenuAction {
     EditServer(usize),
     RemoveServer(usize),
     ForgetPassword(Address),
+}
+
+/// The key Settings knows an entry of a menu by: a built-in one's, or the plugin's entry.
+fn entry_key(entry: &MenuEntry) -> Option<MenuKey> {
+    match &entry.2 {
+        MenuAction::Plugin(plugin, id, ..) => Some(crate::settings::plugin_menu_key(plugin, id, entry.1)),
+        action => action.menu_key(),
+    }
+}
+
+/// An entry of the menu taken apart: its key and, for a plugin's entry that sat in the submenu
+/// the plugin folds its entries into, that submenu's name.
+type PoolEntry = (MenuKey, Option<&'static str>, MenuEntry);
+
+fn take_key(pool: &mut Vec<PoolEntry>, key: MenuKey, in_submenu: bool) -> Vec<MenuEntry> {
+    let mut found = Vec::new();
+    pool.retain(|(k, _, entry)| {
+        if *k != key {
+            return true;
+        }
+        let mut entry = entry.clone();
+        if key.renamed_by_place() {
+            entry.1 = key.label(in_submenu);
+        }
+        found.push(entry);
+        false
+    });
+    found
+}
+
+fn take_folded(pool: &mut Vec<PoolEntry>, group: &str) -> Vec<MenuEntry> {
+    let mut found = Vec::new();
+    pool.retain(|(_, g, entry)| {
+        if *g != Some(group) {
+            return true;
+        }
+        found.push(entry.clone());
+        false
+    });
+    found
+}
+
+/// Applies Settings → Context menu to the groups of a menu: drops what was hidden (an emptied
+/// submenu goes, one left with a single entry gives it back to the menu) and, when the user
+/// rearranged the menu, builds it again from their layout out of the same entries.
+fn customize_menu(groups: &mut Vec<Vec<MenuEntry>>, config: &crate::settings::MenuConfig, kind: MenuKind) {
+    use crate::settings::{MenuNode, SubmenuId};
+    fn hide(entries: &mut Vec<MenuEntry>, hidden: &[MenuKey]) {
+        for entry in entries.iter_mut() {
+            if let MenuAction::Submenu(sub) = &mut entry.2 {
+                hide(sub, hidden);
+            }
+        }
+        entries.retain(|entry| match &entry.2 {
+            MenuAction::Submenu(sub) => !sub.is_empty(),
+            _ => entry_key(entry).is_none_or(|key| !hidden.contains(&key)),
+        });
+        for entry in entries.iter_mut() {
+            if let MenuAction::Submenu(sub) = &mut entry.2
+                && sub.len() == 1
+            {
+                *entry = sub.remove(0);
+            }
+        }
+    }
+    for group in groups.iter_mut() {
+        hide(group, &config.hidden);
+    }
+    if config.layout.is_empty() {
+        return;
+    }
+
+    // Every entry by its key, and the groups with none to put back where they were
+    fn keyed(entry: &MenuEntry) -> bool {
+        match &entry.2 {
+            MenuAction::Submenu(sub) => sub.iter().any(keyed),
+            _ => entry_key(entry).is_some(),
+        }
+    }
+    let mut pool: Vec<PoolEntry> = Vec::new();
+    let mut foreign: Vec<Vec<MenuEntry>> = Vec::new();
+    let mut stray: Vec<MenuEntry> = Vec::new();
+    for group in std::mem::take(groups) {
+        if !group.iter().any(keyed) {
+            foreign.push(group);
+            continue;
+        }
+        for entry in group {
+            let (folded, singles) = match entry.2 {
+                MenuAction::Submenu(sub) => {
+                    let plugin = sub.first().is_some_and(|e| matches!(e.2, MenuAction::Plugin(..)));
+                    (plugin.then_some(entry.1), sub)
+                }
+                _ => (None, vec![entry]),
+            };
+            for single in singles {
+                match entry_key(&single) {
+                    Some(key) => pool.push((key, folded, single)),
+                    None => stray.push(single),
+                }
+            }
+        }
+    }
+    let mut out: Vec<Vec<MenuEntry>> = Vec::new();
+    for layout_group in &config.layout {
+        let mut group = Vec::new();
+        for node in layout_group {
+            match node {
+                MenuNode::Entry(key) => group.extend(take_key(&mut pool, *key, false)),
+                MenuNode::Submenu(id, keys) => {
+                    let mut inside: Vec<MenuEntry> = keys.iter().flat_map(|key| take_key(&mut pool, *key, true)).collect();
+                    // What a plugin adds to its submenu later (a new tag) joins it
+                    if let SubmenuId::Group(name) = id {
+                        inside.extend(take_folded(&mut pool, name.0));
+                    }
+                    let made = matches!(id, SubmenuId::Custom(_));
+                    match inside.len() {
+                        0 => {}
+                        // A submenu the user made stays one, however few entries it has left
+                        1 if !made => {
+                            let mut only = inside.remove(0);
+                            if let Some(key) = entry_key(&only).filter(|k| k.renamed_by_place()) {
+                                only.1 = key.label(false);
+                            }
+                            group.push(only);
+                        }
+                        _ => {
+                            let (mut icon, label) = config.submenu_look(*id);
+                            if matches!(id, SubmenuId::Group(_)) {
+                                icon = inside[0].0;
+                            }
+                            group.push((icon, label, MenuAction::Submenu(inside)));
+                        }
+                    }
+                }
+            }
+        }
+        out.push(group);
+    }
+    out.retain(|g| !g.is_empty());
+    // What the layout does not know of (a plugin turned on since) gets a group of its own, where
+    // the menu has its plugins' entries
+    let mut left: Vec<MenuEntry> = Vec::new();
+    while let Some(name) = pool.iter().find_map(|(_, g, _)| *g) {
+        let mut entries = take_folded(&mut pool, name);
+        if entries.len() == 1 {
+            left.push(entries.remove(0));
+        } else {
+            left.push((entries[0].0, name, MenuAction::Submenu(entries)));
+        }
+    }
+    left.extend(pool.into_iter().map(|(_, _, entry)| entry));
+    left.extend(stray);
+    let at = |len: usize| if kind == MenuKind::Background { 1.min(len) } else { len.saturating_sub(1) };
+    if !left.is_empty() {
+        out.insert(at(out.len()), left);
+    }
+    for group in foreign {
+        out.insert(at(out.len()), group);
+    }
+    *groups = out;
+}
+
+impl MenuAction {
+    /// The Settings entry that hides this one, for the entries of the file and folder menus.
+    fn menu_key(&self) -> Option<MenuKey> {
+        Some(match self {
+            MenuAction::Open(_) => MenuKey::Open,
+            MenuAction::OpenInNewTab(_) => MenuKey::OpenInNewTab,
+            MenuAction::OpenInNewWindow(_) => MenuKey::OpenInNewWindow,
+            MenuAction::OpenTerminal(_) => MenuKey::OpenTerminal,
+            MenuAction::OpenAsAdmin(_) => MenuKey::OpenAsAdmin,
+            MenuAction::OpenWith(_) => MenuKey::OpenWith,
+            MenuAction::OpenPath(_) => MenuKey::ShowInFolder,
+            MenuAction::Bookmark(_) | MenuAction::Unbookmark(_) => MenuKey::Bookmark,
+            MenuAction::Pin(_) | MenuAction::Unpin(_) => MenuKey::Pin,
+            MenuAction::SetIcon(_) => MenuKey::CustomIconImage,
+            MenuAction::SetGlyph(_) => MenuKey::CustomIconGlyph,
+            MenuAction::UseAsIcon(_) => MenuKey::UseAsFolderIcon,
+            MenuAction::Copy(_) => MenuKey::Copy,
+            MenuAction::Cut(_) => MenuKey::Cut,
+            MenuAction::Paste => MenuKey::Paste,
+            MenuAction::SelectAll => MenuKey::SelectAll,
+            MenuAction::InvertSelection => MenuKey::InvertSelection,
+            MenuAction::SelectPattern => MenuKey::SelectMatching,
+            MenuAction::Rename(_) | MenuAction::RenameMany(_) => MenuKey::Rename,
+            MenuAction::Trash(_) => MenuKey::Trash,
+            MenuAction::DeleteForever(_) => MenuKey::DeleteForever,
+            MenuAction::CopyTo(_) => MenuKey::CopyTo,
+            MenuAction::MoveTo(_) => MenuKey::MoveTo,
+            MenuAction::Duplicate(_) => MenuKey::Duplicate,
+            MenuAction::MakeLink(_) => MenuKey::CreateLink,
+            MenuAction::Compress(_) => MenuKey::Compress,
+            MenuAction::ExtractHere(_) => MenuKey::ExtractHere,
+            MenuAction::ExtractTo(_) => MenuKey::ExtractTo,
+            MenuAction::NewFile => MenuKey::NewFile,
+            MenuAction::NewFolder => MenuKey::NewFolder,
+            MenuAction::Undo | MenuAction::Redo => MenuKey::UndoRedo,
+            MenuAction::Refresh => MenuKey::Refresh,
+            MenuAction::CalcSize(_) => MenuKey::CalculateSize,
+            MenuAction::CopyPath(_) => MenuKey::CopyPath,
+            MenuAction::Properties(_) => MenuKey::Properties,
+            _ => return None,
+        })
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1329,6 +1534,10 @@ impl SkiApp {
     /// Show the context menu right away. The "Open with <app>" label needs process calls
     /// (`xdg-mime`) and the application scan, so a worker resolves it and the menu fills it in later.
     fn open_menu(&mut self, ctx: &egui::Context, pos: egui::Pos2, target: MenuTarget) {
+        // Everything hidden in Settings leaves nothing to show
+        if self.menu_entries(&target).iter().all(Vec::is_empty) {
+            return;
+        }
         let label_rx = match &target {
             MenuTarget::Item(item) if !item.is_dir => {
                 let (tx, rx) = mpsc::channel();
@@ -4529,6 +4738,17 @@ impl SkiApp {
         for group in &mut groups {
             self.retain_allowed(group);
         }
+        let kind = match target {
+            MenuTarget::Item(item) if item.is_dir => Some(MenuKind::Folder),
+            MenuTarget::Item(_) => Some(MenuKind::File),
+            MenuTarget::Folder => Some(MenuKind::Background),
+            _ => None,
+        };
+        if let Some(kind) = kind
+            && !self.in_trash()
+        {
+            customize_menu(&mut groups, self.settings.context_menus.get(kind), kind);
+        }
         groups
     }
 
@@ -6377,6 +6597,101 @@ fn name_field(ui: &mut egui::Ui, theme: &SerpantinumTheme, text: &mut String, fi
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn labels(groups: &[Vec<MenuEntry>]) -> Vec<Vec<String>> {
+        groups
+            .iter()
+            .map(|g| {
+                g.iter()
+                    .map(|(_, label, action)| match action {
+                        MenuAction::Submenu(sub) => format!("{label}[{}]", sub.iter().map(|e| e.1).collect::<Vec<_>>().join(",")),
+                        _ => (*label).to_owned(),
+                    })
+                    .collect()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn plugin_entries_can_be_moved_hidden_and_keep_their_submenu() {
+        use crate::settings::{plugin_menu_key, MenuConfig, MenuNode, SubmenuId};
+        let plugin = |id: &str, label: &'static str| (icons::ADD, label, MenuAction::Plugin("git", id.to_owned(), vec![], None));
+        let build = || {
+            vec![
+                vec![(icons::COPY, "Copy", MenuAction::Copy(vec![]))],
+                vec![(icons::ADD, "Git", MenuAction::Submenu(vec![plugin("stage", "Stage"), plugin("diff", "Diff"), plugin("new", "Fresh")]))],
+            ]
+        };
+        let stage = plugin_menu_key("git", "stage", "Stage");
+        let diff = plugin_menu_key("git", "diff", "Diff");
+        let git = SubmenuId::Group(crate::settings::PluginKey("Git"));
+        let mut groups = build();
+        let config = MenuConfig {
+            hidden: vec![diff],
+            layout: vec![vec![MenuNode::Entry(stage)], vec![MenuNode::Submenu(git, vec![diff]), MenuNode::Entry(crate::settings::MenuKey::Copy)]],
+            ..Default::default()
+        };
+        customize_menu(&mut groups, &config, MenuKind::File);
+        // Stage moved out on its own; the hidden Diff is gone; Fresh, which the layout does not
+        // know, stays in the plugin's submenu
+        assert_eq!(labels(&groups), vec![vec!["Stage"], vec!["Fresh", "Copy"]]);
+    }
+
+    #[test]
+    fn a_rearranged_menu_is_built_from_the_layout_and_loses_nothing() {
+        use crate::settings::{MenuConfig, MenuNode, SubmenuId};
+        let p = || vec![PathBuf::from("/x")];
+        let build = || {
+            vec![
+                vec![(icons::COPY, "Copy", MenuAction::Copy(p())), (icons::CUT, "Cut", MenuAction::Cut(p()))],
+                vec![(icons::MORE, "More", MenuAction::Submenu(vec![
+                    (icons::DUPLICATE, "Duplicate", MenuAction::Duplicate(p())),
+                    (icons::LINK, "Link", MenuAction::MakeLink(p())),
+                    (icons::COMPRESS, "Compress", MenuAction::Compress(p())),
+                ]))],
+                // A group of plugin entries keeps its place whatever the layout says
+                vec![(icons::COG, "Plugin", MenuAction::Plugin("p", "id".into(), p(), None))],
+                vec![(icons::INFO, "Properties", MenuAction::Properties(PathBuf::from("/x")))],
+            ]
+        };
+        use crate::settings::MenuKey as K;
+        let config = MenuConfig {
+            hidden: vec![K::Compress],
+            layout: vec![
+                // Duplicate out of its submenu to the top, Properties into it, Cut before Copy
+                vec![MenuNode::Entry(K::Duplicate), MenuNode::Entry(K::Cut), MenuNode::Entry(K::Copy)],
+                vec![MenuNode::Submenu(SubmenuId::MoreActions, vec![K::CreateLink, K::Compress, K::Properties])],
+            ],
+            ..Default::default()
+        };
+        let mut groups = build();
+        customize_menu(&mut groups, &config, MenuKind::File);
+        assert_eq!(
+            labels(&groups),
+            vec![
+                vec!["Duplicate", "Cut", "Copy"],
+                vec!["Plugin"],
+                vec!["More actions[Link,Properties]"],
+            ]
+        );
+        // An entry the layout does not mention stays in the menu
+        let mut groups = build();
+        let config = MenuConfig { layout: vec![vec![MenuNode::Entry(K::Copy)]], ..Default::default() };
+        customize_menu(&mut groups, &config, MenuKind::File);
+        // A group the user made keeps its name, and stays a submenu with a single entry
+        let mut groups = build();
+        let config = MenuConfig {
+            layout: vec![vec![MenuNode::Submenu(SubmenuId::Custom(7), vec![K::Copy]), MenuNode::Entry(K::Cut)]],
+            custom_groups: vec![crate::settings::CustomGroup { id: 7, name: "Mine".into(), icon: icons::MORE.into() }],
+            ..Default::default()
+        };
+        customize_menu(&mut groups, &config, MenuKind::File);
+        assert_eq!(labels(&groups)[1][..2], ["Mine[Copy]", "Cut"]);
+        let all: Vec<String> = labels(&groups).concat();
+        for kept in ["Copy", "Cut", "Duplicate", "Link", "Compress", "Properties", "Plugin"] {
+            assert!(all.iter().any(|l| l.contains(kept)), "{kept} lost: {all:?}");
+        }
+    }
 
     /// "Always" measures the folders of the listing, the selection's status line adds them up, and
     /// changing a folder from inside Ski makes its total (and its parents') stale.

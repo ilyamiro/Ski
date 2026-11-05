@@ -9,14 +9,14 @@ use crate::fs::apps::{self, AppEntry};
 use crate::fs::file_item::{FileItem, ICON_SAMPLES};
 use crate::fs::scanner::{SortBy, SortOrder};
 use crate::keymap::{self, Action};
-use crate::settings::{Density, Settings, StartLocation};
+use crate::settings::{default_menu_layout, CustomGroup, Density, MenuConfig, MenuKey, MenuKind, MenuNode, Settings, StartLocation, SubmenuId, GROUP_ICONS};
 use crate::ui::fonts::SystemFont;
 use crate::ui::icon_style::{self, IconStyle};
 use crate::ui::icons;
 use crate::ui::material::{self, button, chip, choice_row, filled_icon_button, group_card, nav_item_roving, switch_row_with, ButtonKind, Column};
 use crate::ui::theme::{self, SerpantinumTheme, ACCENTS};
 
-const CATEGORY_COUNT: i32 = 8;
+const CATEGORY_COUNT: i32 = 9;
 /// The widest the settings column grows in a wide window.
 const PAGE_WIDTH: f32 = 720.0;
 /// The category that lists the sidebar's places.
@@ -38,6 +38,10 @@ pub(crate) struct SettingsState {
     conflict_warning: Option<(String, Action, Action, Option<usize>)>,
     /// The "Browse more themes" page of Appearance, open with its search text.
     theme_browser: Option<String>,
+    /// The right-click menu the Context menu page shows.
+    menu_kind: MenuKind,
+    /// The form that makes or edits a submenu of the right-click menu, while it is open.
+    menu_form: Option<MenuForm>,
 }
 
 /// The categories in the order of the window's sidebar: the page number, its icon and its name.
@@ -47,11 +51,263 @@ fn categories() -> [(usize, &'static str, &'static str); CATEGORY_COUNT as usize
         (1, icons::TUNE, tr("Appearance")),
         (2, icons::FOLDER_OPEN, tr("Files & View")),
         (SIDEBAR_TAB, icons::SIDEBAR, tr("Sidebar")),
-        (4, icons::CURSOR, tr("Behavior")),
-        (5, icons::KEYBOARD, tr("Keybindings")),
-        (6, icons::APPS, tr("Applications")),
-        (7, icons::TEMPLATE, tr("Plugins")),
+        (4, icons::MORE, tr("Context menu")),
+        (5, icons::CURSOR, tr("Behavior")),
+        (6, icons::KEYBOARD, tr("Keybindings")),
+        (7, icons::APPS, tr("Applications")),
+        (8, icons::TEMPLATE, tr("Plugins")),
     ]
+}
+
+type Layout = Vec<Vec<MenuNode>>;
+
+/// The form that makes a submenu or, for one made before, renames it and changes its icon.
+pub(crate) struct MenuForm {
+    /// The submenu being edited; `None` makes a new one.
+    editing: Option<u32>,
+    name: String,
+    icon: usize,
+    /// The entries a new submenu starts with.
+    picks: Vec<MenuKey>,
+}
+
+/// Takes away the submenus made here that were left with no entry, and their names.
+fn prune_custom(layout: &mut Layout, config: &mut MenuConfig) {
+    for group in layout.iter_mut() {
+        group.retain(|n| !matches!(n, MenuNode::Submenu(SubmenuId::Custom(_), keys) if keys.is_empty()));
+    }
+    let live: Vec<u32> = layout.iter().flatten().filter_map(|n| match n {
+        MenuNode::Submenu(SubmenuId::Custom(id), _) => Some(*id),
+        _ => None,
+    }).collect();
+    config.custom_groups.retain(|g| live.contains(&g.id));
+}
+
+/// What a drag in the menu editor carries: an entry, or a whole submenu.
+#[derive(Clone, Copy, PartialEq)]
+enum DragItem {
+    Entry(MenuKey),
+    Sub(SubmenuId),
+}
+
+/// A place in a menu's layout: at an index of a group, or at an index inside a submenu.
+#[derive(Clone, Copy, PartialEq)]
+enum Spot {
+    Top(usize, usize),
+    Inside(SubmenuId, usize),
+}
+
+/// A row being dragged and the place it would take.
+#[derive(Clone, Copy)]
+struct MenuDrag {
+    item: DragItem,
+    to: Spot,
+}
+
+fn menu_drag_id() -> egui::Id {
+    egui::Id::NULL.with("cm_drag")
+}
+
+fn is_item(node: &MenuNode, item: DragItem) -> bool {
+    match (node, item) {
+        (MenuNode::Entry(key), DragItem::Entry(other)) => *key == other,
+        (MenuNode::Submenu(id, _), DragItem::Sub(other)) => *id == other,
+        _ => false,
+    }
+}
+
+/// Where `item` is in `layout`.
+fn spot_of(layout: &Layout, item: DragItem) -> Option<Spot> {
+    for (g, group) in layout.iter().enumerate() {
+        if let Some(i) = group.iter().position(|n| is_item(n, item)) {
+            return Some(Spot::Top(g, i));
+        }
+        if let DragItem::Entry(key) = item {
+            for node in group {
+                if let MenuNode::Submenu(id, keys) = node
+                    && let Some(i) = keys.iter().position(|k| *k == key)
+                {
+                    return Some(Spot::Inside(*id, i));
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Takes `item` out of `layout`, from a group or from inside a submenu.
+fn take_item(layout: &mut Layout, item: DragItem) -> Option<MenuNode> {
+    for group in layout.iter_mut() {
+        if let Some(i) = group.iter().position(|n| is_item(n, item)) {
+            return Some(group.remove(i));
+        }
+        if let DragItem::Entry(key) = item {
+            for node in group.iter_mut() {
+                if let MenuNode::Submenu(_, keys) = node
+                    && let Some(i) = keys.iter().position(|k| *k == key)
+                {
+                    keys.remove(i);
+                    return Some(MenuNode::Entry(key));
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Puts a node taken out of `layout` at `spot`; a submenu cannot go into another, and ends up
+/// at the end of the last group instead.
+fn put_item(layout: &mut Layout, node: MenuNode, spot: Spot) {
+    let node = match (spot, node) {
+        (Spot::Top(g, i), node) if g < layout.len() => {
+            let group = &mut layout[g];
+            group.insert(i.min(group.len()), node);
+            return;
+        }
+        (Spot::Inside(id, i), MenuNode::Entry(key)) => {
+            for group in layout.iter_mut() {
+                for node in group.iter_mut() {
+                    if let MenuNode::Submenu(sid, keys) = node
+                        && *sid == id
+                    {
+                        keys.insert(i.min(keys.len()), key);
+                        return;
+                    }
+                }
+            }
+            MenuNode::Entry(key)
+        }
+        (_, node) => node,
+    };
+    if let Some(last) = layout.last_mut() {
+        last.push(node);
+    }
+}
+
+/// What the enabled plugins can add to a menu: each entry's key and the submenu it folds into.
+type PluginEntries = [(MenuKey, Option<&'static str>)];
+
+/// The saved arrangement of a menu with whatever it lacks of the app's own, which the app has
+/// gained since, in the place the app puts it; and with the entries of plugins that are enabled,
+/// and none of the plugins that are not. A plugin's entries have a group of their own, where the
+/// menu has them, and the plugin's submenus (Git, Tags) hold the entries that fold into them.
+fn complete_layout(kind: MenuKind, saved: &Layout, plugins: &PluginEntries) -> Layout {
+    let mut layout = if saved.is_empty() { default_menu_layout(kind) } else { saved.clone() };
+    if !saved.is_empty() {
+        for (g, group) in default_menu_layout(kind).iter().enumerate() {
+            for node in group {
+                let keys = match node {
+                    MenuNode::Entry(key) => vec![*key],
+                    MenuNode::Submenu(_, keys) => keys.clone(),
+                };
+                for key in keys {
+                    if spot_of(&layout, DragItem::Entry(key)).is_none() {
+                        let at = g.min(layout.len().saturating_sub(1));
+                        if let Some(group) = layout.get_mut(at) {
+                            group.push(MenuNode::Entry(key));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    // Entries of plugins that are off go, and with them the plugin's submenus
+    let known = |key: &MenuKey| !matches!(key, MenuKey::Plugin(_)) || plugins.iter().any(|(k, _)| k == key);
+    for group in layout.iter_mut() {
+        group.retain_mut(|node| match node {
+            MenuNode::Entry(key) => known(key),
+            MenuNode::Submenu(id, keys) => {
+                keys.retain(known);
+                !keys.is_empty() || !matches!(id, SubmenuId::Group(_))
+            }
+        });
+    }
+    let is_plugins = |node: &MenuNode| match node {
+        MenuNode::Entry(key) => matches!(key, MenuKey::Plugin(_)),
+        MenuNode::Submenu(SubmenuId::Group(_), _) => true,
+        MenuNode::Submenu(..) => false,
+    };
+    for (key, group) in plugins {
+        if spot_of(&layout, DragItem::Entry(*key)).is_some() {
+            continue;
+        }
+        // The group the plugins' entries are in, or one made where the menu has them
+        let at = match layout.iter().position(|g| g.iter().any(is_plugins)) {
+            Some(at) => at,
+            None => {
+                let at = if kind == MenuKind::Background { 1.min(layout.len()) } else { layout.len().saturating_sub(1) };
+                layout.insert(at, Vec::new());
+                at
+            }
+        };
+        match group {
+            Some(name) => {
+                let id = SubmenuId::Group(crate::settings::PluginKey(name));
+                let found = layout.iter_mut().flatten().find_map(|n| match n {
+                    MenuNode::Submenu(sid, keys) if *sid == id => Some(keys),
+                    _ => None,
+                });
+                match found {
+                    Some(keys) => keys.push(*key),
+                    None => layout[at].push(MenuNode::Submenu(id, vec![*key])),
+                }
+            }
+            None => layout[at].push(MenuNode::Entry(*key)),
+        }
+    }
+    layout
+}
+
+/// A row of the menu editor as the menu paints its entries, with the eye that hides it at the right.
+#[allow(clippy::too_many_arguments)]
+fn paint_edit_row(painter: &egui::Painter, theme: &SerpantinumTheme, rect: egui::Rect, icon: &str, label: &str, chevron: bool, pencil: bool, eye: Option<bool>, shown: bool, fill: Option<egui::Color32>, fade: f32) {
+    if let Some(fill) = fill {
+        painter.rect_filled(rect, egui::CornerRadius::same(material::radius_lg()), fill);
+    }
+    let strength = if shown { 1.0 } else { 0.45 } * fade;
+    let color = theme.text.gamma_multiply(strength);
+    material::paint_icon(painter, egui::pos2(rect.left() + material::INSET_ICON, rect.center().y), icon, material::ICON_MD, theme.subtext0.gamma_multiply(strength));
+    painter.text(egui::pos2(rect.left() + material::INSET_LABEL, rect.center().y), egui::Align2::LEFT_CENTER, label, egui::FontId::proportional(material::FONT_BODY), color);
+    if pencil {
+        material::paint_icon(painter, egui::pos2(rect.right() - 56.0, rect.center().y), icons::RENAME, material::ICON_MD, theme.subtext0.gamma_multiply(fade));
+    }
+    if chevron {
+        material::paint_icon(painter, egui::pos2(rect.right() - if pencil { 90.0 } else { 56.0 }, rect.center().y), icons::CHEVRON_RIGHT, material::ICON_MD, theme.subtext0.gamma_multiply(strength));
+    }
+    if let Some(visible) = eye {
+        let icon = if visible { icons::VISIBILITY } else { icons::VISIBILITY_OFF };
+        material::paint_icon(painter, egui::pos2(rect.right() - 22.0, rect.center().y), icon, material::ICON_MD, theme.subtext0.gamma_multiply(fade));
+    }
+}
+
+struct EditRow {
+    rect: egui::Rect,
+    grip: egui::Response,
+    eye_clicked: bool,
+    edit_clicked: bool,
+}
+
+/// One row of the menu editor: dragged by its body, hidden or shown by its eye. `slot` paints it
+/// faded, as the place the dragged row would take; `indent` is for a submenu's entries.
+#[allow(clippy::too_many_arguments)]
+fn edit_row(ui: &mut egui::Ui, theme: &SerpantinumTheme, id: impl std::hash::Hash + std::fmt::Debug, icon: &str, label: &str, chevron: bool, shown: bool, indent: f32, slot: bool, eye: bool, pencil: bool) -> EditRow {
+    let (full, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), material::ENTRY_HEIGHT), egui::Sense::hover());
+    let rect = egui::Rect::from_min_max(egui::pos2(full.left() + indent, full.top()), full.right_bottom());
+    let id = ui.make_persistent_id(id);
+    let grip = ui.interact(rect, id, egui::Sense::drag());
+    let eye_rect = egui::Rect::from_center_size(egui::pos2(rect.right() - 22.0, rect.center().y), egui::vec2(30.0, 30.0));
+    let eye_resp = eye.then(|| ui.interact(eye_rect, id.with("eye"), egui::Sense::click()));
+    let pencil_rect = egui::Rect::from_center_size(egui::pos2(rect.right() - 56.0, rect.center().y), egui::vec2(30.0, 30.0));
+    let pencil_resp = pencil.then(|| ui.interact(pencil_rect, id.with("pencil"), egui::Sense::click()));
+    if grip.dragged() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+    } else if grip.hovered() && !eye_resp.as_ref().is_some_and(|e| e.hovered()) {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
+    }
+    let hot = (grip.hovered() || grip.dragged()) && !slot;
+    let fill = hot.then(|| theme.surface1);
+    paint_edit_row(ui.painter(), theme, rect, icon, label, chevron, pencil, eye.then_some(shown), shown, fill, if slot { 0.3 } else { 1.0 });
+    EditRow { rect, grip, eye_clicked: eye_resp.is_some_and(|e| e.clicked()), edit_clicked: pencil_resp.is_some_and(|e| e.clicked()) }
 }
 
 impl SkiApp {
@@ -80,6 +336,8 @@ impl SkiApp {
             capture: None,
             conflict_warning: None,
             theme_browser: None,
+            menu_kind: MenuKind::File,
+            menu_form: None,
         });
     }
 
@@ -153,7 +411,7 @@ impl SkiApp {
 
     /// The settings of the chosen category, in a column that stops growing with the window.
     pub(crate) fn settings_page(&mut self, ui: &mut egui::Ui, state: &mut SettingsState) {
-        let SettingsState { tab, font_query, hex, picking, defaults, keybind_search, capture, conflict_warning, theme_browser } = state;
+        let SettingsState { tab, font_query, hex, picking, defaults, keybind_search, capture, conflict_warning, theme_browser, menu_kind, menu_form } = state;
         let ctx = ui.ctx().clone();
 
         // Ctrl+PageUp / Ctrl+PageDown (or Ctrl+Tab) switch category from anywhere in the window
@@ -196,9 +454,10 @@ impl SkiApp {
                             1 => self.appearance_tab(ui, font_query, hex, theme_browser),
                             2 => self.files_view_tab(ui),
                             SIDEBAR_TAB => self.sidebar_tab(ui),
-                            4 => self.behavior_tab(ui),
-                            5 => self.keybindings_tab(ui, keybind_search, capture, conflict_warning),
-                            6 => self.applications_tab(ui, picking, defaults),
+                            4 => self.context_menu_tab(ui, menu_kind, menu_form),
+                            5 => self.behavior_tab(ui),
+                            6 => self.keybindings_tab(ui, keybind_search, capture, conflict_warning),
+                            7 => self.applications_tab(ui, picking, defaults),
                             _ => self.plugins_tab(ui),
                         }
                         ui.add_space(8.0);
@@ -708,6 +967,363 @@ impl SkiApp {
             self.show_place(place, shown, false);
         }
         ui.label(egui::RichText::new(tr("Right-click a place in the sidebar to hide it, or the sidebar itself to show the hidden ones")).size(material::FONT_CAPTION).color(theme.subtext1));
+    }
+
+    /// One right-click menu at a time (files, folders or the empty part of a folder), laid out as
+    /// the menu is: its groups between dividers, its submenus open. Rows are dragged anywhere in
+    /// it, into or out of a submenu, and each has an eye to hide it.
+    fn context_menu_tab(&mut self, ui: &mut egui::Ui, kind: &mut MenuKind, form: &mut Option<MenuForm>) {
+        let theme = self.theme;
+        let kinds = [MenuKind::File, MenuKind::Folder, MenuKind::Background];
+        let names = [tr("Files"), tr("Folders"), tr("Empty space")];
+        let current = kinds.iter().position(|k| k == kind).unwrap_or(0);
+        if let Some(i) = material::segmented_sized(ui, "cm_kind", &names, current, &theme, None, Some(ui.available_width()), None) {
+            *kind = kinds[i];
+            *form = None;
+        }
+        let kind = *kind;
+        let ctx = ui.ctx().clone();
+
+        let config = self.settings.context_menus.get(kind).clone();
+        let hidden = config.hidden.clone();
+        let plugin_entries: Vec<(MenuKey, Option<&'static str>, &'static str, &'static str)> = self
+            .plugins
+            .menu_catalog(kind == MenuKind::Background)
+            .into_iter()
+            .map(|(plugin, item)| (crate::settings::plugin_menu_key(plugin, &item.id, item.label), item.group, item.icon, item.label))
+            .collect();
+        let plugin_keys: Vec<(MenuKey, Option<&'static str>)> = plugin_entries.iter().map(|e| (e.0, e.1)).collect();
+        // The icon and name of an entry; a plugin's come from the plugin
+        let look = |key: MenuKey, in_sub: bool| -> (&'static str, &'static str) {
+            match key {
+                MenuKey::Plugin(_) => plugin_entries.iter().find(|e| e.0 == key).map_or((icons::MORE, ""), |e| (e.2, e.3)),
+                key => (key.icon(), key.label(in_sub)),
+            }
+        };
+        let layout = complete_layout(kind, &config.layout, &plugin_keys);
+        // While a row is dragged the menu shows it already in the place it would take
+        let mut drag: Option<MenuDrag> = ctx.data(|d| d.get_temp(menu_drag_id()));
+        let mut display = layout.clone();
+        if let Some(d) = drag
+            && let Some(node) = take_item(&mut display, d.item)
+        {
+            put_item(&mut display, node, d.to);
+        }
+
+        let mut flip: Vec<(Vec<MenuKey>, bool)> = Vec::new();
+        let mut started: Option<MenuDrag> = None;
+        let (mut dragging, mut stopped) = (false, false);
+        // The places a row can be dropped at, by the middle of the row that follows them
+        let mut spots: Vec<(f32, Spot)> = Vec::new();
+        let mut slot: Option<(egui::Rect, &'static str, &'static str, bool, bool)> = None;
+        let dragging_sub = drag.is_some_and(|d| matches!(d.item, DragItem::Sub(_)));
+
+        material::section_label(ui, tr("Drag entries to rearrange the menu, and use the eye to hide one"), &theme);
+        if form.is_none()
+            && material::button(ui, "cm_new_group", Some(icons::ADD), tr("New group…"), &theme, material::ButtonKind::Tonal, true).clicked()
+        {
+            *form = Some(MenuForm { editing: None, name: String::new(), icon: 0, picks: Vec::new() });
+        }
+        if let Some(f) = form.as_mut() {
+            #[derive(Clone, Copy)]
+            enum Done {
+                Save,
+                Delete,
+                Cancel,
+            }
+            let mut done = None;
+            let creating = f.editing.is_none();
+            group_card(ui, &theme, |ui| {
+                material::input_frame(&theme).show(ui, |ui| {
+                    ui.add(
+                        egui::TextEdit::singleline(&mut f.name)
+                            .frame(egui::Frame::NONE)
+                            .desired_width(f32::INFINITY)
+                            .hint_text(tr("Group name"))
+                            .font(egui::FontId::proportional(material::FONT_BODY)),
+                    );
+                });
+                ui.add_space(4.0);
+                ui.horizontal_wrapped(|ui| {
+                    for (i, icon) in GROUP_ICONS.iter().enumerate() {
+                        if material::chip_width(ui, ("cm_group_icon", i), Some(icon), "", &theme, f.icon == i, Some(40.0)).clicked() {
+                            f.icon = i;
+                        }
+                    }
+                });
+                if creating {
+                    ui.add_space(4.0);
+                    ui.label(egui::RichText::new(tr("Entries to put in it")).size(material::FONT_CAPTION).color(theme.subtext1));
+                    let keys: Vec<MenuKey> = layout.iter().flatten().flat_map(|n| match n {
+                        MenuNode::Entry(key) => vec![*key],
+                        MenuNode::Submenu(..) => Vec::new(),
+                    }).collect();
+                    ui.horizontal_wrapped(|ui| {
+                        for key in keys {
+                            let on = f.picks.contains(&key);
+                            if material::chip(ui, ("cm_group_pick", key), Some(look(key, false).0), look(key, false).1, &theme, on).clicked() {
+                                if on {
+                                    f.picks.retain(|k| *k != key);
+                                } else {
+                                    f.picks.push(key);
+                                }
+                            }
+                        }
+                    });
+                }
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    // A group needs a name and an entry to hold
+                    let ready = !f.name.trim().is_empty() && (!creating || !f.picks.is_empty());
+                    let label = if creating { tr("Create") } else { tr("Save") };
+                    if material::button(ui, "cm_form_save", None, label, &theme, material::ButtonKind::Filled, ready).clicked() {
+                        done = Some(Done::Save);
+                    }
+                    if material::button(ui, "cm_form_cancel", None, tr("Cancel"), &theme, material::ButtonKind::Text, true).clicked() {
+                        done = Some(Done::Cancel);
+                    }
+                    if !creating && material::button(ui, "cm_form_delete", Some(icons::TRASH), tr("Delete"), &theme, material::ButtonKind::Danger, true).clicked() {
+                        done = Some(Done::Delete);
+                    }
+                });
+            });
+            if let Some(done) = done {
+                let (name, icon) = (f.name.trim().to_owned(), GROUP_ICONS[f.icon.min(GROUP_ICONS.len() - 1)].to_owned());
+                let (editing, picks) = (f.editing, std::mem::take(&mut f.picks));
+                let config = self.settings.context_menus.get_mut(kind);
+                let mut arranged = layout.clone();
+                match (done, editing) {
+                    (Done::Save, Some(id)) => {
+                        if let Some(group) = config.custom_groups.iter_mut().find(|g| g.id == id) {
+                            group.name = name;
+                            group.icon = icon;
+                        }
+                    }
+                    (Done::Save, None) => {
+                        let id = config.custom_groups.iter().map(|g| g.id + 1).max().unwrap_or(0);
+                        // It sits in the group of its first entry, at the end
+                        let at = picks.first().and_then(|k| match spot_of(&arranged, DragItem::Entry(*k)) {
+                            Some(Spot::Top(g, _)) => Some(g),
+                            Some(Spot::Inside(sub, _)) => arranged.iter().position(|grp| grp.iter().any(|n| matches!(n, MenuNode::Submenu(s, _) if *s == sub))),
+                            None => None,
+                        });
+                        for key in &picks {
+                            take_item(&mut arranged, DragItem::Entry(*key));
+                        }
+                        if let Some(group) = arranged.get_mut(at.unwrap_or(0)) {
+                            group.push(MenuNode::Submenu(SubmenuId::Custom(id), picks));
+                            config.custom_groups.push(CustomGroup { id, name, icon });
+                        }
+                    }
+                    (Done::Delete, Some(id)) => {
+                        // Its entries stay, where it was
+                        for group in arranged.iter_mut() {
+                            if let Some(i) = group.iter().position(|n| matches!(n, MenuNode::Submenu(SubmenuId::Custom(c), _) if *c == id))
+                                && let MenuNode::Submenu(_, keys) = group.remove(i)
+                            {
+                                for (k, key) in keys.into_iter().enumerate() {
+                                    group.insert(i + k, MenuNode::Entry(key));
+                                }
+                            }
+                        }
+                        config.custom_groups.retain(|g| g.id != id);
+                    }
+                    _ => {}
+                }
+                if !matches!(done, Done::Cancel) {
+                    config.layout = if arranged == complete_layout(kind, &Vec::new(), &plugin_keys) && config.custom_groups.is_empty() { Vec::new() } else { arranged };
+                    self.persist_settings();
+                }
+                *form = None;
+            }
+        }
+        let panel = ui.available_width();
+        let side = ((ui.available_width() - panel) / 2.0).floor().max(0.0);
+        ui.horizontal_top(|ui| {
+            ui.add_space(side);
+            ui.vertical(|ui| {
+                ui.set_width(panel);
+                egui::Frame::new()
+                    .fill(theme.mantle)
+                    .corner_radius(egui::CornerRadius::same(material::radius_container()))
+                    .inner_margin(egui::Margin::same(8))
+                    .show(ui, |ui| {
+                        ui.set_width(panel - 16.0);
+                        ui.spacing_mut().item_spacing.y = 2.0;
+                        for (g, group) in display.iter().enumerate() {
+                            if g > 0 {
+                                material::divider(ui, &theme);
+                            }
+                            let mut at = 0;
+                            for node in group {
+                                match node {
+                                    MenuNode::Entry(key) => {
+                                        let item = DragItem::Entry(*key);
+                                        let is_slot = drag.is_some_and(|d| d.item == item);
+                                        let shown = !hidden.contains(key);
+                                        let row = edit_row(ui, &theme, ("cm_entry", *key), look(*key, false).0, look(*key, false).1, false, shown, 0.0, is_slot, true, false);
+                                        if is_slot {
+                                            slot = Some((row.rect, look(*key, false).0, look(*key, false).1, false, shown));
+                                        } else {
+                                            spots.push((row.rect.center().y, Spot::Top(g, at)));
+                                            at += 1;
+                                        }
+                                        if row.eye_clicked {
+                                            flip.push((vec![*key], shown));
+                                        }
+                                        if row.grip.drag_started() {
+                                            started = Some(MenuDrag { item, to: spot_of(&layout, item).unwrap_or(Spot::Top(g, at)) });
+                                        }
+                                        dragging |= row.grip.dragged();
+                                        stopped |= row.grip.drag_stopped();
+                                    }
+                                    MenuNode::Submenu(id, keys) => {
+                                        let item = DragItem::Sub(*id);
+                                        let is_slot = drag.is_some_and(|d| d.item == item);
+                                        let shown = keys.is_empty() || keys.iter().any(|k| !hidden.contains(k));
+                                        let top = ui.cursor().top();
+                                        let (mut sub_icon, sub_label) = config.submenu_look(*id);
+                                        if let (SubmenuId::Group(_), Some(first)) = (id, keys.first()) {
+                                            sub_icon = look(*first, true).0;
+                                        }
+                                        let made = matches!(id, SubmenuId::Custom(_));
+                                        let row = edit_row(ui, &theme, ("cm_sub", *id), sub_icon, sub_label, true, shown, 0.0, is_slot, !keys.is_empty(), made);
+                                        if row.edit_clicked
+                                            && let SubmenuId::Custom(n) = id
+                                            && let Some(group) = config.custom_groups.iter().find(|g| g.id == *n)
+                                        {
+                                            let icon = GROUP_ICONS.iter().position(|i| *i == group.icon).unwrap_or(0);
+                                            *form = Some(MenuForm { editing: Some(*n), name: group.name.clone(), icon, picks: Vec::new() });
+                                        }
+                                        if is_slot {
+                                            slot = Some((row.rect, sub_icon, sub_label, true, shown));
+                                        } else if !dragging_sub {
+                                            spots.push((row.rect.center().y, Spot::Top(g, at)));
+                                        }
+                                        if row.eye_clicked {
+                                            flip.push((keys.clone(), shown));
+                                        }
+                                        if row.grip.drag_started() {
+                                            started = Some(MenuDrag { item, to: spot_of(&layout, item).unwrap_or(Spot::Top(g, at)) });
+                                        }
+                                        dragging |= row.grip.dragged();
+                                        stopped |= row.grip.drag_stopped();
+                                        let mut inside = 0;
+                                        for key in keys {
+                                            let item = DragItem::Entry(*key);
+                                            let is_slot_child = drag.is_some_and(|d| d.item == item);
+                                            let shown = !hidden.contains(key);
+                                            let row = edit_row(ui, &theme, ("cm_entry", *key), look(*key, true).0, look(*key, true).1, false, shown, 22.0, is_slot_child || is_slot, true, false);
+                                            if is_slot_child {
+                                                slot = Some((row.rect, look(*key, true).0, look(*key, true).1, false, shown));
+                                            } else if !is_slot && !dragging_sub {
+                                                spots.push((row.rect.center().y, Spot::Inside(*id, inside)));
+                                                inside += 1;
+                                            }
+                                            if row.eye_clicked {
+                                                flip.push((vec![*key], shown));
+                                            }
+                                            if row.grip.drag_started() {
+                                                started = Some(MenuDrag { item, to: spot_of(&layout, item).unwrap_or(Spot::Inside(*id, inside)) });
+                                            }
+                                            dragging |= row.grip.dragged();
+                                            stopped |= row.grip.drag_stopped();
+                                        }
+                                        // The end of the submenu, to drop a row into it last
+                                        let (end, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 6.0), egui::Sense::hover());
+                                        if !is_slot && !dragging_sub {
+                                            spots.push((end.center().y, Spot::Inside(*id, inside)));
+                                        }
+                                        if !is_slot {
+                                            if dragging_sub {
+                                                spots.push(((top + end.bottom()) / 2.0, Spot::Top(g, at)));
+                                            }
+                                            at += 1;
+                                        }
+                                    }
+                                }
+                            }
+                            // The end of the group, which an empty group is only
+                            let (end, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), if group.is_empty() { 30.0 } else { 6.0 }), egui::Sense::hover());
+                            spots.push((end.center().y, Spot::Top(g, at)));
+                        }
+                    });
+            });
+        });
+
+        let mut changed = false;
+        if started.is_some() {
+            drag = started;
+        } else if dragging
+            && let (Some(d), Some(pointer)) = (drag.as_mut(), ctx.pointer_interact_pos())
+        {
+            // The first place below the pointer, or the last one when it is below them all
+            let below = spots.iter().filter(|s| s.0 > pointer.y).min_by(|a, b| a.0.total_cmp(&b.0));
+            if let Some((_, spot)) = below.or_else(|| spots.iter().max_by(|a, b| a.0.total_cmp(&b.0))) {
+                d.to = *spot;
+            }
+            // Scroll the page when the row is held at its edge
+            let (view, edge) = (ui.clip_rect(), 48.0);
+            if pointer.y < view.top() + edge {
+                ui.scroll_with_delta(egui::vec2(0.0, 14.0));
+            } else if pointer.y > view.bottom() - edge {
+                ui.scroll_with_delta(egui::vec2(0.0, -14.0));
+            }
+        }
+        if stopped {
+            // The menu already shows the row where it was let go
+            if drag.take().is_some() {
+                let mut display = display;
+                let config = self.settings.context_menus.get_mut(kind);
+                // A submenu made here that was emptied is gone
+                prune_custom(&mut display, config);
+                config.layout = if display == complete_layout(kind, &Vec::new(), &plugin_keys) { Vec::new() } else { display };
+                changed = true;
+            }
+        } else if drag.is_some() && !ctx.input(|i| i.pointer.any_down()) {
+            drag = None;
+        }
+        if drag.is_some() {
+            if let (Some((rect, icon, label, chevron, shown)), Some(pointer)) = (slot, ctx.pointer_interact_pos()) {
+                let rect = egui::Rect::from_center_size(egui::pos2(rect.center().x, pointer.y), rect.size());
+                let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Tooltip, egui::Id::NULL.with("cm_ghost")));
+                painter.rect_filled(rect.translate(egui::vec2(0.0, 3.0)).expand(1.0), egui::CornerRadius::same(material::radius_lg()), egui::Color32::from_black_alpha(70));
+                // Opaque, so the rows under it do not show through, with the theme's faint highlight on top
+                painter.rect_filled(rect, egui::CornerRadius::same(material::radius_lg()), theme.mantle);
+                painter.rect_filled(rect, egui::CornerRadius::same(material::radius_lg()), theme.with_alpha(theme.mauve, 44));
+                paint_edit_row(&painter, &theme, rect, icon, label, chevron, false, Some(shown), shown, None, 1.0);
+            }
+            ctx.request_repaint();
+        }
+        ctx.data_mut(|data| match drag {
+            Some(d) => {
+                data.insert_temp(menu_drag_id(), d);
+            }
+            None => {
+                data.remove::<MenuDrag>(menu_drag_id());
+            }
+        });
+
+        for (keys, shown) in flip {
+            let hidden = &mut self.settings.context_menus.get_mut(kind).hidden;
+            for key in keys {
+                hidden.retain(|k| *k != key);
+                if shown {
+                    hidden.push(key);
+                }
+            }
+            changed = true;
+        }
+        if changed {
+            self.persist_settings();
+        }
+        ui.label(egui::RichText::new(tr("The Trash menu is not affected")).size(material::FONT_CAPTION).color(theme.subtext1));
+        if *self.settings.context_menus.get(kind) != MenuConfig::default()
+            && material::button(ui, "cm_reset", Some(icons::RESTORE), tr("Reset this menu"), &theme, material::ButtonKind::Tonal, true).clicked()
+        {
+            *self.settings.context_menus.get_mut(kind) = MenuConfig::default();
+            self.persist_settings();
+        }
     }
 
     fn files_view_tab(&mut self, ui: &mut egui::Ui) {

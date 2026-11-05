@@ -798,5 +798,13 @@
   "Wheel scroll speed": "Scrollgeschwindigkeit des Mausrads",
   "Slow": "Langsam",
   "Fast": "Schnell",
-  "Faster": "Schneller"
+  "Faster": "Schneller",
+  "Context menu": "Kontextmenü",
+  "The Trash menu is not affected": "Das Papierkorb-Menü ist nicht betroffen",
+  "Empty space": "Leerer Bereich",
+  "Reset this menu": "Dieses Menü zurücksetzen",
+  "Drag entries to rearrange the menu, and use the eye to hide one": "Einträge ziehen, um das Menü umzuordnen; mit dem Auge blendet man einen aus",
+  "New group…": "Neue Gruppe…",
+  "Group name": "Gruppenname",
+  "Entries to put in it": "Einträge für die Gruppe"
 }

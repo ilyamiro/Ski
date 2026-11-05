@@ -199,6 +199,16 @@ impl Plugin for Git {
         self.rx.is_some() || self.running > 0
     }
 
+    fn item_catalog(&self) -> Vec<MenuItem> {
+        let group = tr("Git");
+        vec![
+            MenuItem::new(Action::Stage.id(), tr("Stage"), icons::ADD).group(group),
+            MenuItem::new(Action::Unstage.id(), tr("Unstage"), icons::REMOVE).group(group),
+            MenuItem::new(Action::Diff.id(), tr("Show diff"), icons::CODE).group(group),
+            MenuItem::new(Action::Discard.id(), tr("Discard changes"), icons::UNDO).group(group),
+        ]
+    }
+
     fn menu_items(&self, selection: &[FileItem]) -> Vec<MenuItem> {
         let Some(repo) = self.repo.as_ref().filter(|r| !selection.is_empty() && selection.iter().all(|i| i.path.starts_with(&r.root))) else {
             return Vec::new();

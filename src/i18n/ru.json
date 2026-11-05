@@ -798,5 +798,13 @@
   "Wheel scroll speed": "Скорость прокрутки колесом",
   "Slow": "Медленно",
   "Fast": "Быстро",
-  "Faster": "Быстрее"
+  "Faster": "Быстрее",
+  "Context menu": "Контекстное меню",
+  "The Trash menu is not affected": "Меню корзины не затрагивается",
+  "Empty space": "Пустое место",
+  "Reset this menu": "Сбросить это меню",
+  "Drag entries to rearrange the menu, and use the eye to hide one": "Перетаскивайте пункты, чтобы переставить меню, а глазом скрывайте ненужные",
+  "New group…": "Новая группа…",
+  "Group name": "Название группы",
+  "Entries to put in it": "Пункты для группы"
 }

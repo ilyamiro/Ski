@@ -798,5 +798,13 @@
   "Wheel scroll speed": "Velocidad de desplazamiento de la rueda",
   "Slow": "Lenta",
   "Fast": "Rápida",
-  "Faster": "Más rápida"
+  "Faster": "Más rápida",
+  "Context menu": "Menú contextual",
+  "The Trash menu is not affected": "El menú de la papelera no se ve afectado",
+  "Empty space": "Espacio vacío",
+  "Reset this menu": "Restablecer este menú",
+  "Drag entries to rearrange the menu, and use the eye to hide one": "Arrastra las entradas para reordenar el menú y usa el ojo para ocultar una",
+  "New group…": "Nuevo grupo…",
+  "Group name": "Nombre del grupo",
+  "Entries to put in it": "Entradas para el grupo"
 }

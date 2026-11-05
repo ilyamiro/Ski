@@ -533,6 +533,14 @@ impl Plugin for Duplicates {
         changed
     }
 
+    fn item_catalog(&self) -> Vec<MenuItem> {
+        vec![MenuItem::new("scan", tr("Find duplicate files…"), icons::DUPLICATE)]
+    }
+
+    fn folder_catalog(&self) -> Vec<MenuItem> {
+        vec![MenuItem::new("scan_here", tr("Find duplicate files…"), icons::DUPLICATE)]
+    }
+
     fn menu_items(&self, selection: &[FileItem]) -> Vec<MenuItem> {
         if !selection.is_empty() && selection.iter().all(|i| i.is_dir && !i.is_symlink) {
             vec![MenuItem::new("scan", tr("Find duplicate files…"), icons::DUPLICATE)]

@@ -167,6 +167,15 @@ pub trait Plugin {
     fn menu_items(&self, _selection: &[FileItem]) -> Vec<MenuItem> {
         Vec::new()
     }
+    /// Every entry `menu_items` can offer for files and folders, whatever is selected, so Settings
+    /// can list them. Ids and labels are those of `menu_items`.
+    fn item_catalog(&self) -> Vec<MenuItem> {
+        Vec::new()
+    }
+    /// Every entry `folder_menu_items` can offer.
+    fn folder_catalog(&self) -> Vec<MenuItem> {
+        Vec::new()
+    }
     /// Entries for the menu of the open folder and the main menu. `others` holds the folder of the
     /// other tab when exactly two tabs are open. `run` receives `[here, others...]` as its paths.
     fn folder_menu_items(&self, _here: &Path, _others: &[PathBuf]) -> Vec<MenuItem> {
@@ -332,6 +341,17 @@ impl Plugins {
     /// Menu entries for the selection, with the id of the plugin each one belongs to.
     pub fn menu_items(&self, selection: &[FileItem]) -> Vec<(&'static str, MenuItem)> {
         self.active().flat_map(|p| p.menu_items(selection).into_iter().map(|item| (p.id(), item))).collect()
+    }
+
+    /// The entries the enabled plugins can add to the menu of files and folders, or to the one of
+    /// the empty part of a folder, with the id of the plugin each one belongs to.
+    pub fn menu_catalog(&self, folder: bool) -> Vec<(&'static str, MenuItem)> {
+        self.active()
+            .flat_map(|p| {
+                let items = if folder { p.folder_catalog() } else { p.item_catalog() };
+                items.into_iter().map(|item| (p.id(), item))
+            })
+            .collect()
     }
 
     pub fn folder_menu_items(&self, here: &Path, others: &[PathBuf]) -> Vec<(&'static str, MenuItem)> {

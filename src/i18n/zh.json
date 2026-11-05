@@ -798,5 +798,13 @@
   "Wheel scroll speed": "滚轮滚动速度",
   "Slow": "慢",
   "Fast": "快",
-  "Faster": "更快"
+  "Faster": "更快",
+  "Context menu": "右键菜单",
+  "The Trash menu is not affected": "回收站菜单不受影响",
+  "Empty space": "空白处",
+  "Reset this menu": "重置此菜单",
+  "Drag entries to rearrange the menu, and use the eye to hide one": "拖动条目以重新排列菜单，点击眼睛图标可隐藏条目",
+  "New group…": "新建分组…",
+  "Group name": "分组名称",
+  "Entries to put in it": "放入分组的条目"
 }

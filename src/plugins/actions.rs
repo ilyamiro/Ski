@@ -286,6 +286,10 @@ impl Plugin for Actions {
         ui.add_space(4.0);
     }
 
+    fn item_catalog(&self) -> Vec<MenuItem> {
+        self.entries.iter().enumerate().map(|(i, e)| MenuItem::new(i.to_string(), e.label, icons::TERMINAL).group(tr("Actions"))).collect()
+    }
+
     fn menu_items(&self, selection: &[FileItem]) -> Vec<MenuItem> {
         self.entries
             .iter()

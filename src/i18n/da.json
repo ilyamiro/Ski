@@ -798,5 +798,13 @@
   "Wheel scroll speed": "Rullehastighed for hjulet",
   "Slow": "Langsom",
   "Fast": "Hurtig",
-  "Faster": "Hurtigere"
+  "Faster": "Hurtigere",
+  "Context menu": "Kontekstmenu",
+  "The Trash menu is not affected": "Papirkurvens menu påvirkes ikke",
+  "Empty space": "Tomt område",
+  "Reset this menu": "Nulstil denne menu",
+  "Drag entries to rearrange the menu, and use the eye to hide one": "Træk punkter for at omarrangere menuen, og brug øjet til at skjule et",
+  "New group…": "Ny gruppe…",
+  "Group name": "Gruppenavn",
+  "Entries to put in it": "Punkter i gruppen"
 }

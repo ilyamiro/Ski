@@ -798,5 +798,13 @@
   "Wheel scroll speed": "Tốc độ cuộn bánh xe",
   "Slow": "Chậm",
   "Fast": "Nhanh",
-  "Faster": "Nhanh hơn"
+  "Faster": "Nhanh hơn",
+  "Context menu": "Menu ngữ cảnh",
+  "The Trash menu is not affected": "Menu Thùng rác không bị ảnh hưởng",
+  "Empty space": "Vùng trống",
+  "Reset this menu": "Đặt lại menu này",
+  "Drag entries to rearrange the menu, and use the eye to hide one": "Kéo các mục để sắp xếp lại menu và dùng biểu tượng mắt để ẩn một mục",
+  "New group…": "Nhóm mới…",
+  "Group name": "Tên nhóm",
+  "Entries to put in it": "Các mục đưa vào nhóm"
 }

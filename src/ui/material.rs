@@ -792,7 +792,9 @@ pub fn chip_width(
     let color = lerp_color(lerp_color(theme.subtext0, theme.text, fx.hover), theme.mauve, sel_t);
     let mut x = rect.center().x - content_w / 2.0;
     if let Some(ic) = icon {
-        paint_icon(ui.painter(), Pos2::new(x + 7.0, rect.center().y), ic, ICON_SM, color);
+        // Without a label the icon is all there is, so it sits in the middle
+        let at = if label.is_empty() { rect.center().x } else { x + 7.0 };
+        paint_icon(ui.painter(), Pos2::new(at, rect.center().y), ic, ICON_SM, color);
         x += 22.0;
     }
     ui.painter().text(Pos2::new(x, rect.center().y), Align2::LEFT_CENTER, label, egui::FontId::proportional(FONT_CHIP), color);
