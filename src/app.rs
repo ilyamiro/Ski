@@ -5479,9 +5479,10 @@ impl SkiApp {
             ctx.memory_mut(|m| m.set_modal_layer(dialog_area.response.layer_id));
         }
 
-        // Click outside the dialog card dismisses it
+        // Click outside the dialog card dismisses it, unless it is the click that just opened the dialog
         let dialog_rect = dialog_area.response.rect;
         let outside_click = is_open
+            && !fresh
             && !matches!(dialog, Dialog::Conflict { .. })
             && !click_consumed
             && ctx.input(|i| {

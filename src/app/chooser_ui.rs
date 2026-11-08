@@ -297,6 +297,40 @@ mod tests {
     }
 
     #[test]
+    fn the_click_that_asks_to_replace_does_not_dismiss_the_question() {
+        let work = std::env::temp_dir().join(format!("ski_chooser_replace_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&work);
+        std::fs::create_dir_all(&work).unwrap();
+        std::fs::write(work.join("a.txt"), "a").unwrap();
+        let mut app = app_in(&work, &["--chooser", "--mode", "save", "--name", "a.txt"]);
+
+        let ctx = egui::Context::default();
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1000.0, 700.0));
+        let corner = egui::pos2(990.0, 690.0);
+        let button = |pressed| egui::Event::PointerButton { pos: corner, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+        let frame = |events: Vec<egui::Event>, app: &mut SkiApp, accept: bool| {
+            ctx.begin_pass(egui::RawInput { screen_rect: Some(screen), events, ..Default::default() });
+            if accept {
+                app.chooser_accept();
+            }
+            app.render_dialog(&ctx);
+            ctx.end_pass().textures_delta.clear();
+        };
+
+        // Save is clicked: the button's release and the dialog opening share a frame
+        frame(vec![egui::Event::PointerMoved(corner), button(true)], &mut app, false);
+        frame(vec![button(false)], &mut app, true);
+        assert!(matches!(app.dialog, Some(Dialog::Confirm { .. })), "the question stays open");
+
+        // A later click outside still dismisses it
+        frame(vec![button(true)], &mut app, false);
+        frame(vec![button(false)], &mut app, false);
+        assert!(app.dialog.is_none(), "a click outside closes it");
+
+        let _ = std::fs::remove_dir_all(&work);
+    }
+
+    #[test]
     fn a_mime_filter_keeps_the_images() {
         let work = std::env::temp_dir().join(format!("ski_chooser_mime_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&work);
