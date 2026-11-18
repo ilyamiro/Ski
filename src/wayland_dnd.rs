@@ -13,6 +13,7 @@ use std::collections::HashMap;
 use std::io::Write;
 use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle, RawDisplayHandle, RawWindowHandle};
 use wayland_backend::client::{Backend, ObjectId};
@@ -173,20 +174,27 @@ impl std::ops::DerefMut for WaylandDnd {
 
 impl Drop for WaylandDnd {
     fn drop(&mut self) {
-        if let Some(mut device) = self.0.take() {
-            device.state.leave_window();
+        if let Some(device) = self.0.take() {
+            device.core.lock().unwrap().state.leave_window();
             let _ = device.connection.flush();
             KEPT.with(|kept| *kept.borrow_mut() = Some(device));
         }
     }
 }
 
+/// What the display sends and the state its handlers fill. The reader thread dispatches it, so the
+/// clipboard is answered even while the window gets no frames; the frame loop takes the same lock
+/// when it reads the drag state.
+struct Core {
+    queue: EventQueue<State>,
+    state: State,
+}
+
 pub struct Device {
     /// The `wl_display` the connection wraps, which tells whether a kept device fits a new window.
     display: usize,
     connection: Connection,
-    queue: EventQueue<State>,
-    state: State,
+    core: Arc<Mutex<Core>>,
     surface: WlSurface,
     compositor: WlCompositor,
     shm: Option<WlShm>,
@@ -218,7 +226,7 @@ impl WaylandDnd {
                 // SAFETY: as below, the surface comes from the live window winit created
                 let surface_id = unsafe { ObjectId::from_ptr(WlSurface::interface(), surface.surface.as_ptr().cast()) }.ok()?;
                 device.surface = WlSurface::from_id(&device.connection, surface_id.clone()).ok()?;
-                device.state.surface = Some(surface_id);
+                device.core.lock().unwrap().state.surface = Some(surface_id);
                 device.waker = waker;
                 return Some(Self(Some(device)));
             }
@@ -245,15 +253,19 @@ impl Device {
         connection.flush().ok()?;
 
         let state = State { surface: Some(surface_id), ..State::default() };
-        Self::spawn_reader(connection.clone());
-        Some(Self { display, connection, queue, state, surface, compositor, shm, manager, device, _seat: seat, waker })
+        let core = Arc::new(Mutex::new(Core { queue, state }));
+        Self::spawn_reader(connection.clone(), core.clone());
+        Some(Self { display, connection, core, surface, compositor, shm, manager, device, _seat: seat, waker })
     }
 
     /// Reads the socket for this queue in the way libwayland expects of each reader (prepare, wait
     /// until it is readable, read), so it never holds up winit or the clipboard, which read the same
-    /// display. Events read for this queue wake the frame loop through `waker`, since a drag over the
-    /// window produces no events for egui; nothing else that arrives asks for a frame.
-    fn spawn_reader(connection: Connection) {
+    /// display. What it reads is dispatched here, before anything waits for a frame: a compositor
+    /// sends no frame callbacks to a window on another workspace, so a paste from another program
+    /// would wait there for good while this window stays idle. Events read for this queue still wake
+    /// the frame loop through `waker`, since a drag over the window produces no events for egui;
+    /// nothing else that arrives asks for a frame.
+    fn spawn_reader(connection: Connection, core: Arc<Mutex<Core>>) {
         std::thread::spawn(move || {
             // Never dropped: the thread ends when winit closes the display as the process exits,
             // and dropping the last handle then would destroy proxies of a display already freed
@@ -261,7 +273,9 @@ impl Device {
             loop {
                 let Some(guard) = connection.prepare_read() else {
                     // Another reader already took in events for this queue: hand them on
-                    if connection.backend().dispatch_inner_queue().is_err() {
+                    let mut core = core.lock().unwrap();
+                    let Core { queue, state } = &mut *core;
+                    if queue.dispatch_pending(state).is_err() {
                         return;
                     }
                     continue;
@@ -285,6 +299,11 @@ impl Device {
                 } else if pfd.revents & (libc::POLLHUP | libc::POLLERR | libc::POLLNVAL) != 0 {
                     return;
                 }
+                let mut core = core.lock().unwrap();
+                let Core { queue, state } = &mut *core;
+                if queue.dispatch_pending(state).is_err() {
+                    return;
+                }
             }
         });
     }
@@ -293,19 +312,21 @@ impl Device {
     /// Never waits on the socket: the reader thread takes care of that.
     pub fn poll(&mut self) -> Poll {
         let mut cx = std::task::Context::from_waker(&self.waker);
-        let _ = self.queue.poll_dispatch_pending(&mut cx, &mut self.state);
+        let mut core = self.core.lock().unwrap();
+        let Core { queue, state } = &mut *core;
+        let _ = queue.poll_dispatch_pending(&mut cx, state);
 
         let mut poll = Poll::default();
-        if let Some(h) = &mut self.state.hover {
+        if let Some(h) = &mut state.hover {
             h.reader.pump();
             poll.busy |= !h.reader.done();
-            poll.hover = Some(Hover { pos: h.pos, paths: Self::paths_of(h, &self.state.out), own: h.own });
+            poll.hover = Some(Hover { pos: h.pos, paths: Self::paths_of(h, &state.out), own: h.own });
         }
-        if let Some(d) = &mut self.state.dropping {
+        if let Some(d) = &mut state.dropping {
             d.reader.pump();
             if d.reader.done() || d.own {
-                let d = self.state.dropping.take().unwrap();
-                let paths = Self::paths_of(&d, &self.state.out);
+                let d = state.dropping.take().unwrap();
+                let paths = Self::paths_of(&d, &state.out);
                 // Before version 3 there are no actions: a drop is a move
                 let action = if d.offer.version() >= 3 { d.action } else { DndAction::Move };
                 let copy = action == DndAction::Copy;
@@ -315,12 +336,13 @@ impl Device {
                     }
                     poll.dropped = Some(Dropped { pos: d.pos, paths, copy, own: d.own });
                 }
-                self.state.offers.remove(&d.offer.id());
+                state.offers.remove(&d.offer.id());
                 d.offer.destroy();
             } else {
                 poll.busy = true;
             }
         }
+        drop(core);
         let _ = self.connection.flush();
         poll
     }
@@ -335,7 +357,9 @@ impl Device {
 
     /// Tells the compositor whether the spot the drag is over takes a drop (it shows the pointer to match).
     pub fn set_accepting(&mut self, ok: bool) {
-        let Some(h) = &mut self.state.hover else { return };
+        let mut core = self.core.lock().unwrap();
+        let state = &mut core.state;
+        let Some(h) = &mut state.hover else { return };
         if h.accepting == ok || !h.has_files {
             return;
         }
@@ -351,13 +375,15 @@ impl Device {
     /// Starts a drag of `paths`, which the compositor then carries over any window; `false` when
     /// it cannot be started (no button press to hang it on).
     pub fn start_drag(&mut self, paths: &[PathBuf], style: IconStyle) -> bool {
-        let Some(serial) = self.state.press_serial else { return false };
+        let mut core = self.core.lock().unwrap();
+        let Core { queue, state } = &mut *core;
+        let Some(serial) = state.press_serial else { return false };
         if paths.is_empty() {
             return false;
         }
         // A new press means any earlier drag is over, even if the compositor never said so
-        self.state.end_drag();
-        let qh = self.queue.handle();
+        state.end_drag();
+        let qh = queue.handle();
         let source = self.manager.create_data_source(&qh, ());
         for mime in [OWN_MIME, URI_LIST, PLAIN_TEXT] {
             source.offer(mime.to_owned());
@@ -376,23 +402,25 @@ impl Device {
             surface.damage_buffer(0, 0, i32::MAX, i32::MAX);
             surface.commit();
         }
-        self.state.out = Some(Outgoing { source, paths: paths.to_vec(), uris, text, icon });
-        self.state.press_serial = None;
+        state.out = Some(Outgoing { source, paths: paths.to_vec(), uris, text, icon });
+        state.press_serial = None;
         let _ = self.connection.flush();
         true
     }
 
     /// Puts `text` on the clipboard; `false` when there was no key or button press to hang it on.
     pub fn set_text(&mut self, text: String) -> bool {
-        let Some(serial) = self.state.input_serial else { return false };
-        let qh = self.queue.handle();
+        let mut core = self.core.lock().unwrap();
+        let Core { queue, state } = &mut *core;
+        let Some(serial) = state.input_serial else { return false };
+        let qh = queue.handle();
         let source = self.manager.create_data_source(&qh, ());
         for mime in std::iter::once(OWN_TEXT_MIME).chain(TEXT_MIMES) {
             source.offer(mime.to_owned());
         }
         self.device.set_selection(Some(&source), serial);
         crate::clipboard::set_own_text(Some(text.clone()));
-        if let Some(old) = self.state.clip.replace(Clip { source, text }) {
+        if let Some(old) = state.clip.replace(Clip { source, text }) {
             old.source.destroy();
         }
         let _ = self.connection.flush();
@@ -402,10 +430,12 @@ impl Device {
     /// The text on the clipboard, if any. Waits a little for the program that holds it to send it.
     pub fn text(&mut self) -> Option<String> {
         let mut cx = std::task::Context::from_waker(&self.waker);
-        let _ = self.queue.poll_dispatch_pending(&mut cx, &mut self.state);
-        let offer = self.state.selection.as_ref()?;
-        let mimes = &self.state.offers.get(&offer.id())?.mimes;
-        if mimes.iter().any(|m| m == OWN_TEXT_MIME) && let Some(clip) = &self.state.clip {
+        let mut core = self.core.lock().unwrap();
+        let Core { queue, state } = &mut *core;
+        let _ = queue.poll_dispatch_pending(&mut cx, state);
+        let offer = state.selection.as_ref()?;
+        let mimes = &state.offers.get(&offer.id())?.mimes;
+        if mimes.iter().any(|m| m == OWN_TEXT_MIME) && let Some(clip) = &state.clip {
             return Some(clip.text.clone());
         }
         let mime = TEXT_MIMES.iter().find(|t| mimes.iter().any(|m| m == *t))?;
