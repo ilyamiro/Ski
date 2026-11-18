@@ -11,7 +11,7 @@ pkgs.stdenv.mkDerivation {
   inherit (release) version;
 
   src = pkgs.fetchurl {
-    url = "https://github.com/ilyamiro/Ski/releases/download/v${release.version}/ski-${release.version}-x86_64-linux.tar.gz";
+    url = "https://github.com/mora1ss/Ski/releases/download/v${release.version}/ski-${release.version}-x86_64-linux.tar.gz";
     inherit (release) hash;
   };
 

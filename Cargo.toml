@@ -1,10 +1,10 @@
 [package]
 name = "ski"
-version = "0.6.3"
+version = "0.6.4"
 edition = "2024"
 description = "A small, fast, keyboard-friendly file manager"
 license = "MIT"
-repository = "https://github.com/ilyamiro/Ski"
+repository = "https://github.com/mora1ss/Ski"
 
 [dependencies]
 dirs = "7.0.0"
@@ -70,7 +70,7 @@ assets = [
 
 [package.metadata.generate-rpm]
 summary = "A small, fast, keyboard-friendly file manager"
-url = "https://github.com/ilyamiro/Ski"
+url = "https://github.com/mora1ss/Ski"
 assets = [
     { source = "target/stage/usr/bin/ski", dest = "/usr/bin/ski", mode = "755" },
     { source = "target/stage/usr/share/applications/ski.desktop", dest = "/usr/share/applications/ski.desktop", mode = "644" },
