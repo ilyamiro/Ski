@@ -1275,6 +1275,11 @@ impl SkiApp {
                 }
             }
         }
+        // As on macOS, an archive is unpacked into a folder next to it rather than opened
+        if ops::unpacks_on_open(path) {
+            self.extract_beside(vec![path.to_path_buf()]);
+            return;
+        }
         if is_runnable_appimage(path) {
             let started = std::process::Command::new(path)
                 .current_dir(path.parent().unwrap_or(Path::new("/")))

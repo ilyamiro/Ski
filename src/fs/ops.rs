@@ -164,6 +164,13 @@ pub fn is_archive(path: &Path) -> bool {
     .any(|ext| name.ends_with(ext))
 }
 
+/// Whether opening `path` unpacks it next to itself, as on macOS. Archives that are programs or
+/// disk images (`.jar`, `.apk`, `.iso`, `.deb`, ...) still go to the app that handles them.
+pub fn unpacks_on_open(path: &Path) -> bool {
+    let name = path.file_name().map(|n| n.to_string_lossy().to_lowercase()).unwrap_or_default();
+    is_archive(path) && ![".jar", ".apk", ".iso", ".cab", ".deb", ".rpm"].iter().any(|ext| name.ends_with(ext))
+}
+
 /// Folder name an archive extracts into: `photos.tar.gz` -> `photos`.
 pub fn archive_stem(path: &Path) -> String {
     let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
@@ -303,6 +310,16 @@ mod tests {
         assert!(keep_mode(Err(io::Error::from_raw_os_error(libc::EOPNOTSUPP))).is_ok());
         assert!(keep_mode(Err(io::Error::from_raw_os_error(libc::EPERM))).is_ok());
         assert!(keep_mode(Err(io::Error::from_raw_os_error(libc::ENOSPC))).is_err());
+    }
+
+    #[test]
+    fn archives_unpack_on_open_but_packages_and_images_do_not() {
+        for name in ["a.zip", "a.tar.gz", "a.tar.xz", "log.gz", "a.7z", "a.rar"] {
+            assert!(unpacks_on_open(Path::new(name)), "{name}");
+        }
+        for name in ["a.jar", "a.apk", "a.iso", "a.deb", "a.rpm", "a.cab", "a.txt"] {
+            assert!(!unpacks_on_open(Path::new(name)), "{name}");
+        }
     }
 
     #[test]
