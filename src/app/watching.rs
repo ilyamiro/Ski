@@ -200,7 +200,7 @@ impl SkiApp {
             if let Some(item) = FileItem::from_path(path).filter(|item| self.listed(item)) {
                 // A file still being written is read again once it is closed
                 if *settled && self.settings.show_thumbnails {
-                    self.thumbs.ensure(path);
+                    self.thumbs.refresh(path);
                 }
                 fresh.push(item);
             }
@@ -242,7 +242,7 @@ impl SkiApp {
                 Err(_) => gone.push(path.clone()),
             }
             if changed[path] && self.settings.show_thumbnails {
-                self.thumbs.ensure(path);
+                self.thumbs.refresh(path);
             }
         }
         // Recent and Bookmarks have an order of their own; search results are sorted

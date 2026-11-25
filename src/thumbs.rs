@@ -1,15 +1,17 @@
-//! Background preview loader. Every previewable file in the current folder is queued as soon as
-//! the folder opens: images, videos, SVGs, the first page of PDFs and the covers of e-books and comics. Decoded pictures are uploaded as textures on the UI thread.
+//! Background preview loader. Previewable files in and near the viewport are queued on demand:
+//! images, videos, SVGs, the first page of PDFs and the covers of e-books and comics. Decoded
+//! pictures are uploaded as textures on the UI thread, within bounded queue, channel, decode and
+//! texture memory budgets.
 //!
-//! Finished previews are also kept on disk (see `cache`), so reopening a folder, in this window or in
-//! the next file dialog, never runs ffmpeg or a decoder again. Previews come in a few resolutions
-//! that follow the icon size: zooming in re-renders at the next tier, once, and keeps the old
-//! picture on screen until the sharper one arrives.
+//! Finished previews are also kept on disk (see `cache`), so reopening a folder or scrolling back
+//! to an evicted item, in this window or in the next file dialog, never runs ffmpeg or a decoder
+//! again. Previews come in a few resolutions that follow the icon size: zooming in re-renders at
+//! the next tier, once, and keeps the old picture on screen until the sharper one arrives.
 use std::collections::{HashMap, HashSet};
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{mpsc, Arc, Condvar, Mutex};
 
 use eframe::egui;
 
@@ -24,15 +26,123 @@ fn workers() -> usize {
 }
 /// Textures uploaded per frame; the rest wait for the next one so a big folder never stalls a frame.
 const UPLOADS_PER_FRAME: usize = 6;
-/// Previews kept in memory, in bytes of pixels. Past this, opening a folder lets go of the other
-/// folders' pictures; the disk cache brings them back quickly if they are needed again.
-const TEXTURE_BUDGET: usize = 256 * 1024 * 1024;
-/// PDFs and archives larger than this are not worth rendering for a tiny preview.
-/// ffmpeg gets this long on one frame before it is killed.
+/// Decoded previews buffered between workers and the UI thread; bounds memory when workers outpace
+/// frames or the window is hidden.
+const RESULT_CHANNEL_CAP: usize = 24;
+/// How many files at the top of a freshly opened folder are queued before the first layout frame
+/// reports which rows are on screen.
+const INITIAL_PRELOAD: usize = 64;
+/// Previews kept in memory, in bytes of pixels. Past this, older previews of other folders and then
+/// off-screen previews of the open folder are dropped; the disk cache brings them back quickly.
+const TEXTURE_BUDGET: usize = 128 * 1024 * 1024;
+/// ffmpeg and 7z get this long on one file before they are killed, and may write at most this much.
 const VIDEO_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+const MAX_HELPER_OUTPUT_BYTES: u64 = 32 * 1024 * 1024;
+/// E-books, archives and SVGs larger than this are not worth reading for a tiny preview.
 const MAX_DOC_BYTES: u64 = 64 * 1024 * 1024;
-/// A PDF is read whole to find its first page, so the limit is generous but not unbounded.
-const MAX_PDF_BYTES: u64 = 1024 * 1024 * 1024;
+const MAX_SVG_BYTES: u64 = 32 * 1024 * 1024;
+/// A PDF is read whole to find its first page, so very large files fall back to the file icon.
+const MAX_PDF_BYTES: u64 = 128 * 1024 * 1024;
+/// Combined source bytes allowed in flight across workers while decoding uncached files.
+const DECODE_BYTE_BUDGET: u64 = 128 * 1024 * 1024;
+/// Concurrent PDF renders allowed at once, since each PDF also holds parsed pages and raster state.
+const MAX_PDF_CONCURRENCY: usize = 2;
+/// Maximum heap allocation a single image decoder may make.
+const MAX_IMAGE_ALLOC: u64 = 256 * 1024 * 1024;
+/// Cap on remembered failed paths across folders so long-lived sessions do not grow unboundedly.
+const MAX_FAILED_CACHE: usize = 4096;
+/// Cumulative decoded bytes after which glibc is asked to return freed worker arena pages.
+#[cfg(target_env = "gnu")]
+const MALLOC_TRIM_BYTES: u64 = 32 * 1024 * 1024;
+
+#[cfg(target_env = "gnu")]
+static TRIM_ACCUMULATOR: AtomicU64 = AtomicU64::new(0);
+
+fn maybe_trim_heap(bytes: u64) {
+    #[cfg(target_env = "gnu")]
+    {
+        if bytes == 0 {
+            return;
+        }
+        let acc = TRIM_ACCUMULATOR.fetch_add(bytes, Ordering::Relaxed) + bytes;
+        if acc >= MALLOC_TRIM_BYTES {
+            TRIM_ACCUMULATOR.store(0, Ordering::Relaxed);
+            // SAFETY: malloc_trim is thread-safe in glibc and only releases free heap pages.
+            unsafe {
+                libc::malloc_trim(0);
+            }
+        }
+    }
+    #[cfg(not(target_env = "gnu"))]
+    let _ = bytes;
+}
+
+/// Shared memory and concurrency gate for uncached decoding across workers.
+struct DecodeBudget {
+    state: Mutex<BudgetState>,
+    wake: Condvar,
+    byte_limit: u64,
+    pdf_limit: usize,
+}
+
+#[derive(Default)]
+struct BudgetState {
+    bytes: u64,
+    pdfs: usize,
+}
+
+struct DecodePermit {
+    budget: Arc<DecodeBudget>,
+    bytes: u64,
+    is_pdf: bool,
+}
+
+impl Drop for DecodePermit {
+    fn drop(&mut self) {
+        let mut state = self.budget.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.bytes = state.bytes.saturating_sub(self.bytes);
+        if self.is_pdf {
+            state.pdfs = state.pdfs.saturating_sub(1);
+        }
+        self.budget.wake.notify_all();
+    }
+}
+
+impl DecodeBudget {
+    fn new(byte_limit: u64, pdf_limit: usize) -> Self {
+        Self {
+            state: Mutex::new(BudgetState::default()),
+            wake: Condvar::new(),
+            byte_limit: byte_limit.max(1),
+            pdf_limit: pdf_limit.max(1),
+        }
+    }
+
+    fn acquire(self: &Arc<Self>, bytes: u64, is_pdf: bool, cancelled: &dyn Fn() -> bool) -> Option<DecodePermit> {
+        let cost = bytes.min(self.byte_limit);
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        loop {
+            if cancelled() {
+                return None;
+            }
+            let pdf_ok = !is_pdf || state.pdfs < self.pdf_limit;
+            let bytes_ok = state.bytes == 0 || state.bytes.saturating_add(cost) <= self.byte_limit;
+            if pdf_ok && bytes_ok {
+                state.bytes += cost;
+                if is_pdf {
+                    state.pdfs += 1;
+                }
+                return Some(DecodePermit { budget: Arc::clone(self), bytes: cost, is_pdf });
+            }
+            state = self.wake.wait(state).unwrap_or_else(|e| e.into_inner());
+        }
+    }
+
+    fn notify_all(&self) {
+        let _guard = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        self.wake.notify_all();
+    }
+}
 
 /// What a file looked like when its preview was asked for: modification time and size. A preview
 /// made for another stamp is out of date.
@@ -50,11 +160,11 @@ struct Job {
 }
 
 /// Jobs waiting for a worker. Workers take a job for something on screen before any other, so the
-/// pictures being looked at appear first and the rest of a big folder fills in behind them.
+/// pictures being looked at appear first and the rest of the viewport window fills in behind them.
 #[derive(Default)]
 struct Queue {
     jobs: Mutex<Waiting>,
-    wake: std::sync::Condvar,
+    wake: Condvar,
     /// The files on screen top to bottom, then those just past them in the way the view is likely
     /// to scroll, so a worker with nothing on screen left to do prepares the next screenful.
     visible: Mutex<Vec<PathBuf>>,
@@ -66,20 +176,65 @@ struct Waiting {
     /// How many waiting jobs each file has, so a worker asks the few files on screen whether they
     /// wait instead of hashing every job of a big folder on each turn.
     count: HashMap<PathBuf, usize>,
+    closed: bool,
 }
 
 impl Queue {
-    fn push(&self, job: Job) {
+    fn push(&self, job: Job, front: bool) {
         if let Ok(mut waiting) = self.jobs.lock() {
+            if waiting.closed {
+                return;
+            }
             *waiting.count.entry(job.path.clone()).or_default() += 1;
-            waiting.jobs.push_back(job);
+            if front {
+                waiting.jobs.push_front(job);
+            } else {
+                waiting.jobs.push_back(job);
+            }
         }
         self.wake.notify_one();
     }
 
-    fn pop(&self) -> Job {
+    fn clear(&self) {
+        let mut waiting = self.jobs.lock().unwrap_or_else(|e| e.into_inner());
+        waiting.jobs.clear();
+        waiting.count.clear();
+    }
+
+    /// Drops waiting jobs not matching `keep`, returning paths that no longer have any waiting job.
+    fn retain(&self, keep: impl Fn(&Path) -> bool) -> Vec<PathBuf> {
+        let mut waiting = self.jobs.lock().unwrap_or_else(|e| e.into_inner());
+        let mut dropped = Vec::new();
+        let mut kept = std::collections::VecDeque::with_capacity(waiting.jobs.len());
+        while let Some(job) = waiting.jobs.pop_front() {
+            if keep(&job.path) {
+                kept.push_back(job);
+            } else if let Some(n) = waiting.count.get_mut(&job.path) {
+                *n -= 1;
+                if *n == 0 {
+                    waiting.count.remove(&job.path);
+                    dropped.push(job.path);
+                }
+            }
+        }
+        waiting.jobs = kept;
+        dropped
+    }
+
+    fn close(&self) {
+        let mut waiting = self.jobs.lock().unwrap_or_else(|e| e.into_inner());
+        waiting.closed = true;
+        waiting.jobs.clear();
+        waiting.count.clear();
+        self.wake.notify_all();
+    }
+
+    fn pop(&self) -> Option<Job> {
         let mut waiting = self.jobs.lock().unwrap_or_else(|e| e.into_inner());
         loop {
+            if waiting.closed {
+                return None;
+            }
             if !waiting.jobs.is_empty() {
                 let at = {
                     let visible = self.visible.lock().unwrap_or_else(|e| e.into_inner());
@@ -96,36 +251,59 @@ impl Queue {
                         waiting.count.remove(&job.path);
                     }
                 }
-                return job;
+                return Some(job);
             }
             waiting = self.wake.wait(waiting).unwrap_or_else(|e| e.into_inner());
         }
     }
 }
 
+enum DecodeResult {
+    Ready(image::DynamicImage),
+    Missing,
+    Cancelled,
+}
+
 enum Outcome {
     Ready(egui::ColorImage, u32),
-    Cancelled,
     Failed,
 }
 
+struct TextureEntry {
+    handle: egui::TextureHandle,
+    tier: u32,
+    bytes: usize,
+    last_used: u64,
+}
+
 pub struct Thumbnails {
-    /// Each texture with the tier it was rendered at.
-    textures: HashMap<PathBuf, (egui::TextureHandle, u32)>,
+    /// Each texture with the tier it was rendered at, its pixel byte size, and last-used tick.
+    textures: HashMap<PathBuf, TextureEntry>,
+    texture_bytes: usize,
+    texture_budget: usize,
+    use_tick: u64,
     /// The stamp each texture was made for, and the newest stamp seen for each file: a result for any other is dropped.
     made: HashMap<PathBuf, Stamp>,
     wanted: HashMap<PathBuf, Stamp>,
     queued: HashMap<PathBuf, Stamp>,
     /// Resolution wanted for new and upgraded previews.
     tier: u32,
-    /// Files of the open folder, and extra pictures such as folder icons, for re-queuing at a new tier.
-    current: Vec<PathBuf>,
+    /// Previewable files of the open folder with their stamps, queued on demand as the view scrolls.
+    folder: HashMap<PathBuf, Stamp>,
+    /// First files of the open folder in listing order, used before the first layout frame.
+    head: Vec<PathBuf>,
+    /// Paths currently in or near the viewport (from `set_visible`).
+    visible: Vec<PathBuf>,
+    visible_set: HashSet<PathBuf>,
+    /// Extra pictures such as folder icons or Quick Look previews, kept outside the folder window.
     extras: HashSet<PathBuf>,
     /// Files that have no preview, with the stamp they failed at; tried again once the file changes.
     failed: HashMap<PathBuf, Stamp>,
     queue: Arc<Queue>,
+    budget: Arc<DecodeBudget>,
     result_rx: mpsc::Receiver<(PathBuf, Stamp, Outcome)>,
     generation: Arc<AtomicU64>,
+    closed: Arc<AtomicBool>,
 }
 
 /// Smallest tier that is at least `px` physical pixels, or the largest one.
@@ -206,29 +384,48 @@ pub fn has_preview(path: &Path) -> bool {
 impl Thumbnails {
     pub fn new(ctx: &egui::Context) -> Self {
         let queue = Arc::new(Queue::default());
-        let (result_tx, result_rx) = mpsc::channel();
+        let budget = Arc::new(DecodeBudget::new(DECODE_BYTE_BUDGET, MAX_PDF_CONCURRENCY));
+        let (result_tx, result_rx) = mpsc::sync_channel(RESULT_CHANNEL_CAP);
         let generation = Arc::new(AtomicU64::new(0));
+        let closed = Arc::new(AtomicBool::new(false));
 
         for _ in 0..workers() {
             let queue = queue.clone();
+            let budget = budget.clone();
             let result_tx = result_tx.clone();
             let generation = generation.clone();
+            let closed = closed.clone();
             let ctx = ctx.clone();
             std::thread::spawn(move || {
                 // Decoding is background work: it yields to the UI thread instead of competing with it
                 unsafe { libc::setpriority(libc::PRIO_PROCESS, libc::syscall(libc::SYS_gettid) as libc::id_t, 15) };
-                loop {
-                let job = queue.pop();
-                // Skip work for folders the user already left
-                if job.generation != generation.load(Ordering::Relaxed) {
-                    let _ = result_tx.send((job.path, job.stamp, Outcome::Cancelled));
-                    continue;
-                }
-                // A malformed document must not take the worker down with it
-                let decoded = std::panic::catch_unwind(|| cached_thumbnail(&job.path, job.tier)).ok().flatten();
-                let outcome = decoded.map_or(Outcome::Failed, |img| Outcome::Ready(to_color_image(&img), job.tier));
-                let _ = result_tx.send((job.path, job.stamp, outcome));
-                ctx.request_repaint();
+                while let Some(job) = queue.pop() {
+                    if closed.load(Ordering::Relaxed) {
+                        break;
+                    }
+                    // Skip work for folders the user already left
+                    if job.generation != generation.load(Ordering::Relaxed) {
+                        continue;
+                    }
+                    let cancelled = || closed.load(Ordering::Relaxed) || job.generation != generation.load(Ordering::Relaxed);
+                    // A malformed document must not take the worker down with it
+                    let decoded = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        cached_thumbnail(&job.path, job.tier, &budget, &cancelled)
+                    }))
+                    .ok()
+                    .unwrap_or(DecodeResult::Missing);
+                    if cancelled() {
+                        continue;
+                    }
+                    let outcome = match decoded {
+                        DecodeResult::Ready(img) => Outcome::Ready(to_color_image(&img), job.tier),
+                        DecodeResult::Missing => Outcome::Failed,
+                        DecodeResult::Cancelled => continue,
+                    };
+                    if result_tx.send((job.path, job.stamp, outcome)).is_err() {
+                        break;
+                    }
+                    ctx.request_repaint();
                 }
             });
         }
@@ -237,80 +434,194 @@ impl Thumbnails {
 
         Self {
             textures: HashMap::new(),
+            texture_bytes: 0,
+            texture_budget: TEXTURE_BUDGET,
+            use_tick: 0,
             made: HashMap::new(),
             wanted: HashMap::new(),
             queued: HashMap::new(),
             tier: TIERS[0],
-            current: Vec::new(),
+            folder: HashMap::new(),
+            head: Vec::new(),
+            visible: Vec::new(),
+            visible_set: HashSet::new(),
             extras: HashSet::new(),
             failed: HashMap::new(),
             queue,
+            budget,
             result_rx,
             generation,
+            closed,
         }
     }
 
-    fn enqueue(&mut self, path: &Path, stamp: Stamp, generation: u64) {
+    fn next_tick(&mut self) -> u64 {
+        self.use_tick = self.use_tick.wrapping_add(1);
+        self.use_tick
+    }
+
+    fn enqueue(&mut self, path: &Path, stamp: Stamp, generation: u64, front: bool) {
         self.wanted.insert(path.to_path_buf(), stamp);
-        let sharp_enough = self.textures.get(path).is_some_and(|(_, tier)| *tier >= self.tier) && self.made.get(path) == Some(&stamp);
+        let sharp_enough = self.textures.get(path).is_some_and(|entry| entry.tier >= self.tier) && self.made.get(path) == Some(&stamp);
         let pending = self.queued.get(path) == Some(&stamp);
         if has_preview(path) && !sharp_enough && !pending && self.failed.get(path) != Some(&stamp) {
             self.queued.insert(path.to_path_buf(), stamp);
-            self.queue.push(Job { path: path.to_path_buf(), stamp, generation, tier: self.tier });
+            self.queue.push(Job { path: path.to_path_buf(), stamp, generation, tier: self.tier }, front);
         }
     }
 
-    /// Tell the loader which files are on screen now; their previews are made first.
-    pub fn set_visible<'a>(&self, paths: impl Iterator<Item = &'a Path>) {
+    /// Tell the loader which files are on screen and nearby: their previews are prioritized and
+    /// queued on demand, while queued jobs that scrolled out of view are dropped.
+    pub fn set_visible<'a>(&mut self, paths: impl Iterator<Item = &'a Path>) {
         let paths: Vec<&Path> = paths.collect();
-        if let Ok(mut visible) = self.queue.visible.lock() {
-            // Called every frame: only rebuild the list (and its allocations) when the view moved
-            if visible.len() == paths.len() && visible.iter().zip(&paths).all(|(a, b)| a == b) {
-                return;
-            }
-            visible.clear();
-            visible.extend(paths.into_iter().map(Path::to_path_buf));
-        }
-    }
-
-    /// Queue every previewable file of a freshly opened folder, each with its stamp so that a picture
-    /// changed since its preview was made is drawn again. Cancels work queued for the previous folder.
-    pub fn preload<'a>(&mut self, files: impl Iterator<Item = (&'a Path, Stamp)>) {
-        let generation = self.generation.fetch_add(1, Ordering::Relaxed) + 1;
-        // Anything that was queued but not finished was dropped by the workers
-        self.queued.clear();
-        self.current.clear();
-        self.extras.clear();
-        // Files on servers are read only when the setting asks for that
-        for (path, stamp) in files.filter(|(p, _)| crate::fs::network::previews_allowed(p)) {
-            self.enqueue(path, stamp, generation);
-            self.current.push(path.to_path_buf());
-        }
-        self.trim_textures();
-    }
-
-    /// Lets go of the pictures of other folders once they take more memory than `TEXTURE_BUDGET`,
-    /// so browsing folder after folder of photos does not hold every preview ever shown.
-    fn trim_textures(&mut self) {
-        let total: usize = self.textures.values().map(|(tex, _)| tex.size().iter().product::<usize>() * 4).sum();
-        if total <= TEXTURE_BUDGET {
+        // Called every frame: only rebuild the window when the view moved
+        if self.visible.len() == paths.len() && self.visible.iter().zip(&paths).all(|(a, b)| a.as_path() == *b) {
             return;
         }
-        let keep: HashSet<&Path> = self.current.iter().map(PathBuf::as_path).collect();
-        self.textures.retain(|path, _| keep.contains(path.as_path()));
-        self.made.retain(|path, _| keep.contains(path.as_path()));
+        self.visible.clear();
+        self.visible.extend(paths.into_iter().map(Path::to_path_buf));
+        self.visible_set.clear();
+        self.visible_set.extend(self.visible.iter().cloned());
+
+        if let Ok(mut visible) = self.queue.visible.lock() {
+            visible.clear();
+            visible.extend(self.visible.iter().cloned());
+        }
+
+        let tick = self.next_tick();
+        for path in &self.visible {
+            if let Some(entry) = self.textures.get_mut(path) {
+                entry.last_used = tick;
+            }
+        }
+
+        let dropped = self.queue.retain(|p| self.visible_set.contains(p) || self.extras.contains(p));
+        for path in dropped {
+            self.queued.remove(&path);
+        }
+
+        let generation = self.generation.load(Ordering::Relaxed);
+        let to_queue: Vec<(PathBuf, Stamp)> = self
+            .visible
+            .iter()
+            .filter_map(|p| self.folder.get(p).copied().map(|stamp| (p.clone(), stamp)))
+            .collect();
+        for (path, stamp) in to_queue {
+            self.enqueue(&path, stamp, generation, false);
+        }
     }
 
-    /// Queue one extra image (e.g. a custom folder icon) without cancelling the folder's own work.
-    /// Also the way to say a file changed: its preview is drawn again, the old one staying until then.
+    /// Record the previewable files of a freshly opened folder and queue only the top screenful;
+    /// the rest are queued on demand as the viewport moves. Cancels work queued for the previous folder.
+    pub fn preload<'a>(&mut self, files: impl Iterator<Item = (&'a Path, Stamp)>) {
+        let generation = self.generation.fetch_add(1, Ordering::Relaxed) + 1;
+        self.queue.clear();
+        self.budget.notify_all();
+        while self.result_rx.try_recv().is_ok() {}
+        // Anything that was queued but not finished was dropped
+        self.queued.clear();
+        self.folder.clear();
+        self.head.clear();
+        self.visible.clear();
+        self.visible_set.clear();
+        if let Ok(mut visible) = self.queue.visible.lock() {
+            visible.clear();
+        }
+        self.extras.clear();
+        // Files on servers are read only when the setting asks for that
+        for (path, stamp) in files.filter(|(p, _)| has_preview(p) && crate::fs::network::previews_allowed(p)) {
+            let owned = path.to_path_buf();
+            self.folder.insert(owned.clone(), stamp);
+            self.wanted.insert(owned.clone(), stamp);
+            if self.head.len() < INITIAL_PRELOAD {
+                self.enqueue(path, stamp, generation, false);
+                self.head.push(owned);
+            }
+        }
+        self.trim_textures();
+        self.wanted.retain(|p, _| self.folder.contains_key(p) || self.textures.contains_key(p) || self.extras.contains(p));
+        if self.failed.len() > MAX_FAILED_CACHE {
+            self.failed.retain(|p, _| self.folder.contains_key(p) || self.extras.contains(p));
+        }
+    }
+
+    /// Cancel queued folder previews when thumbnails are turned off.
+    pub fn clear(&mut self) {
+        self.generation.fetch_add(1, Ordering::Relaxed);
+        self.queue.clear();
+        self.budget.notify_all();
+        while self.result_rx.try_recv().is_ok() {}
+        self.queued.clear();
+        self.folder.clear();
+        self.head.clear();
+        self.visible.clear();
+        self.visible_set.clear();
+        if let Ok(mut visible) = self.queue.visible.lock() {
+            visible.clear();
+        }
+    }
+
+    /// Lets go of older previews once they take more memory than `texture_budget`: first other
+    /// folders, then off-screen previews of the open folder, then off-screen extras. The disk cache
+    /// brings evicted pictures back quickly if they are needed again.
+    fn trim_textures(&mut self) {
+        if self.texture_bytes <= self.texture_budget {
+            return;
+        }
+        let target = self.texture_budget / 20 * 17;
+        self.evict_matching(target, |this, path| !this.folder.contains_key(path) && !this.extras.contains(path));
+        self.evict_matching(target, |this, path| !this.visible_set.contains(path) && !this.extras.contains(path));
+        self.evict_matching(target, |this, path| !this.visible_set.contains(path));
+    }
+
+    fn evict_matching(&mut self, target: usize, can_evict: impl Fn(&Self, &Path) -> bool) {
+        if self.texture_bytes <= target {
+            return;
+        }
+        let mut victims: Vec<(u64, PathBuf)> = self
+            .textures
+            .iter()
+            .filter(|(path, _)| can_evict(self, path.as_path()))
+            .map(|(path, entry)| (entry.last_used, path.clone()))
+            .collect();
+        victims.sort_unstable_by_key(|(tick, _)| *tick);
+        for (_, path) in victims {
+            if self.texture_bytes <= target {
+                break;
+            }
+            if let Some(removed) = self.textures.remove(&path) {
+                self.texture_bytes = self.texture_bytes.saturating_sub(removed.bytes);
+                self.made.remove(&path);
+            }
+        }
+    }
+
+    /// Queue one extra image (e.g. a custom folder icon or Quick Look) without cancelling the
+    /// folder's own work. Also the way to force a re-render right away.
     pub fn ensure(&mut self, path: &Path) {
         let generation = self.generation.load(Ordering::Relaxed);
         self.extras.insert(path.to_path_buf());
-        self.enqueue(path, stamp_of(path), generation);
+        self.enqueue(path, stamp_of(path), generation, true);
+    }
+
+    /// Note a file added or changed on disk in the open folder: its stamp is updated right away,
+    /// and it is queued now only if it is in the current viewport window (otherwise on scroll).
+    pub fn refresh(&mut self, path: &Path) {
+        if !has_preview(path) || !crate::fs::network::previews_allowed(path) {
+            return;
+        }
+        let stamp = stamp_of(path);
+        let owned = path.to_path_buf();
+        self.folder.insert(owned.clone(), stamp);
+        self.wanted.insert(owned, stamp);
+        if self.visible.is_empty() || self.visible_set.contains(path) {
+            let generation = self.generation.load(Ordering::Relaxed);
+            self.enqueue(path, stamp, generation, true);
+        }
     }
 
     /// Tell the loader how many physical pixels the largest preview is drawn at. Crossing into a
-    /// bigger tier re-renders what is already loaded; going smaller keeps the sharper pictures.
+    /// bigger tier re-renders what is in view; off-screen files upgrade when scrolled to.
     pub fn want_pixels(&mut self, px: f32) {
         let tier = tier_for(px);
         if tier <= self.tier {
@@ -319,20 +630,33 @@ impl Thumbnails {
         }
         self.tier = tier;
         let generation = self.generation.fetch_add(1, Ordering::Relaxed) + 1;
+        self.queue.clear();
+        self.budget.notify_all();
+        while self.result_rx.try_recv().is_ok() {}
         self.queued.clear();
-        let paths: Vec<PathBuf> = self.current.iter().chain(self.extras.iter()).cloned().collect();
-        for path in paths {
+        let active: Vec<PathBuf> = if self.visible.is_empty() { self.head.clone() } else { self.visible.clone() };
+        for path in active {
+            if let Some(&stamp) = self.folder.get(&path) {
+                self.enqueue(&path, stamp, generation, false);
+            }
+        }
+        let extras: Vec<PathBuf> = self.extras.iter().cloned().collect();
+        for path in extras {
             let stamp = self.wanted.get(&path).copied().unwrap_or_else(|| stamp_of(&path));
-            self.enqueue(&path, stamp, generation);
+            self.enqueue(&path, stamp, generation, true);
         }
     }
 
     /// Upload finished thumbnails; call once per frame.
     pub fn poll(&mut self, ctx: &egui::Context) {
         let mut uploaded = 0;
+        let mut more = true;
         while uploaded < UPLOADS_PER_FRAME {
-            let Ok((path, stamp, outcome)) = self.result_rx.try_recv() else { return };
-            // The file changed after this job started: its result is for a picture that is gone
+            let Ok((path, stamp, outcome)) = self.result_rx.try_recv() else {
+                more = false;
+                break;
+            };
+            // The file changed or its folder closed after this job started: drop the stale result
             let current = self.wanted.get(&path) == Some(&stamp);
             match outcome {
                 Outcome::Ready(img, tier) => {
@@ -343,18 +667,18 @@ impl Thumbnails {
                         self.queued.remove(&path);
                     }
                     // A slow low-resolution job can finish after its upgrade did
-                    if self.made.get(&path) == Some(&stamp) && self.textures.get(&path).is_some_and(|(_, have)| *have >= tier) {
+                    if self.made.get(&path) == Some(&stamp) && self.textures.get(&path).is_some_and(|entry| entry.tier >= tier) {
                         continue;
                     }
                     let tex = ctx.load_texture(path.to_string_lossy(), img, egui::TextureOptions::LINEAR);
-                    self.made.insert(path.clone(), stamp);
-                    self.textures.insert(path, (tex, tier));
-                    uploaded += 1;
-                }
-                Outcome::Cancelled => {
-                    if self.queued.get(&path) == Some(&stamp) {
-                        self.queued.remove(&path);
+                    let bytes = tex.size().iter().product::<usize>() * 4;
+                    let tick = self.next_tick();
+                    if let Some(old) = self.textures.insert(path.clone(), TextureEntry { handle: tex, tier, bytes, last_used: tick }) {
+                        self.texture_bytes = self.texture_bytes.saturating_sub(old.bytes);
                     }
+                    self.texture_bytes += bytes;
+                    self.made.insert(path, stamp);
+                    uploaded += 1;
                 }
                 Outcome::Failed => {
                     if current {
@@ -364,12 +688,27 @@ impl Thumbnails {
                 }
             }
         }
-        // More finished previews are waiting: draw this frame first, then take the next batch
-        ctx.request_repaint();
+        if uploaded > 0 {
+            self.trim_textures();
+        }
+        if more {
+            // More finished previews are waiting: draw this frame first, then take the next batch
+            ctx.request_repaint();
+        }
     }
 
     pub fn get(&self, path: &Path) -> Option<&egui::TextureHandle> {
-        self.textures.get(path).map(|(tex, _)| tex)
+        self.textures.get(path).map(|entry| &entry.handle)
+    }
+}
+
+impl Drop for Thumbnails {
+    fn drop(&mut self) {
+        self.closed.store(true, Ordering::Relaxed);
+        self.generation.fetch_add(1, Ordering::Relaxed);
+        self.queue.close();
+        self.budget.notify_all();
+        while self.result_rx.try_recv().is_ok() {}
     }
 }
 
@@ -381,36 +720,74 @@ fn to_color_image(img: &image::DynamicImage) -> egui::ColorImage {
 /// The preview from the disk cache, or rendered now and cached for next time. Files that have no
 /// preview are remembered too, so a folder of covers-less tracks does not spawn ffmpeg per file on
 /// every visit.
-fn cached_thumbnail(path: &Path, tier: u32) -> Option<image::DynamicImage> {
+fn cached_thumbnail(path: &Path, tier: u32, budget: &Arc<DecodeBudget>, cancelled: &dyn Fn() -> bool) -> DecodeResult {
+    if cancelled() {
+        return DecodeResult::Cancelled;
+    }
     let shared = is_image(path) && !is_ffmpeg_still(path);
     if shared {
         if let Some(hit) = shared_cache::read(path, tier) {
-            return Some(hit);
+            return DecodeResult::Ready(hit);
         }
     }
-    let Some(key) = cache::key(path) else { return render_thumbnail(path, tier) };
-    if let Some(hit) = cache::read(&key, tier) {
-        return Some(hit);
+    let key = cache::key(path);
+    if let Some(key) = &key {
+        if let Some(hit) = cache::read(key, tier) {
+            return DecodeResult::Ready(hit);
+        }
+        if cache::known_missing(key) {
+            return DecodeResult::Missing;
+        }
     }
-    if cache::known_missing(&key) {
-        return None;
+    let is_pdf = extension(path).as_deref() == Some("pdf");
+    let file_bytes = std::fs::metadata(path).map_or(0, |m| m.len());
+    if (is_pdf && file_bytes > MAX_PDF_BYTES) || (is_svg(path) && file_bytes > MAX_SVG_BYTES) {
+        if let Some(key) = &key {
+            cache::mark_missing(key);
+        }
+        return DecodeResult::Missing;
     }
+    let Some(_permit) = budget.acquire(file_bytes, is_pdf, cancelled) else {
+        return DecodeResult::Cancelled;
+    };
     let rendered = render_thumbnail(path, tier);
-    match &rendered {
-        Some(img) => {
-            cache::write(&key, tier, img);
-            if shared {
-                shared_cache::write(path, tier, img);
-            }
-        }
-        None => cache::mark_missing(&key),
+    drop(_permit);
+    if is_pdf || file_bytes >= 4 * 1024 * 1024 {
+        maybe_trim_heap(file_bytes);
     }
-    rendered
+    if cancelled() {
+        return DecodeResult::Cancelled;
+    }
+    match rendered {
+        Some(img) => {
+            if let Some(key) = &key {
+                cache::write(key, tier, &img);
+            }
+            if shared {
+                shared_cache::write(path, tier, &img);
+            }
+            DecodeResult::Ready(img)
+        }
+        None => {
+            if let Some(key) = &key {
+                cache::mark_missing(key);
+            }
+            DecodeResult::Missing
+        }
+    }
 }
 
 #[cfg(test)]
 fn decode_thumbnail(path: &Path) -> Option<egui::ColorImage> {
     render_thumbnail(path, TIERS[0]).map(|img| to_color_image(&img))
+}
+
+fn decode_image(path: &Path) -> Option<image::DynamicImage> {
+    let mut reader = image::ImageReader::open(path).ok()?.with_guessed_format().ok()?;
+    let mut limits = image::Limits::default();
+    limits.max_alloc = Some(MAX_IMAGE_ALLOC);
+    reader.limits(limits);
+    reader.decode().ok()
 }
 
 /// A preview with its longest side at most `tier` pixels, or `PAGE_MIN` where the shape is kept.
@@ -445,7 +822,7 @@ fn render_thumbnail(path: &Path, tier: u32) -> Option<image::DynamicImage> {
     } else if is_raw(path) {
         raw_preview(path)?
     } else {
-        image::ImageReader::open(path).ok()?.with_guessed_format().ok()?.decode().ok()?
+        decode_image(path)?
     };
     Some(fit(img, tier))
 }
@@ -508,8 +885,19 @@ fn box_shrink(img: &image::DynamicImage, block: usize) -> Option<image::DynamicI
     }
 }
 
+/// Read at most `limit` bytes from `path`, returning `None` if the file exceeds the limit.
+fn read_bounded(path: &Path, limit: u64) -> Option<Vec<u8>> {
+    let file = std::fs::File::open(path).ok()?;
+    if file.metadata().ok()?.len() > limit {
+        return None;
+    }
+    let mut bytes = Vec::new();
+    file.take(limit.saturating_add(1)).read_to_end(&mut bytes).ok()?;
+    (bytes.len() as u64 <= limit).then_some(bytes)
+}
+
 pub(crate) fn render_svg(path: &Path, px: u32) -> Option<image::DynamicImage> {
-    let data = std::fs::read(path).ok()?;
+    let data = read_bounded(path, MAX_SVG_BYTES)?;
     let tree = resvg::usvg::Tree::from_data(&data, &resvg::usvg::Options::default()).ok()?;
     let size = tree.size();
     let scale = px as f32 / size.width().max(size.height());
@@ -594,11 +982,11 @@ fn run_with_timeout(mut command: std::process::Command) -> Option<Vec<u8>> {
         }
     });
     let mut bytes = Vec::new();
-    let read = child.stdout.take()?.read_to_end(&mut bytes);
+    let read = child.stdout.take()?.take(MAX_HELPER_OUTPUT_BYTES + 1).read_to_end(&mut bytes);
     let _ = child.wait();
     let _ = done_tx.send(());
     read.ok()?;
-    Some(bytes)
+    (bytes.len() as u64 <= MAX_HELPER_OUTPUT_BYTES).then_some(bytes)
 }
 
 /// Paints sprocket-hole bands over the left and right edges, so a video reads as film.
@@ -639,10 +1027,16 @@ fn render_pdf(path: &Path, size: u32) -> Option<image::DynamicImage> {
     use hayro::vello_cpu::color::palette::css::WHITE;
     use hayro::{PixmapSettings, RenderCache, RenderSettings};
 
-    let pdf = Pdf::new(std::fs::read(path).ok()?).ok()?;
+    let pdf = Pdf::new(read_bounded(path, MAX_PDF_BYTES)?).ok()?;
     let page = pdf.pages().first()?;
     let (width, height) = page.render_dimensions();
-    let scale = size as f32 / width.max(height).max(1.0);
+    if !width.is_finite() || !height.is_finite() || width <= 0.0 || height <= 0.0 {
+        return None;
+    }
+    let scale = size as f32 / width.max(height);
+    if (width * scale) as u16 == 0 || (height * scale) as u16 == 0 {
+        return None;
+    }
     let pixmap = hayro::render(
         page,
         &RenderCache::new(),
@@ -1153,9 +1547,13 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join(format!("pic-{}.png", std::process::id()));
         std::fs::write(&file, png([255, 0, 0])).unwrap();
+        let budget = Arc::new(DecodeBudget::new(DECODE_BYTE_BUDGET, MAX_PDF_CONCURRENCY));
+        let never = || false;
         let key = cache::key(&file).unwrap();
         assert!(cache::read(&key, 128).is_none());
-        let first = cached_thumbnail(&file, 128).expect("preview");
+        let DecodeResult::Ready(first) = cached_thumbnail(&file, 128, &budget, &never) else {
+            panic!("preview");
+        };
         let hit = cache::read(&key, 128).expect("written to the cache");
         assert_eq!(first.to_rgba8().into_raw(), hit.to_rgba8().into_raw());
         assert!(cache::read(&key, 256).is_none(), "tiers are cached separately");
@@ -1165,7 +1563,7 @@ mod tests {
         assert!(cache::read(&cache::key(&file).unwrap(), 128).is_none());
         let bare = dir.join(format!("bare-{}.mp3", std::process::id()));
         std::fs::write(&bare, b"not audio").unwrap();
-        assert!(cached_thumbnail(&bare, 128).is_none());
+        assert!(matches!(cached_thumbnail(&bare, 128, &budget, &never), DecodeResult::Missing));
         assert!(cache::known_missing(&cache::key(&bare).unwrap()));
     }
 
@@ -1365,6 +1763,184 @@ mod tests {
         let file = dir.join("shot.cr2");
         std::fs::write(&file, raw).unwrap();
         assert!(is_red(&decode_thumbnail(&file).expect("raw preview")));
+    }
+
+    fn wait_for(thumbs: &mut Thumbnails, ctx: &egui::Context, done: impl Fn(&Thumbnails) -> bool) -> bool {
+        for _ in 0..250 {
+            thumbs.poll(ctx);
+            if done(thumbs) {
+                return true;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        false
+    }
+
+    #[test]
+    fn oversized_pdf_falls_back_without_decoding() {
+        let dir = std::env::temp_dir().join(format!("ski-thumb-big-pdf-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("huge.pdf");
+        let f = std::fs::File::create(&file).unwrap();
+        // Sparse file: uses no disk blocks while reporting a length past MAX_PDF_BYTES
+        f.set_len(MAX_PDF_BYTES + 1).unwrap();
+        drop(f);
+        assert!(decode_thumbnail(&file).is_none());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn large_folder_preloads_bounded_window_and_loads_on_scroll() {
+        let ctx = egui::Context::default();
+        let mut thumbs = Thumbnails::new(&ctx);
+        let dir = std::env::temp_dir().join(format!("ski-thumb-window-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let files: Vec<PathBuf> = (0..(INITIAL_PRELOAD + 60))
+            .map(|i| {
+                let p = dir.join(format!("doc-{i:04}.pdf"));
+                std::fs::write(&p, PDF).unwrap();
+                p
+            })
+            .collect();
+        let entries: Vec<(PathBuf, Stamp)> = files.iter().map(|p| (p.clone(), stamp_of(p))).collect();
+
+        thumbs.preload(entries.iter().map(|(p, s)| (p.as_path(), *s)));
+        assert_eq!(thumbs.folder.len(), files.len());
+        assert_eq!(thumbs.queued.len(), INITIAL_PRELOAD, "preload should only queue the initial window");
+
+        // Scrolling far down prunes off-screen queued jobs and decodes the newly visible slice
+        let far = &files[INITIAL_PRELOAD + 40..INITIAL_PRELOAD + 44];
+        thumbs.set_visible(far.iter().map(PathBuf::as_path));
+        assert!(wait_for(&mut thumbs, &ctx, |t| far.iter().all(|p| t.get(p).is_some())));
+        // Untouched middle files were never decoded
+        assert!(thumbs.get(&files[INITIAL_PRELOAD + 10]).is_none());
+        assert!(!thumbs.made.contains_key(&files[INITIAL_PRELOAD + 10]));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn texture_budget_evicts_off_screen_entries_of_the_active_folder() {
+        let ctx = egui::Context::default();
+        let mut thumbs = Thumbnails::new(&ctx);
+        // Each 40x60 PNG scales to 85x128 RGBA (43,520 bytes); allow 4 textures in memory at once
+        thumbs.texture_budget = 85 * 128 * 4 * 4;
+        let dir = std::env::temp_dir().join(format!("ski-thumb-budget-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let files: Vec<PathBuf> = (0..12)
+            .map(|i| {
+                let p = dir.join(format!("img-{i:02}.png"));
+                std::fs::write(&p, png([(i * 20) as u8, 40, 120])).unwrap();
+                p
+            })
+            .collect();
+        let entries: Vec<(PathBuf, Stamp)> = files.iter().map(|p| (p.clone(), stamp_of(p))).collect();
+        thumbs.preload(entries.iter().map(|(p, s)| (p.as_path(), *s)));
+
+        // View the first 3 files, then scroll across the folder in 3-item windows
+        for chunk in files.chunks(3) {
+            thumbs.set_visible(chunk.iter().map(PathBuf::as_path));
+            assert!(wait_for(&mut thumbs, &ctx, |t| chunk.iter().all(|p| t.get(p).is_some())));
+        }
+        assert!(thumbs.texture_bytes <= thumbs.texture_budget, "active-folder textures exceeded budget: {} > {}", thumbs.texture_bytes, thumbs.texture_budget);
+        assert!(thumbs.textures.len() < files.len(), "off-screen active-folder textures were not evicted");
+        // The currently visible last chunk must remain loaded
+        for p in &files[9..12] {
+            assert!(thumbs.get(p).is_some());
+        }
+
+        // Scrolling back to evicted files brings them back (from disk cache)
+        let first = &files[0..3];
+        thumbs.set_visible(first.iter().map(PathBuf::as_path));
+        assert!(wait_for(&mut thumbs, &ctx, |t| first.iter().all(|p| t.get(p).is_some())));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn decode_budget_bounds_concurrency_and_cancels_cleanly() {
+        let budget = Arc::new(DecodeBudget::new(100, 2));
+        let never = || false;
+        let p1 = budget.acquire(40, true, &never).expect("first pdf");
+        let p2 = budget.acquire(40, true, &never).expect("second pdf");
+
+        // A third concurrent PDF blocks until cancelled
+        let cancel = Arc::new(AtomicBool::new(false));
+        let b = Arc::clone(&budget);
+        let c = Arc::clone(&cancel);
+        let waiter = std::thread::spawn(move || b.acquire(10, true, &|| c.load(Ordering::Relaxed)).is_some());
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        cancel.store(true, Ordering::Relaxed);
+        budget.notify_all();
+        assert!(!waiter.join().unwrap(), "cancelled waiter should not acquire a permit");
+
+        // A large non-PDF that would exceed byte_limit also waits until existing permits drop
+        let b = Arc::clone(&budget);
+        let big = std::thread::spawn(move || b.acquire(80, false, &|| false).is_some());
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        drop(p1);
+        drop(p2);
+        assert!(big.join().unwrap(), "large job should proceed once budget is released");
+    }
+
+    #[test]
+    fn refresh_defers_off_screen_changes_until_scrolled_into_view() {
+        let ctx = egui::Context::default();
+        let mut thumbs = Thumbnails::new(&ctx);
+        let dir = std::env::temp_dir().join(format!("ski-thumb-refresh-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let on_screen = dir.join("a.png");
+        let off_screen = dir.join("b.png");
+        std::fs::write(&on_screen, png([255, 0, 0])).unwrap();
+        std::fs::write(&off_screen, png([0, 255, 0])).unwrap();
+        thumbs.preload([(on_screen.as_path(), stamp_of(&on_screen)), (off_screen.as_path(), stamp_of(&off_screen))].into_iter());
+        thumbs.set_visible([on_screen.as_path()].into_iter());
+        assert!(wait_for(&mut thumbs, &ctx, |t| t.get(&on_screen).is_some()));
+
+        // Modify the off-screen file and notify via refresh: should not decode while off screen
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(&off_screen, png([0, 0, 255])).unwrap();
+        let updated = stamp_of(&off_screen);
+        thumbs.refresh(&off_screen);
+        assert!(!thumbs.queued.contains_key(&off_screen));
+        assert_eq!(thumbs.folder.get(&off_screen), Some(&updated));
+
+        // Scrolling to it decodes the updated stamp
+        thumbs.set_visible([off_screen.as_path()].into_iter());
+        assert!(wait_for(&mut thumbs, &ctx, |t| t.made.get(&off_screen) == Some(&updated)));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn drop_shuts_down_when_result_channel_is_full() {
+        let ctx = egui::Context::default();
+        let mut thumbs = Thumbnails::new(&ctx);
+        let dir = std::env::temp_dir().join(format!("ski-thumb-drop-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // Queue more files than RESULT_CHANNEL_CAP without polling, so workers hit channel backpressure
+        let files: Vec<PathBuf> = (0..(RESULT_CHANNEL_CAP + 16))
+            .map(|i| {
+                let p = dir.join(format!("p-{i:02}.png"));
+                std::fs::write(&p, png([200, (i * 5) as u8, 50])).unwrap();
+                p
+            })
+            .collect();
+        let entries: Vec<(PathBuf, Stamp)> = files.iter().map(|p| (p.clone(), stamp_of(p))).collect();
+        thumbs.preload(entries.iter().map(|(p, s)| (p.as_path(), *s)));
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        // Dropping Thumbnails must unblock workers and return promptly
+        let start = std::time::Instant::now();
+        drop(thumbs);
+        assert!(start.elapsed() < std::time::Duration::from_secs(2));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }
 

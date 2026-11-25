@@ -1136,15 +1136,26 @@ impl SkiApp {
         }
     }
 
-    /// Previews are made for the rows on screen first, then for the next two screenfuls below and
-    /// the one above, so scrolling finds them ready; the rest of the folder follows.
-    fn prioritize_previews(&self) {
+    /// Previews are made for the rows on screen first, then for up to two screenfuls below and
+    /// one above, so scrolling finds them ready without decoding an entire huge folder up front.
+    fn prioritize_previews(&mut self) {
+        if !self.settings.show_thumbnails || self.visible_rows.is_empty() {
+            return;
+        }
         let shown = self.visible_rows.clone();
         let page = shown.len().max(1);
-        let below = shown.end..shown.end.saturating_add(2 * page);
-        let above = shown.start.saturating_sub(page)..shown.start;
+        let below = shown.end..shown.end.saturating_add((2 * page).min(128));
+        let above = shown.start.saturating_sub(page.min(64))..shown.start;
         let order = shown.chain(below).chain(above.rev());
         self.thumbs.set_visible(order.filter_map(|i| self.items.get(i)).map(|i| i.path.as_path()));
+    }
+
+    pub(crate) fn sync_thumbnails_setting(&mut self) {
+        if self.settings.show_thumbnails {
+            self.thumbs.preload(self.items.iter().map(|i| (i.path.as_path(), (i.modified, i.size))));
+        } else {
+            self.thumbs.clear();
+        }
     }
 
     fn show_listing(&mut self, listing: std::io::Result<Vec<FileItem>>) {
@@ -1212,7 +1223,7 @@ impl SkiApp {
     fn add_listed(&mut self, path: &Path) {
         let fresh = FileItem::from_path(path).filter(|item| self.listed(item));
         if fresh.is_some() && self.settings.show_thumbnails {
-            self.thumbs.ensure(path);
+            self.thumbs.refresh(path);
         }
         self.edit_listing(|items| {
             items.retain(|i| i.path != path);

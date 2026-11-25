@@ -1432,6 +1432,7 @@ impl SkiApp {
             if switch_row_with(ui, "fv_show_thumbs", icons::IMAGE, tr("Thumbnails"), None, &theme, self.settings.show_thumbnails).clicked() {
                 self.settings.show_thumbnails = !self.settings.show_thumbnails;
                 self.persist_settings();
+                self.sync_thumbnails_setting();
             }
             let desc = Some(tr("Thumbnails and folder item counts for files on servers, which reads them over the network"));
             if switch_row_with(ui, "fv_remote_previews", icons::SERVER_NETWORK, tr("Previews on servers"), desc, &theme, self.settings.remote_previews).clicked() {
