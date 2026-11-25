@@ -4897,7 +4897,7 @@ impl SkiApp {
             vec![clipboard, manage]
         };
         // Results and Recent items live in many folders: offer a way to the one that holds them
-        let open_group = |item: &FileItem, with: bool, show_parent: bool| {
+        let open_group = |item: &FileItem, show_parent: bool| {
             let mut group = vec![(icons::OPEN, tr("Open"), MenuAction::Open(item.clone()))];
             if item.is_dir {
                 group.extend(fold(icons::NEW_TAB, tr("Open in"), vec![
@@ -4906,9 +4906,7 @@ impl SkiApp {
                     (icons::TERMINAL, tr("Terminal"), MenuAction::OpenTerminal(item.path.clone())),
                 ].into_iter().chain(admin_entry(&item.path)).collect()));
             }
-            if with {
-                group.push((icons::APPS, tr("Open with…"), MenuAction::OpenWith(item.path.clone())));
-            }
+            group.push((icons::APPS, tr("Open with…"), MenuAction::OpenWith(item.path.clone())));
             if (mixed || show_parent) && let Some(parent) = item.path.parent() {
                 group.push((icons::FOLDER, tr("Show in folder"), MenuAction::OpenPath(parent.to_path_buf())));
             }
@@ -4916,7 +4914,7 @@ impl SkiApp {
         };
         // The menu of one file or folder. `keep` is for sidebar places, which must not be moved or removed from here.
         let single_groups = |item: &FileItem, show_parent: bool, keep: bool| {
-            let mut groups = vec![open_group(item, !item.is_dir, show_parent)];
+            let mut groups = vec![open_group(item, show_parent)];
             let mut mark = vec![bookmark_entry(&item.path)];
             if item.is_dir {
                 // A submenu cannot hold another, so these sit in the group itself
@@ -5001,6 +4999,7 @@ impl SkiApp {
                     mark.extend(pin_entry(here));
                     mark.push(icon_entry(here));
                     mark.push((icons::TERMINAL, tr("Open in terminal"), MenuAction::OpenTerminal(here.clone())));
+                    mark.push((icons::APPS, tr("Open with…"), MenuAction::OpenWith(here.clone())));
                     mark.extend(admin_entry(here));
                     mark
                 },
@@ -6159,10 +6158,17 @@ impl SkiApp {
     }
 
     fn open_open_with(&mut self, path: PathBuf) {
-        let mime = apps::mime_of(&path);
-        let default_id = apps::default_for(&mime);
-        let installed: Vec<AppEntry> = self.installed_apps().to_vec();
-        let current = self.open_overrides.get(&path).cloned().or(default_id.clone());
+        let is_dir = path.is_dir();
+        let mime = if is_dir { apps::FOLDER_MIME.to_owned() } else { apps::mime_of(&path) };
+        let mut installed: Vec<AppEntry> = self.installed_apps().to_vec();
+        // Ski opens folders itself, and the system default for folders is a file manager (often Ski):
+        // a folder lists the other programs that take one, such as code editors, with none preselected
+        let current = if is_dir {
+            installed.retain(|a| a.id != apps::OWN_DESKTOP_ID);
+            None
+        } else {
+            self.open_overrides.get(&path).cloned().or_else(|| apps::default_for(&mime))
+        };
         let default = current.as_deref().and_then(|id| installed.iter().position(|a| a.id == id));
         let recommended: Vec<usize> = apps::apps_for(&installed, &mime, None)
             .into_iter()
@@ -6188,8 +6194,10 @@ impl SkiApp {
     fn open_with_contents(&mut self, ui: &mut egui::Ui, dialog: &mut Dialog) -> bool {
         let Dialog::OpenWith { path, mime, apps: listed, default, recommended, others, selected, query, first_frame, for_file, for_type } = dialog else { return false };
         let theme = self.theme;
-        let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-        let mut close = material::dialog_header(ui, tr("Open with"), Some(&format!("{name} · {mime}")), &theme, "ow_close");
+        let is_dir = mime.as_str() == apps::FOLDER_MIME;
+        let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| path.to_string_lossy().into_owned());
+        let kind = if is_dir { tr("Folder") } else { mime.as_str() };
+        let mut close = material::dialog_header(ui, tr("Open with"), Some(&format!("{name} · {kind}")), &theme, "ow_close");
 
         // Search over every installed application
         material::input_frame(&theme).show(ui, |ui| {
@@ -6252,14 +6260,17 @@ impl SkiApp {
             });
         });
 
-        material::group_card(ui, &theme, |ui| {
-            if material::switch_row(ui, "ow_file", icons::FILE, tr("Always for this file"), &theme, *for_file).clicked() {
-                *for_file = !*for_file;
-            }
-            if material::switch_row(ui, "ow_type", icons::APPS, tr("Always for this file type"), &theme, *for_type).clicked() {
-                *for_type = !*for_type;
-            }
-        });
+        // Opening a folder in Ski never goes through these, so they would do nothing for one
+        if !is_dir {
+            material::group_card(ui, &theme, |ui| {
+                if material::switch_row(ui, "ow_file", icons::FILE, tr("Always for this file"), &theme, *for_file).clicked() {
+                    *for_file = !*for_file;
+                }
+                if material::switch_row(ui, "ow_type", icons::APPS, tr("Always for this file type"), &theme, *for_type).clicked() {
+                    *for_type = !*for_type;
+                }
+            });
+        }
 
         let has_choice = self.open_overrides.contains_key(path.as_path());
         let footer = material::dialog_footer(
@@ -6280,7 +6291,9 @@ impl SkiApp {
             && let Some(app) = selected.and_then(|i| listed.get(i)) {
                 match apps::launch(app, path) {
                     Ok(()) => {
-                        recent::record(path);
+                        if !is_dir {
+                            recent::record(path);
+                        }
                         if *for_file {
                             self.open_overrides.insert(path.clone(), app.id.clone());
                             apps::save_overrides(&self.open_overrides);

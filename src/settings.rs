@@ -370,6 +370,7 @@ pub fn default_menu_layout(kind: MenuKind) -> Vec<Vec<MenuNode>> {
             vec![
                 Entry(K::Open),
                 Submenu(SubmenuId::OpenIn, vec![K::OpenInNewTab, K::OpenInNewWindow, K::OpenTerminal, K::OpenAsAdmin]),
+                Entry(K::OpenWith),
                 Entry(K::ShowInFolder),
             ],
             vec![Entry(K::Bookmark), Entry(K::Pin), custom_icon()],
@@ -381,7 +382,7 @@ pub fn default_menu_layout(kind: MenuKind) -> Vec<Vec<MenuNode>> {
             vec![Entry(K::NewFile), Entry(K::NewFolder)],
             vec![Entry(K::UndoRedo)],
             vec![Entry(K::Paste), Submenu(SubmenuId::Select, vec![K::SelectAll, K::InvertSelection, K::SelectMatching])],
-            vec![Entry(K::Bookmark), Entry(K::Pin), custom_icon(), Entry(K::OpenTerminal), Entry(K::OpenAsAdmin)],
+            vec![Entry(K::Bookmark), Entry(K::Pin), custom_icon(), Entry(K::OpenTerminal), Entry(K::OpenWith), Entry(K::OpenAsAdmin)],
             vec![Entry(K::Refresh)],
             vec![Entry(K::CopyPath), Entry(K::Properties)],
         ],

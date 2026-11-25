@@ -5,6 +5,11 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{Arc, OnceLock, RwLock};
 
+/// The type of every folder.
+pub const FOLDER_MIME: &str = "inode/directory";
+/// Ski's own desktop entry (`assets/ski.desktop`).
+pub const OWN_DESKTOP_ID: &str = "ski.desktop";
+
 #[derive(Debug, Clone)]
 pub struct AppEntry {
     pub id: String,
