@@ -806,5 +806,20 @@
   "Drag entries to rearrange the menu, and use the eye to hide one": "Kéo thả các mục để sắp xếp lại menu, bấm biểu tượng con mắt để ẩn một mục",
   "New group…": "Nhóm mới…",
   "Group name": "Tên nhóm",
-  "Entries to put in it": "Các mục đưa vào nhóm"
+  "Entries to put in it": "Các mục đưa vào nhóm",
+  "Encrypted Drives": "Ổ đĩa mã hóa",
+  "Lists LUKS and BitLocker drives in the sidebar, unlocks them with their passphrase and mounts them": "Hiển thị ổ LUKS và BitLocker ở thanh bên, mở khóa bằng cụm mật khẩu và gắn kết chúng",
+  "{} Encrypted Volume": "Ổ mã hóa {}",
+  "Unlock Drive": "Mở khóa ổ đĩa",
+  "This drive is encrypted. Enter its passphrase to unlock it.": "Ổ đĩa này được mã hóa. Nhập cụm mật khẩu để mở khóa.",
+  "Passphrase": "Cụm mật khẩu",
+  "Unlock": "Mở khóa",
+  "Unlocking…": "Đang mở khóa…",
+  "Could not unlock: {}": "Không thể mở khóa: {}",
+  "Could not unlock “{}”: {}": "Không thể mở khóa “{}”: {}",
+  "Lock": "Khóa",
+  "Locked “{}”": "Đã khóa “{}”",
+  "Could not lock “{}”: {}": "Không thể khóa “{}”: {}",
+  "The drive is locked": "Ổ đĩa đang bị khóa",
+  "It holds no filesystem that can be mounted": "Không có hệ thống tệp nào để gắn kết"
 }

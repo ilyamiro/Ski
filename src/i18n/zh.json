@@ -806,5 +806,20 @@
   "Drag entries to rearrange the menu, and use the eye to hide one": "拖动条目以重新排列菜单，点击眼睛图标可隐藏条目",
   "New group…": "新建分组…",
   "Group name": "分组名称",
-  "Entries to put in it": "放入分组的条目"
+  "Entries to put in it": "放入分组的条目",
+  "Encrypted Drives": "加密驱动器",
+  "Lists LUKS and BitLocker drives in the sidebar, unlocks them with their passphrase and mounts them": "在侧边栏列出 LUKS 和 BitLocker 驱动器，用密码短语解锁并挂载",
+  "{} Encrypted Volume": "{} 加密卷",
+  "Unlock Drive": "解锁驱动器",
+  "This drive is encrypted. Enter its passphrase to unlock it.": "此驱动器已加密。输入密码短语以解锁。",
+  "Passphrase": "密码短语",
+  "Unlock": "解锁",
+  "Unlocking…": "正在解锁…",
+  "Could not unlock: {}": "无法解锁：{}",
+  "Could not unlock “{}”: {}": "无法解锁“{}”：{}",
+  "Lock": "锁定",
+  "Locked “{}”": "已锁定“{}”",
+  "Could not lock “{}”: {}": "无法锁定“{}”：{}",
+  "The drive is locked": "驱动器已锁定",
+  "It holds no filesystem that can be mounted": "其中没有可挂载的文件系统"
 }

@@ -3525,9 +3525,11 @@ impl SkiApp {
                 material::divider(ui, &self.theme);
                 for (plugin, entry) in &plugin_rows {
                     let selected = self.search_query.trim() == entry.id;
-                    let reserve = if entry.editable { material::NAV_TRAILING } else { 0.0 };
+                    let reserve = if entry.button.is_some() { material::NAV_TRAILING } else { 0.0 };
                     let resp = material::nav_item_with(ui, ("plugin_row", plugin, &entry.id), entry.icon, &entry.label, &self.theme, selected, reserve);
-                    if entry.editable && drives_ui::row_button(ui, resp.rect, resp.hovered(), ("plugin_edit", plugin, &entry.id), icons::MORE, tr("Edit tag"), &self.theme) {
+                    if let Some((icon, tip)) = entry.button
+                        && drives_ui::row_button(ui, resp.rect, resp.hovered(), ("plugin_edit", plugin, &entry.id), icon, tip, &self.theme)
+                    {
                         plugin_edit = Some((plugin, entry.id.clone()));
                     } else if resp.clicked() {
                         plugin_click = Some((plugin, entry.id.clone()));

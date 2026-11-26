@@ -13,6 +13,7 @@ pub mod actions;
 pub mod checksum;
 pub mod compare;
 pub mod duplicates;
+pub mod encrypted;
 pub mod git;
 pub mod progress;
 pub mod quick_look;
@@ -100,6 +101,8 @@ pub enum Reaction {
     Job(Job),
     /// Files in the open folder changed behind the app's back: list it again.
     Refresh,
+    /// Show this folder (one the plugin just mounted, say).
+    Open(PathBuf),
 }
 
 /// A row a plugin adds to the sidebar.
@@ -107,8 +110,8 @@ pub struct SidebarEntry {
     pub id: String,
     pub label: String,
     pub icon: &'static str,
-    /// The row has an edit button that calls `sidebar_edit`.
-    pub editable: bool,
+    /// The icon and tooltip of a button at the row's end, which calls `sidebar_edit`.
+    pub button: Option<(&'static str, &'static str)>,
 }
 
 /// A change Ski made to files, reported to plugins once it is done.
@@ -215,7 +218,7 @@ pub trait Plugin {
     fn sidebar_click(&mut self, _id: &str) -> Reaction {
         Reaction::None
     }
-    /// The edit button of the sidebar row `id` was pressed.
+    /// The button of the sidebar row `id` was pressed.
     fn sidebar_edit(&mut self, _id: &str) {}
     /// Files were renamed, moved or removed by Ski.
     fn file_op_done(&mut self, _op: &FileOpEvent) {}
@@ -266,6 +269,7 @@ impl Plugins {
                 Box::new(actions::Actions::load()),
                 Box::new(quick_look::QuickLook),
                 Box::new(tags::Tags::load()),
+                Box::new(encrypted::Encrypted::default()),
             ],
             enabled: enabled.clone(),
         }

@@ -21,7 +21,7 @@ pub struct Drive {
 }
 
 /// Where the desktop and the user put drives. A drive mounted anywhere else was mounted by the system.
-const MOUNT_ROOTS: &[&str] = &["/run/media", "/media", "/mnt"];
+pub(crate) const MOUNT_ROOTS: &[&str] = &["/run/media", "/media", "/mnt"];
 
 /// Filesystems that are not something to browse.
 const NOT_BROWSABLE: &[&str] = &["swap", "LVM2_member", "crypto_LUKS", "linux_raid_member", "zfs_member", "isw_raid_member", "bcache", "ddf_raid_member"];
@@ -51,7 +51,7 @@ fn text<'a>(v: &'a Value, key: &str) -> Option<&'a str> {
 }
 
 /// Every folder a device is mounted at: `mountpoints` from newer `lsblk`, else `mountpoint`.
-fn mount_points(node: &Value) -> Vec<&str> {
+pub(crate) fn mount_points(node: &Value) -> Vec<&str> {
     let mut all: Vec<&str> = node.get("mountpoints").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str).collect();
     if all.is_empty() {
         all.extend(text(node, "mountpoint"));

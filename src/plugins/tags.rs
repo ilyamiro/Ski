@@ -620,7 +620,7 @@ impl Plugin for Tags {
             .registry
             .names()
             .into_iter()
-            .map(|(name, _)| SidebarEntry { id: format!("tag:{name}"), label: name, icon: icons::TAG, editable: true })
+            .map(|(name, _)| SidebarEntry { id: format!("tag:{name}"), label: name, icon: icons::TAG, button: Some((icons::MORE, tr("Edit tag"))) })
             .collect()
     }
 

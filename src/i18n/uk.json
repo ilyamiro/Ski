@@ -806,5 +806,20 @@
   "Drag entries to rearrange the menu, and use the eye to hide one": "Перетягуйте пункти, щоб змінити порядок меню, а оком ховайте зайві",
   "New group…": "Нова група…",
   "Group name": "Назва групи",
-  "Entries to put in it": "Пункти для групи"
+  "Entries to put in it": "Пункти для групи",
+  "Encrypted Drives": "Зашифровані диски",
+  "Lists LUKS and BitLocker drives in the sidebar, unlocks them with their passphrase and mounts them": "Показує диски LUKS і BitLocker на бічній панелі, розблоковує їх паролем і монтує",
+  "{} Encrypted Volume": "Зашифрований том {}",
+  "Unlock Drive": "Розблокувати диск",
+  "This drive is encrypted. Enter its passphrase to unlock it.": "Цей диск зашифровано. Введіть пароль, щоб розблокувати його.",
+  "Passphrase": "Пароль",
+  "Unlock": "Розблокувати",
+  "Unlocking…": "Розблокування…",
+  "Could not unlock: {}": "Не вдалося розблокувати: {}",
+  "Could not unlock “{}”: {}": "Не вдалося розблокувати «{}»: {}",
+  "Lock": "Заблокувати",
+  "Locked “{}”": "«{}» заблоковано",
+  "Could not lock “{}”: {}": "Не вдалося заблокувати «{}»: {}",
+  "The drive is locked": "Диск заблоковано",
+  "It holds no filesystem that can be mounted": "На ньому немає файлової системи, яку можна змонтувати"
 }

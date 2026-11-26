@@ -75,6 +75,12 @@ impl SkiApp {
                     self.reread_items();
                 }
             }
+            Reaction::Open(path) => {
+                self.close_search();
+                self.navigate_to(path);
+                // What was mounted or locked shows in the sidebar's drives at once
+                self.request_drive_listing(ctx, true);
+            }
             Reaction::Search(query) => {
                 self.show_search = true;
                 self.search_query = query;

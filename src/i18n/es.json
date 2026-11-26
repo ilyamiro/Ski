@@ -806,5 +806,20 @@
   "Drag entries to rearrange the menu, and use the eye to hide one": "Arrastra las entradas para reordenar el menú y usa el ojo para ocultar una",
   "New group…": "Nuevo grupo…",
   "Group name": "Nombre del grupo",
-  "Entries to put in it": "Entradas para el grupo"
+  "Entries to put in it": "Entradas para el grupo",
+  "Encrypted Drives": "Unidades cifradas",
+  "Lists LUKS and BitLocker drives in the sidebar, unlocks them with their passphrase and mounts them": "Muestra las unidades LUKS y BitLocker en la barra lateral, las desbloquea con su frase de contraseña y las monta",
+  "{} Encrypted Volume": "Volumen cifrado de {}",
+  "Unlock Drive": "Desbloquear unidad",
+  "This drive is encrypted. Enter its passphrase to unlock it.": "Esta unidad está cifrada. Introduce su frase de contraseña para desbloquearla.",
+  "Passphrase": "Frase de contraseña",
+  "Unlock": "Desbloquear",
+  "Unlocking…": "Desbloqueando…",
+  "Could not unlock: {}": "No se pudo desbloquear: {}",
+  "Could not unlock “{}”: {}": "No se pudo desbloquear «{}»: {}",
+  "Lock": "Bloquear",
+  "Locked “{}”": "«{}» bloqueada",
+  "Could not lock “{}”: {}": "No se pudo bloquear «{}»: {}",
+  "The drive is locked": "La unidad está bloqueada",
+  "It holds no filesystem that can be mounted": "No contiene ningún sistema de archivos que se pueda montar"
 }

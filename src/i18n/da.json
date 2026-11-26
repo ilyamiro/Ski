@@ -806,5 +806,20 @@
   "Drag entries to rearrange the menu, and use the eye to hide one": "Træk punkter for at omarrangere menuen, og brug øjet til at skjule et",
   "New group…": "Ny gruppe…",
   "Group name": "Gruppenavn",
-  "Entries to put in it": "Punkter i gruppen"
+  "Entries to put in it": "Punkter i gruppen",
+  "Encrypted Drives": "Krypterede drev",
+  "Lists LUKS and BitLocker drives in the sidebar, unlocks them with their passphrase and mounts them": "Viser LUKS- og BitLocker-drev i sidepanelet, låser dem op med deres adgangssætning og monterer dem",
+  "{} Encrypted Volume": "Krypteret diskenhed på {}",
+  "Unlock Drive": "Lås drev op",
+  "This drive is encrypted. Enter its passphrase to unlock it.": "Dette drev er krypteret. Indtast dets adgangssætning for at låse det op.",
+  "Passphrase": "Adgangssætning",
+  "Unlock": "Lås op",
+  "Unlocking…": "Låser op…",
+  "Could not unlock: {}": "Kunne ikke låse op: {}",
+  "Could not unlock “{}”: {}": "Kunne ikke låse “{}” op: {}",
+  "Lock": "Lås",
+  "Locked “{}”": "“{}” er låst",
+  "Could not lock “{}”: {}": "Kunne ikke låse “{}”: {}",
+  "The drive is locked": "Drevet er låst",
+  "It holds no filesystem that can be mounted": "Det indeholder intet filsystem, der kan monteres"
 }
