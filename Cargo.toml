@@ -83,6 +83,7 @@ assets = [
 
 [package.metadata.generate-rpm.recommends]
 gvfs-fuse = "*"
+gvfs-mtp = "*"
 gvfs-smb = "*"
 
 [package.metadata.generate-rpm.requires]
