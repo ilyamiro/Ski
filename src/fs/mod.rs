@@ -15,6 +15,7 @@ pub mod admin;
 pub mod glob;
 pub mod templates;
 pub mod drives;
+pub mod mtp;
 pub mod xattr;
 pub mod watch;
 pub mod dirsize;

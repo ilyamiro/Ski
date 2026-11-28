@@ -125,7 +125,8 @@ const USER_SET: &AsciiSet = &PATH_SET.add(b'/').add(b'@').add(b':').add(b';');
 /// The same for an address shown to people, which only escapes what would change its meaning.
 const SHOWN_USER_SET: &AsciiSet = &CONTROLS.add(b'%').add(b'/').add(b':').add(b';');
 
-fn decode(text: &str) -> String {
+/// GVfs escapes what it cannot keep in a name: `%20` for a space, and so on.
+pub(crate) fn decode(text: &str) -> String {
     percent_decode_str(text).decode_utf8_lossy().into_owned()
 }
 

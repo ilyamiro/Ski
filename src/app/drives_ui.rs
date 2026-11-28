@@ -1,6 +1,7 @@
 //! Drives in the sidebar: keep the list fresh, mount, unmount and eject without blocking the window.
 use super::*;
 use crate::fs::drives;
+use crate::fs::mtp;
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
@@ -82,6 +83,9 @@ impl SkiApp {
         let (tx, ctx) = (state.tx.clone(), ctx.clone());
         let all = self.settings.show_all_partitions;
         std::thread::spawn(move || {
+            // Phones have no block device, so `drives::list` never sees one: mount it here and the
+            // Network section of the sidebar picks it up like any other GVfs mount
+            mtp::mount_new();
             let mut found = drives::list(all);
             let mut spaces = HashMap::new();
             for place in &mut found {
